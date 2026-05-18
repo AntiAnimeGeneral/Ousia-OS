@@ -1,0 +1,15 @@
+[workspace]
+# 指定工作区包含哪些子项目
+members = ["kernel"]
+
+# 可选：指定默认运行/构建的项目（当直接运行 cargo run 时）
+# default-members = [""]
+
+[workspace.package]
+version = "0.0.1"
+authors = ["Your Name <you@example.com>"]
+edition = "2024"
+license = "GPL-3.0"
+
+[workspace.dependencies]
+# 在这里声明公共依赖，子项目可以直接引用
