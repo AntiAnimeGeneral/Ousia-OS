@@ -57,7 +57,7 @@ Unix 的全局文件树作为"系统命名空间"有几个根本缺陷：
 
 如果一切服务都通过 Service Graph 发现，那第一个服务（名字服务本身）如何被找到？
 
-### xos 的答案：启动句柄注入
+### Ousia OS 的答案：启动句柄注入
 
 ```
 内核启动
@@ -83,7 +83,7 @@ Unix 的全局文件树作为"系统命名空间"有几个根本缺陷：
 
 Unix 的解法：`/sbin/init` 是硬编码路径（或通过 initramfs 搜索）。但这意味着 init 的位置是全局可见的，且路径不能变。
 
-xos 的解法更符合能力模型：内核注入 `handle_init` 给启动进程，这个句柄指向什么由内核映像决定，不依赖路径。
+Ousia OS 的解法更符合能力模型：内核注入 `handle_init` 给启动进程，这个句柄指向什么由内核映像决定，不依赖路径。
 
 ---
 
@@ -136,7 +136,7 @@ Capsule A                          Service Graph (名字服务)
 NameService.register({
     name: "storage-service",
     version: "1.2.0",
-    protocol: "xos.object-store.v2",
+    protocol: "Ousia OS.object-store.v2",
     status: "starting",          // starting → healthy → draining → stopped
     capability: handle_to_self,  // 其他 Capsule 调用时使用的句柄
     health_endpoint: handle_to_health_check,
@@ -160,15 +160,15 @@ NameService.register({
 
 ## 与传统方案对比
 
-| 维度      | Unix (文件树)         | DNS          | etcd/Consul     | xos Service Graph |
-| --------- | --------------------- | ------------ | --------------- | ----------------- |
-| 身份      | 路径字符串            | 域名         | key             | 服务名            |
-| 发现      | PATH 搜索             | DNS 解析     | HTTP API        | 名字服务 resolve  |
-| 返回      | 路径                  | IP:port      | value           | 能力句柄          |
-| 权限      | 文件权限位            | 无           | 无（额外 RBAC） | 内建能力校验      |
-| 版本      | 无（soname 是补丁）   | 无           | 无              | 一等支持          |
-| 健康      | 无（supervisor 分离） | 无           | health check    | 内建              |
-| bootstrap | 硬编码 /sbin/init     | root servers | 静态配置        | 内核句柄注入      |
+| 维度      | Unix (文件树)         | DNS          | etcd/Consul     | Ousia OS Service Graph |
+| --------- | --------------------- | ------------ | --------------- | ---------------------- |
+| 身份      | 路径字符串            | 域名         | key             | 服务名                 |
+| 发现      | PATH 搜索             | DNS 解析     | HTTP API        | 名字服务 resolve       |
+| 返回      | 路径                  | IP:port      | value           | 能力句柄               |
+| 权限      | 文件权限位            | 无           | 无（额外 RBAC） | 内建能力校验           |
+| 版本      | 无（soname 是补丁）   | 无           | 无              | 一等支持               |
+| 健康      | 无（supervisor 分离） | 无           | health check    | 内建                   |
+| bootstrap | 硬编码 /sbin/init     | root servers | 静态配置        | 内核句柄注入           |
 
 ---
 

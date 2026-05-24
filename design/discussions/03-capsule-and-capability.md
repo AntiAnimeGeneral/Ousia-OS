@@ -4,7 +4,7 @@
 
 ## 讨论范围
 
-Capsule 是 xos 的运行单元，Capability 是 xos 的权限单元。本文讨论两者的设计细节、交互方式，以及能力撤销的实现策略。
+Capsule 是 Ousia OS 的运行单元，Capability 是 Ousia OS 的权限单元。本文讨论两者的设计细节、交互方式，以及能力撤销的实现策略。
 
 ---
 
@@ -95,7 +95,7 @@ Unix:
   alice (uid=1000) 可以读 /home/alice/*
   因为她是 alice
 
-xos:
+Ousia OS:
   Capsule X 可以读 Object "user-data"
   因为它持有 Capability{object: user-data, rights: READ}
   （这个能力可能是用户交互后显式授予的）
@@ -125,7 +125,7 @@ xos:
 - 跨 Capsule 边界追踪
 - 处理"部分撤销"（如只撤销 WRITE 但保留 READ）
 
-### xos 的分阶段策略
+### Ousia OS 的分阶段策略
 
 **第一阶段（MVP）**：
 
@@ -162,10 +162,10 @@ xos:
 
 如果开发者每写一个程序都要手动声明 20 个能力，开发体验会很差。需要：
 
-- **开发模式**：`xos run --dev my-app` 自动授予常见开发能力（本地网络、项目目录读写、调试接口）
+- **开发模式**：`Ousia OS run --dev my-app` 自动授予常见开发能力（本地网络、项目目录读写、调试接口）
 - **能力模板**：常见场景（"web 应用"、"CLI 工具"、"数据库"）的预定义能力集合
 - **渐进式收紧**：开发时宽松 → 测试时 medium → 发布时最小权限
-- **审计工具**：`xos audit my-cell` 显示实际使用了哪些能力，帮助剪裁
+- **审计工具**：`Ousia OS audit my-cell` 显示实际使用了哪些能力，帮助剪裁
 
 ---
 

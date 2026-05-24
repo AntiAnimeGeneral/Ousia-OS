@@ -6,12 +6,12 @@
 
 历史上"兼容 Unix 的新 OS"走嵌入路线——在原生 API 中直接提供 POSIX 兼容接口（`open()`, `read()`, `fork()` 等）。结果是原生设计被 POSIX 语义拖累，原生抽象被架空，系统退化为"又一个 Unix-like"。
 
-xos 的解决方案：**兼容域是类似 WSL2 的轻量 VM，不是 API 适配层。**
+Ousia OS 的解决方案：**兼容域是类似 WSL2 的轻量 VM，不是 API 适配层。**
 
 ## 架构
 
 ```
-xos 原生空间
+Ousia OS 原生空间
   ├── 原生 App
   ├── 兼容域网关 (Proxy/Gateway)
   │     ├── 文件:   Linux 路径 ↔ Object ID
@@ -29,7 +29,7 @@ Linux 兼容域 (轻量 VM)
 
 ## 原则
 
-兼容层向旧生态让步，原生层不向旧抽象让步。Linux 兼容域内部保持传统模型（`ld.so`、`LD_LIBRARY_PATH`、POSIX 路径、uid/gid），但这一切被隔离在 VM 边界内，不污染 xos 的原生 API、Service Graph、Object Store 和能力模型。
+兼容层向旧生态让步，原生层不向旧抽象让步。Linux 兼容域内部保持传统模型（`ld.so`、`LD_LIBRARY_PATH`、POSIX 路径、uid/gid），但这一切被隔离在 VM 边界内，不污染 Ousia OS 的原生 API、Service Graph、Object Store 和能力模型。
 
 ## 开放问题
 

@@ -6,13 +6,13 @@
 
 传统 OS 把 CPU (`taskset`)、GPU（厂商私有调度）、NPU/DSP（无 OS 级调度）当独立资源管理，各有各的 API、各有各的调度器，彼此不可见。结果：一个 NPU 推理任务和 GPU 渲染任务无法在系统层做联合调度——即使它们共享同一块 SoC 的内存带宽和功耗预算。
 
-xos 用 Compute Domain 统一描述所有计算后端：类型、拓扑、能力（SIMD/FP64/Tensor）、本地内存大小与带宽、缓存一致性模型、功耗参数（base/boost 频率 + 功耗域）、抢占粒度。
+Ousia OS 用 Compute Domain 统一描述所有计算后端：类型、拓扑、能力（SIMD/FP64/Tensor）、本地内存大小与带宽、缓存一致性模型、功耗参数（base/boost 频率 + 功耗域）、抢占粒度。
 
 应用声明任务需求（`compute_type: "tensor-inference", latency_target: "10ms", power_budget: "low"`），系统按 Compute Domain 和执行等级自动路由。路由决策不考虑原始算力——数据移动成本也是输入：如果图片已经在 GPU 显存中，CPU 推理需要先搬数据，总延迟可能比 GPU 推理更高。调度器将此纳入 cost model。
 
 ## 执行等级：五级语义不是 nice 值
 
-Linux nice 值 (-20~+19) 只是一个调度权重。它不表达"我需要最低 10% GPU"，不表达"我可以被暂停但不能被杀死"，不表达"请优先大核"。xos 的执行等级是带语义的声明：
+Linux nice 值 (-20~+19) 只是一个调度权重。它不表达"我需要最低 10% GPU"，不表达"我可以被暂停但不能被杀死"，不表达"请优先大核"。Ousia OS 的执行等级是带语义的声明：
 
 | 等级  | 延迟保证   | 资源策略                           | 功耗   | 示例                      |
 | ----- | ---------- | ---------------------------------- | ------ | ------------------------- |
@@ -24,9 +24,9 @@ Linux nice 值 (-20~+19) 只是一个调度权重。它不表达"我需要最低
 
 ## 交互保活：机制而非希望
 
-这是 xos 调度设计中最核心的工程保证。Linux 上编译 Chromium 导致鼠标卡顿不是"CPU 不够快"——是调度器把 100 个 `cc1` 进程和 GUI 合成器放在同一优先级竞争。
+这是 Ousia OS 调度设计中最核心的工程保证。Linux 上编译 Chromium 导致鼠标卡顿不是"CPU 不够快"——是调度器把 100 个 `cc1` 进程和 GUI 合成器放在同一优先级竞争。
 
-xos 的机制：
+Ousia OS 的机制：
 
 1. **预算预留**：INT 等级的保底份额（如总 CPU 的 30%）不参与公平竞争。无论有多少 BG 任务，INT 总能拿到这部分。这不是"高优先级先跑"——是先确保 INT 的预算不会被 BG 吞掉。
 
@@ -38,7 +38,7 @@ xos 的机制：
 
 ## 异构资源调度
 
-GPU 调度不是黑盒。xos 理解 GPU 内部多引擎（Graphics/Compute/Copy/Video Decode/Encode），支持引擎级并发——一个 Capsule 用 Compute 引擎做推理，另一个用 Graphics 引擎做渲染，它们应真正并行而非时分复用。
+GPU 调度不是黑盒。Ousia OS 理解 GPU 内部多引擎（Graphics/Compute/Copy/Video Decode/Encode），支持引擎级并发——一个 Capsule 用 Compute 引擎做推理，另一个用 Graphics 引擎做渲染，它们应真正并行而非时分复用。
 
 抢占粒度取决于硬件能力：支持 thread-level preemption 的 GPU 上 INT 可直接打断 BG；不支持时降级为 draw-call 边界抢占。VRAM 满时按执行等级决定换出顺序（BG 任务先被换出）。
 

@@ -4,15 +4,15 @@
 
 ## 传统 Shell 为什么不行
 
-POSIX shell 的根本假设与 xos 全面冲突：一切是文件路径（xos 是 OID）、程序通过 `exec` + 环境变量启动（xos 是 Capsule + 能力声明）、管道是字节流（应该是类型化记录流）、配置是 dotfile（应去文件化）、权限继承 uid/gid（应是 Capability 句柄）。
+POSIX shell 的根本假设与 Ousia OS 全面冲突：一切是文件路径（Ousia OS 是 OID）、程序通过 `exec` + 环境变量启动（Ousia OS 是 Capsule + 能力声明）、管道是字节流（应该是类型化记录流）、配置是 dotfile（应去文件化）、权限继承 uid/gid（应是 Capability 句柄）。
 
-最核心的矛盾：**管道传递文本 vs 管道传递结构化数据。** `ls -l | awk '{print $5}'` 依赖文本解析，文件名有空格就出错。xos 中 `ls` 返回 `Stream<{name, oid, size, type, tags}>`，后续管道直接访问字段——不需要 `awk`/`sed`/`cut`。
+最核心的矛盾：**管道传递文本 vs 管道传递结构化数据。** `ls -l | awk '{print $5}'` 依赖文本解析，文件名有空格就出错。Ousia OS 中 `ls` 返回 `Stream<{name, oid, size, type, tags}>`，后续管道直接访问字段——不需要 `awk`/`sed`/`cut`。
 
 ## Nushell：最接近的起点
 
-Nushell 是唯一解决了"管道不传文本"的现实 shell。`ls` 输出 table，`where`/`sort-by` 操作结构化数据，变量有类型。但它仍假设路径文件系统和 POSIX 进程模型，需要在 xos 上替换这三层。
+Nushell 是唯一解决了"管道不传文本"的现实 shell。`ls` 输出 table，`where`/`sort-by` 操作结构化数据，变量有类型。但它仍假设路径文件系统和 POSIX 进程模型，需要在 Ousia OS 上替换这三层。
 
-## xos Shell 的设计
+## Ousia OS Shell 的设计
 
 **语法**：继承 Nushell 的 pipeline + 类型系统。
 
@@ -20,7 +20,7 @@ Nushell 是唯一解决了"管道不传文本"的现实 shell。`ls` 输出 tabl
 - `query type=image/png size>10MB | sort-by created`
 - `ls tag://vacation/`
 
-**原生理解 xos 抽象**：
+**原生理解 Ousia OS 抽象**：
 
 - `let storage = resolve "storage-service"` — 服务发现返回能力句柄，不是 `localhost:8080`
 - `spawn --cell my-app --cap network:*.example.com --priority interactive` — 启动 Capsule 附带能力
