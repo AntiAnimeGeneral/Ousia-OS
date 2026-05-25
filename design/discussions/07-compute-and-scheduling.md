@@ -30,7 +30,7 @@ Ousia OS 的机制：
 
 1. **预算预留**：INT 等级的保底份额（如总 CPU 的 30%）不参与公平竞争。无论有多少 BG 任务，INT 总能拿到这部分。这不是"高优先级先跑"——是先确保 INT 的预算不会被 BG 吞掉。
 
-2. **立即抢占**：INT 可以抢占 BG，目标延迟 <100µs（传统 OS 的抢占延迟在 ms 级）。这要求内核调度器支持 fine-grained preemption，以及用户态 Pager 的缺页处理不能无限阻塞 INT 线程。
+2. **立即抢占**：INT 可以抢占 BG。调度目标不应只写成一个全局数字，而应拆成可测指标：CPU runnable latency、IRQ-to-thread latency、关键路径 frame deadline miss rate、IO tail latency。长期目标可以向亚毫秒甚至百微秒级靠近，但第一阶段应先保证指标可观测、可回归，并确保用户态 Pager 的缺页处理不会无限阻塞 INT 线程。
 
 3. **关键路径识别**：输入事件 → 窗口合成 → 显示这条链上的任务标记为 CRITICAL。调度器确保它们在每次帧周期（如 16.6ms for 60Hz）内获得足够的执行窗口，不因 BG 任务的 CPU/GPU/IO 竞争而丢帧。
 

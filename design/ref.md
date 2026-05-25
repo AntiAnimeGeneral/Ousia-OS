@@ -1,4 +1,25 @@
-1. 参考fuchsia(架构设计和微内核实践)并且更进一步
+# 参考索引：高性能驱动与内核旁路
 
-2. 参考asterinas(使用了很多先进论文的实现 如 CortenMM )
-   https://github.com/asterinas/asterinas
+本文档改为目录分治。目的不是把所有判断塞进一篇长文，而是把 Ousia 当前关于高性能驱动、kernel bypass、SDK 和子系统路径划分的探索拆成可独立 review 的几块。
+
+当前所有内容都应视为**待定稿**。
+
+## 阅读顺序
+
+1. [00-bypass-first-class.md](./ref/00-bypass-first-class.md)
+   内核旁路为什么应成为第一公民，以及它和 IPC / syscall 的边界。
+
+2. [01-modern-driver-patterns.md](./ref/01-modern-driver-patterns.md)
+   当前先进实现的架构模式：WDDM、Linux DRM、Fuchsia DFv2、DriverKit、io_uring、AF_XDP、SPDK、Asterinas。
+
+3. [02-driver-sdk-draft.md](./ref/02-driver-sdk-draft.md)
+   Ousia Driver SDK 草案：对象模型、分层、运行时、恢复模型、工具链。
+
+4. [03-subsystem-path-matrix.md](./ref/03-subsystem-path-matrix.md)
+   FS / GPU / NIC / NVMe 的统一路径矩阵：哪些走 IPC，哪些走 syscall，哪些走 bypass。
+
+## 当前最重要的三条判断
+
+1. **内核旁路是第一公民的数据面模式，不是特权逃逸路径。**
+2. **Ousia 的高性能驱动框架必须围绕 queue / buffer / event / fence / doorbell / recovery 构建。**
+3. **SDK、调试、回放、观测和恢复工具是驱动架构的一部分，不是后补。**

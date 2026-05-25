@@ -15,12 +15,12 @@
 
 ```
 第 0 层: 微内核
-  调度+执行等级、地址空间+页表、IPC+能力句柄、中断+时钟、
-  IOMMU/DMA 仲裁、Pager-backed Memory Object、启动句柄注入
+  调度+执行等级、地址空间+页表、Communication Fabric+能力句柄、
+  中断+时钟、IOMMU/DMA 仲裁、Pager-backed Memory Object、启动句柄注入
 
 第 1 层: 基础系统服务
   名字服务(←内核启动句柄注入)、Capsule 管理器、对象存储服务、
-  网络服务、Driver Manager/Index/Host、日志与观测、Pager 监督服务
+  网络服务、设备管理与 Driver Manager/Index/Host、日志与观测、Pager 监督服务
 
 第 2 层: 平台服务
   Package Cell 管理器、图形与窗口系统、策略引擎、兼容域网关
@@ -33,15 +33,16 @@
 
 ## 第一阶段落地顺序
 
-| Phase                   | 目标                                                     | 核心验证                                                        |
-| ----------------------- | -------------------------------------------------------- | --------------------------------------------------------------- |
-| 1a: 微内核原语          | QEMU 中启动内核，任务+IPC+能力句柄+抢占调度+启动句柄注入 | 两个任务通过 IPC 传递能力句柄                                   |
-| 1b: 名字服务+Capsule    | Service Graph bootstrap + Capsule 生命周期               | Capsule 通过名字服务发现并调用另一个 Capsule                    |
-| 1c: Pager+Memory Object | 缺页处理 + Pager 崩溃模型                                | mmap 缺页正常供页；Pager 崩溃 → Capsule 收到 MEMORY_OBJECT_LOST |
-| 1d: 最小对象存储        | 对象 CRUD + 元数据 + 标签 + 目录树兼容投影               | "路径不是唯一真相"                                              |
-| 1e: Package Cell 原型   | 声明式安装/激活/回滚/卸载 + 多版本并存                   | 安装两个依赖不同版本库的 Cell                                   |
-| 1f: 驱动框架原型        | 设备能力句柄 + IOMMU 授权 + 用户态 MMIO                  | 用户态 NVMe 驱动读写；驱动崩溃→复位→恢复                        |
-| 1g: 兼容层              | Linux 兼容域（类 WSL2 VM）+ 兼容域网关                   | 兼容域内运行 bash+gcc+编译 C 程序                               |
+| Phase                   | 目标                                                                  | 核心验证                                                        |
+| ----------------------- | --------------------------------------------------------------------- | --------------------------------------------------------------- |
+| 1a: 微内核原语          | QEMU 中启动内核，任务+Portal/Operation+能力句柄+抢占调度+启动句柄注入 | 两个任务通过 Portal fast call 传递能力句柄                      |
+| 1a.5: 异步通信原语      | Continuation + EventPort/WaitSet + timeout/cancel/late reply          | 一个任务提交异步 Operation，另一个任务延迟完成并唤醒 Future     |
+| 1b: 名字服务+Capsule    | Service Graph bootstrap + Capsule 生命周期                            | Capsule 通过名字服务发现并调用另一个 Capsule                    |
+| 1c: Pager+Memory Object | 缺页处理 + Pager 崩溃模型                                             | mmap 缺页正常供页；Pager 崩溃 → Capsule 收到 MEMORY_OBJECT_LOST |
+| 1d: 最小对象存储        | 对象 CRUD + 元数据 + 标签 + 目录树兼容投影                            | "路径不是唯一真相"                                              |
+| 1e: Package Cell 原型   | 声明式安装/激活/回滚/卸载 + 多版本并存                                | 安装两个依赖不同版本库的 Cell                                   |
+| 1f: 驱动框架原型        | 设备能力句柄 + IOMMU 授权 + IOQueue/IOBuffer + 用户态 MMIO            | 用户态 NVMe 队列提交/完成；驱动崩溃→撤销 DMA→复位→恢复          |
+| 1g: 兼容层              | Linux 兼容域（类 WSL2 VM）+ 兼容域网关                                | 兼容域内运行 bash+gcc+编译 C 程序                               |
 
 ## 设计判断标准
 
@@ -68,3 +69,6 @@
 | 14  | [14-shell-and-tools.md](./14-shell-and-tools.md)               | Shell 与交互环境           |
 | 15  | [15-environment-and-deps.md](./15-environment-and-deps.md)     | 环境管理与依赖解析         |
 | 16  | [16-identity-and-accounts.md](./16-identity-and-accounts.md)   | 身份与信任模型             |
+| 17  | [17-communication-fabric.md](./17-communication-fabric.md)     | 统一通信基座               |
+
+全局术语表见 [../glossary.md](../glossary.md)。
