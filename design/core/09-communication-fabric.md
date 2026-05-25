@@ -1,10 +1,10 @@
-# 17 — Communication Fabric
+# 09 — Communication Fabric
 
 > 对应 `target.md` §4.3 + §4.5
 >
-> 相关备忘录：[../memorandum/00-ipc-sel4-fuchsia.md](../memorandum/00-ipc-sel4-fuchsia.md)
+> 相关备忘录：[../research/00-ipc-sel4-fuchsia.md](../research/00-ipc-sel4-fuchsia.md)
 >
-> 本文是通信语义的主设计。驱动队列的设备侧细节归属 [08-driver-and-kernel.md](./08-driver-and-kernel.md)，异步与 `mmap` 的张力归属 [09-async-model.md](./09-async-model.md)。
+> 本文是通信语义的主设计。驱动队列的设备侧细节归属 [08-driver-and-kernel.md](./08-driver-and-kernel.md)，异步与 `mmap` 的张力归属 [00-async-and-mmap.md](../topics/00-async-and-mmap.md)。
 
 ## 讨论范围
 

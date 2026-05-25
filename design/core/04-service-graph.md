@@ -186,4 +186,4 @@ NameService.register({
 - [00-philosophy.md](./00-philosophy.md) — 反"路径即身份"的哲学立场
 - [02-package-cell.md](./02-package-cell.md) — Cell 如何声明服务暴露
 - [03-capsule-and-capability.md](./03-capsule-and-capability.md) — 能力句柄传递
-- [12-roadmap.md](./12-roadmap.md) — 名字服务在第一阶段的落地
+- [06-roadmap.md](../topics/06-roadmap.md) — 名字服务在第一阶段的落地

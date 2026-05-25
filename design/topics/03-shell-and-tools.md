@@ -1,4 +1,4 @@
-# 14 — Shell 与交互环境
+# 03 — Shell 与交互环境
 
 > 对应 `target.md` §3.4 + §3.5 + §4.5
 
@@ -29,7 +29,7 @@ Nushell 是唯一解决了"管道不传文本"的现实 shell。`ls` 输出 tabl
 
 **Stream 是一等类型**：`stream.open "app-logs" | where level == "error" | follow`
 
-**配置不是 dotfile**：Shell 只提供 `config set` / `config rollback` 这类交互入口；配置服务的事务、校验和同步模型归属 [15-environment-and-deps.md](./15-environment-and-deps.md)。没有 `.bashrc`。
+**配置不是 dotfile**：Shell 只提供 `config set` / `config rollback` 这类交互入口；配置服务的事务、校验和同步模型归属 [04-environment-and-config.md](./04-environment-and-config.md)。没有 `.bashrc`。
 
 ## 实现策略
 
@@ -45,6 +45,6 @@ Linux 兼容域内保留 bash/POSIX shell，作为过渡而非终点。
 
 ## 相关章节
 
-- [04-service-graph.md](./04-service-graph.md) — 服务发现
-- [05-data-and-filesystem.md](./05-data-and-filesystem.md) — Object Store 交互
-- [15-environment-and-deps.md](./15-environment-and-deps.md) — 配置不是文件
+- [04-service-graph.md](../core/04-service-graph.md) — 服务发现
+- [05-data-and-filesystem.md](../core/05-data-and-filesystem.md) — Object Store 交互
+- [04-environment-and-config.md](./04-environment-and-config.md) — 配置不是文件

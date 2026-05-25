@@ -57,4 +57,4 @@ GPU 调度不是黑盒。Ousia OS 理解 GPU 内部多引擎（Graphics/Compute/
 ## 相关章节
 
 - [08-driver-and-kernel.md](./08-driver-and-kernel.md) — GPU 驱动与调度器接口
-- [09-async-model.md](./09-async-model.md) — 取消和背压的异步原语
+- [00-async-and-mmap.md](../topics/00-async-and-mmap.md) — 取消和背压的异步语义

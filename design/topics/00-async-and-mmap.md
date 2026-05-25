@@ -1,16 +1,16 @@
-# 09 — 异步语义与 mmap 的张力
+# 00 — 异步语义与 mmap 的张力
 
 > 对应 `target.md` §4.5
 
 ## 本章定位
 
-本文不再定义 Ousia 的完整通信模型。统一通信基座、Portal / Operation / Continuation / EventPort / SharedQueue 等原语归属 [17-communication-fabric.md](./17-communication-fabric.md)。本文只讨论一个边界问题：Ousia 坚持异步优先时，如何与 `mmap` 这种硬件层面的同步缺页模型共存。
+本文不再定义 Ousia 的完整通信模型。统一通信基座、Portal / Operation / Continuation / EventPort / SharedQueue 等原语归属 [09-communication-fabric.md](../core/09-communication-fabric.md)。本文只讨论一个边界问题：Ousia 坚持异步优先时，如何与 `mmap` 这种硬件层面的同步缺页模型共存。
 
 ## 异步优先的含义
 
 不是语法层面（每个 API 返回 Future），是语义层面：长耗时操作必须可取消（>1ms 的都有取消入口）、等待不阻塞调度器（等待线程暂停但调度器可切换）、组合操作有显式语义（all/any/race/timeout）、背压是系统原语而非用户态框架的附加逻辑。
 
-内核提供统一的 EventPort / WaitSet：`wait(events, timeout)` / `signal` / `cancel`。Event 来源包括 Operation completion、TimerExpired、DeviceInterrupt、StreamReadable、MemoryObjectLost、QueueReadable、FenceReached、ProcessTerminated 等。完整事件来源和通信路径见 [17-communication-fabric.md](./17-communication-fabric.md)。
+内核提供统一的 EventPort / WaitSet：`wait(events, timeout)` / `signal` / `cancel`。Event 来源包括 Operation completion、TimerExpired、DeviceInterrupt、StreamReadable、MemoryObjectLost、QueueReadable、FenceReached、ProcessTerminated 等。完整事件来源和通信路径见 [09-communication-fabric.md](../core/09-communication-fabric.md)。
 
 ## mmap 的同步本质
 
@@ -59,6 +59,6 @@
 
 ## 相关章节
 
-- [06-pager-and-memory.md](./06-pager-and-memory.md) — Pager 超时和崩溃模型
-- [07-compute-and-scheduling.md](./07-compute-and-scheduling.md) — 缺页 stall 时的调度行为
-- [17-communication-fabric.md](./17-communication-fabric.md) — 统一通信基座
+- [06-pager-and-memory.md](../core/06-pager-and-memory.md) — Pager 超时和崩溃模型
+- [07-compute-and-scheduling.md](../core/07-compute-and-scheduling.md) — 缺页 stall 时的调度行为
+- [09-communication-fabric.md](../core/09-communication-fabric.md) — 统一通信基座

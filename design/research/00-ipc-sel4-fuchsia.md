@@ -2,7 +2,7 @@
 
 > 备忘录 · 2026-05-25
 >
-> 状态：调研备忘录。本文前半部分用于理解 seL4/Fuchsia 的 IPC 设计；Ousia 的当前收束方案以 [17-communication-fabric.md](../discussions/17-communication-fabric.md) 为准。本文后半部分保留了若干历史推导，并在“对 Ousia OS 的启示”中标记了修订结论。
+> 状态：调研备忘录。本文前半部分用于理解 seL4/Fuchsia 的 IPC 设计；Ousia 的当前收束方案以 [09-communication-fabric.md](../core/09-communication-fabric.md) 为准。本文后半部分保留了若干历史推导，并在“对 Ousia OS 的启示”中标记了修订结论。
 
 ## 为什么 IPC 是微内核/能力系统的命门
 
@@ -1378,7 +1378,7 @@ Fuchsia 完全遵循了同一模式——VMO 就是 seL4 Frame 的对应物：
 
 核心原则：**内核提供通信生命周期和资源治理；用户态定义协议内容和编程模型。** Portal fast path 保留 seL4 的直接交接优势；Operation + Continuation + EventPort 提供真正异步请求能力；SharedQueue / IOQueue / MemoryObject / IOBuffer / Fence 把内核旁路通信纳入同一套原语，而不是留给驱动或服务各自发明。
 
-完整方案见 [17-communication-fabric.md](../discussions/17-communication-fabric.md)，项目自造术语见 [../glossary.md](../glossary.md)。
+完整方案见 [09-communication-fabric.md](../core/09-communication-fabric.md)，项目自造术语见 [../glossary.md](../glossary.md)。
 
 ### 通信路径的最终分流
 
@@ -1419,7 +1419,7 @@ Ousia 的通信路径应按负载类型分流：
 - 它没有把 SharedQueue / IOQueue 作为普通服务通信和设备通信的共同旁路基座。
 - 它没有把 Fence / Timeline 提升为跨队列、跨设备、跨 Capsule 的统一同步对象。
 
-因此，本备忘录的当前结论以 [17-communication-fabric.md](../discussions/17-communication-fabric.md) 为准：Ousia 不照搬通用 buffered Channel，也不退回“四个极简 IPC 原语”。Ousia 提供统一 Communication Fabric：Portal fast path、Operation lifecycle、Continuation reply right、EventPort waiting、SharedQueue / IOQueue bypass、MemoryObject / IOBuffer data transfer、Fence / Timeline synchronization。
+因此，本备忘录的当前结论以 [09-communication-fabric.md](../core/09-communication-fabric.md) 为准：Ousia 不照搬通用 buffered Channel，也不退回“四个极简 IPC 原语”。Ousia 提供统一 Communication Fabric：Portal fast path、Operation lifecycle、Continuation reply right、EventPort waiting、SharedQueue / IOQueue bypass、MemoryObject / IOBuffer data transfer、Fence / Timeline synchronization。
 
 ---
 
@@ -1433,4 +1433,4 @@ Ousia 的通信路径应按负载类型分流：
 - Fuchsia Zircon: [Channels](https://fuchsia.dev/fuchsia-src/reference/kernel_objects/channel)
 - FIDL Language Specification (fuchsia.dev)
 - [L4 Microkernel Family Overview](https://os.inf.tu-dresden.de/L4/)
-- Ousia OS 相关讨论：[03-capsule-and-capability.md](../discussions/03-capsule-and-capability.md), [09-async-model.md](../discussions/09-async-model.md), [06-pager-and-memory.md](../discussions/06-pager-and-memory.md)
+- Ousia OS 相关讨论：[03-capsule-and-capability.md](../core/03-capsule-and-capability.md), [00-async-and-mmap.md](../topics/00-async-and-mmap.md), [06-pager-and-memory.md](../core/06-pager-and-memory.md)

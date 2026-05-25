@@ -1,4 +1,4 @@
-# 10 — Linux 兼容
+# 01 — Linux 兼容
 
 > 对应 `target.md` §4.7
 
@@ -39,6 +39,6 @@ Linux 兼容域 (轻量 VM)
 
 ## 相关章节
 
-- [00-philosophy.md](./00-philosophy.md) — 兼容层不污染原生层
-- [04-service-graph.md](./04-service-graph.md) — 网关作为特殊服务
-- [15-environment-and-deps.md](./15-environment-and-deps.md) — 兼容域内的传统库环境
+- [00-philosophy.md](../core/00-philosophy.md) — 兼容层不污染原生层
+- [04-service-graph.md](../core/04-service-graph.md) — 网关作为特殊服务
+- [04-environment-and-config.md](./04-environment-and-config.md) — 兼容域内的传统库环境

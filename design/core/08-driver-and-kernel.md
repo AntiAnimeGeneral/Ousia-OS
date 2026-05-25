@@ -376,5 +376,5 @@ App / Device Service
 - [03-capsule-and-capability.md](./03-capsule-and-capability.md) — 设备能力句柄和资源授权
 - [06-pager-and-memory.md](./06-pager-and-memory.md) — Memory Object 与 DMA/注册内存的边界
 - [07-compute-and-scheduling.md](./07-compute-and-scheduling.md) — GPU 调度、功耗预算与执行等级
-- [11-engineering.md](./11-engineering.md) — 驱动 SDK、回放测试和 ABI 收敛策略
-- [12-roadmap.md](./12-roadmap.md) — 驱动框架原型的分阶段落地
+- [02-engineering.md](../topics/02-engineering.md) — 驱动 SDK、回放测试和 ABI 收敛策略
+- [06-roadmap.md](../topics/06-roadmap.md) — 驱动框架原型的分阶段落地

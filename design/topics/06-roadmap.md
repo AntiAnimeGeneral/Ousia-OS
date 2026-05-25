@@ -1,4 +1,4 @@
-# 12 — 路线图与非目标
+# 06 — 路线图与非目标
 
 > 对应 `target.md` §5 + §6 + §7 + §8
 
@@ -54,35 +54,35 @@
 
 | #   | 文件                                                           | 归属                         |
 | --- | -------------------------------------------------------------- | ---------------------------- |
-| 00  | [00-philosophy.md](./00-philosophy.md)                         | 设计立场与顶层原则           |
-| 01  | [01-pain-points.md](./01-pain-points.md)                       | 问题定义                     |
-| 02  | [02-package-cell.md](./02-package-cell.md)                     | 软件单元、依赖、生命周期     |
-| 03  | [03-capsule-and-capability.md](./03-capsule-and-capability.md) | 运行隔离与能力权限           |
-| 04  | [04-service-graph.md](./04-service-graph.md)                   | 服务发现、版本协商、启动     |
-| 05  | [05-data-and-filesystem.md](./05-data-and-filesystem.md)       | Object Store / Stream 主设计 |
-| 06  | [06-pager-and-memory.md](./06-pager-and-memory.md)             | Pager-backed Memory Object   |
-| 07  | [07-compute-and-scheduling.md](./07-compute-and-scheduling.md) | 调度、计算域、异构资源       |
-| 08  | [08-driver-and-kernel.md](./08-driver-and-kernel.md)           | 内核/驱动边界与 IO 原语      |
-| 17  | [17-communication-fabric.md](./17-communication-fabric.md)     | 统一通信基座                 |
+| 00  | [00-philosophy.md](../core/00-philosophy.md)                         | 设计立场与顶层原则           |
+| 01  | [01-pain-points.md](../core/01-pain-points.md)                       | 问题定义                     |
+| 02  | [02-package-cell.md](../core/02-package-cell.md)                     | 软件单元、依赖、生命周期     |
+| 03  | [03-capsule-and-capability.md](../core/03-capsule-and-capability.md) | 运行隔离与能力权限           |
+| 04  | [04-service-graph.md](../core/04-service-graph.md)                   | 服务发现、版本协商、启动     |
+| 05  | [05-data-and-filesystem.md](../core/05-data-and-filesystem.md)       | Object Store / Stream 主设计 |
+| 06  | [06-pager-and-memory.md](../core/06-pager-and-memory.md)             | Pager-backed Memory Object   |
+| 07  | [07-compute-and-scheduling.md](../core/07-compute-and-scheduling.md) | 调度、计算域、异构资源       |
+| 08  | [08-driver-and-kernel.md](../core/08-driver-and-kernel.md)           | 内核/驱动边界与 IO 原语      |
+| 09  | [09-communication-fabric.md](../core/09-communication-fabric.md)     | 统一通信基座                 |
 
 ### 边界专题
 
 | #   | 文件                                                         | 归属                 |
 | --- | ------------------------------------------------------------ | -------------------- |
-| 09  | [09-async-model.md](./09-async-model.md)                     | 异步语义与 mmap 张力 |
-| 10  | [10-compatibility.md](./10-compatibility.md)                 | Linux 兼容域         |
-| 11  | [11-engineering.md](./11-engineering.md)                     | 工程化、构建、测试   |
-| 14  | [14-shell-and-tools.md](./14-shell-and-tools.md)             | Shell 与交互工具     |
-| 15  | [15-environment-and-deps.md](./15-environment-and-deps.md)   | 环境与配置管理       |
-| 16  | [16-identity-and-accounts.md](./16-identity-and-accounts.md) | 身份与信任模型       |
+| 00  | [00-async-and-mmap.md](./00-async-and-mmap.md)                 | 异步语义与 mmap 张力 |
+| 01  | [01-compatibility.md](./01-compatibility.md)                   | Linux 兼容域         |
+| 02  | [02-engineering.md](./02-engineering.md)                       | 工程化、构建、测试   |
+| 03  | [03-shell-and-tools.md](./03-shell-and-tools.md)               | Shell 与交互工具     |
+| 04  | [04-environment-and-config.md](./04-environment-and-config.md) | 环境与配置管理       |
+| 05  | [05-identity-and-accounts.md](./05-identity-and-accounts.md)   | 身份与信任模型       |
 
 ### 深挖与参考
 
 | #   | 文件                                             | 归属                       |
 | --- | ------------------------------------------------ | -------------------------- |
-| 12  | [12-roadmap.md](./12-roadmap.md)                 | 路线图与非目标             |
-| 13  | [13-fs-vm-deep-dive.md](./13-fs-vm-deep-dive.md) | FS/VM 深挖材料，不是主规范 |
-| ref | [../ref.md](../ref.md)                           | 驱动、旁路、子系统路径参考 |
+| 06  | [06-roadmap.md](./06-roadmap.md)                 | 路线图与非目标             |
+| 00  | [00-fs-vm.md](../deep-dives/00-fs-vm.md)         | FS/VM 深挖材料，不是主规范 |
+| reference | [reference/README.md](../reference/README.md)       | 驱动、旁路、子系统路径参考 |
 
 全局术语表见 [../glossary.md](../glossary.md)。
 
@@ -90,10 +90,10 @@
 
 为避免同一设计在多个章节各自演化，后续新增内容按下面规则归属：
 
-- **通信、异步请求、事件等待、服务间旁路队列**：归属 [17-communication-fabric.md](./17-communication-fabric.md)。其他章节只说明如何使用这些原语。
-- **Package Cell、依赖解析、多版本并存、生命周期**：归属 [02-package-cell.md](./02-package-cell.md)。环境章节只消费解析结果。
-- **运行环境、用户/系统配置、配置服务**：归属 [15-environment-and-deps.md](./15-environment-and-deps.md)。Shell 章节只描述交互命令。
-- **Object Store / Stream 的主设计**：归属 [05-data-and-filesystem.md](./05-data-and-filesystem.md)。`13-fs-vm-deep-dive.md` 只放调研、论证和细化方案。
-- **Pager-backed Memory Object 契约**：归属 [06-pager-and-memory.md](./06-pager-and-memory.md)。FS 深挖只讨论它如何被存储服务使用。
-- **内核/驱动边界、IOQueue/IOBuffer/Doorbell/Fence**：归属 [08-driver-and-kernel.md](./08-driver-and-kernel.md)。`ref/` 下文档只保留参考、矩阵和草案。
-- **实现语言、构建、测试、更新**：归属 [11-engineering.md](./11-engineering.md)。不要在工程章节重复具体子系统设计。
+- **通信、异步请求、事件等待、服务间旁路队列**：归属 [09-communication-fabric.md](../core/09-communication-fabric.md)。其他章节只说明如何使用这些原语。
+- **Package Cell、依赖解析、多版本并存、生命周期**：归属 [02-package-cell.md](../core/02-package-cell.md)。环境章节只消费解析结果。
+- **运行环境、用户/系统配置、配置服务**：归属 [04-environment-and-config.md](./04-environment-and-config.md)。Shell 章节只描述交互命令。
+- **Object Store / Stream 的主设计**：归属 [05-data-and-filesystem.md](../core/05-data-and-filesystem.md)。[00-fs-vm.md](../deep-dives/00-fs-vm.md) 只放调研、论证和细化方案。
+- **Pager-backed Memory Object 契约**：归属 [06-pager-and-memory.md](../core/06-pager-and-memory.md)。FS 深挖只讨论它如何被存储服务使用。
+- **内核/驱动边界、IOQueue/IOBuffer/Doorbell/Fence**：归属 [08-driver-and-kernel.md](../core/08-driver-and-kernel.md)。`reference/` 下文档只保留参考、矩阵和草案。
+- **实现语言、构建、测试、更新**：归属 [02-engineering.md](./02-engineering.md)。不要在工程章节重复具体子系统设计。

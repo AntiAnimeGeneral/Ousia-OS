@@ -1,4 +1,4 @@
-# 16 — 身份与信任模型
+# 05 — 身份与信任模型
 
 > 对应 `target.md` §4.8
 
@@ -53,5 +53,5 @@ Capsule 持有身份句柄，在与其他服务交互时出示。内核不实现
 
 ## 相关章节
 
-- [02-package-cell.md](./02-package-cell.md) — 发布者签名验证
-- [03-capsule-and-capability.md](./03-capsule-and-capability.md) — 身份句柄作为能力类型
+- [02-package-cell.md](../core/02-package-cell.md) — 发布者签名验证
+- [03-capsule-and-capability.md](../core/03-capsule-and-capability.md) — 身份句柄作为能力类型

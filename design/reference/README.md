@@ -6,19 +6,19 @@
 
 ## 阅读顺序
 
-1. [00-bypass-first-class.md](./ref/00-bypass-first-class.md)
+1. [00-bypass-first-class.md](./00-bypass-first-class.md)
    内核旁路为什么应成为第一公民，以及它和 Portal / Operation / syscall 的边界。
 
-2. [01-modern-driver-patterns.md](./ref/01-modern-driver-patterns.md)
+2. [01-modern-driver-patterns.md](./01-modern-driver-patterns.md)
    当前先进实现的架构模式：WDDM、Linux DRM、Fuchsia DFv2、DriverKit、io_uring、AF_XDP、SPDK、Asterinas。
 
-3. [02-driver-sdk-draft.md](./ref/02-driver-sdk-draft.md)
+3. [02-driver-sdk-draft.md](./02-driver-sdk-draft.md)
    Ousia Driver SDK 草案：对象模型、分层、运行时、恢复模型、工具链。
 
-4. [03-subsystem-path-matrix.md](./ref/03-subsystem-path-matrix.md)
+4. [03-subsystem-path-matrix.md](./03-subsystem-path-matrix.md)
    FS / GPU / NIC / NVMe 的统一路径矩阵：哪些走 Portal / Operation，哪些走 syscall，哪些走 bypass。
 
-这些 ref 文档是参考材料，不是最终规范。通信原语以 [discussions/17-communication-fabric.md](./discussions/17-communication-fabric.md) 为准；驱动和旁路设计以 [discussions/08-driver-and-kernel.md](./discussions/08-driver-and-kernel.md) 为准。
+这些 reference 文档是参考材料，不是最终规范。通信原语以 [core/09-communication-fabric.md](../core/09-communication-fabric.md) 为准；驱动和旁路设计以 [core/08-driver-and-kernel.md](../core/08-driver-and-kernel.md) 为准。
 
 ## 当前最重要的三条判断
 
