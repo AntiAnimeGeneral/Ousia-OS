@@ -8,9 +8,9 @@
 
 **用户态基础服务**：Rust。策略注入和受限扩展用 WASM 沙盒（过滤规则、观测 hook），不允许直接系统调用。
 
-**驱动**：SDK 提供 Rust 安全绑定。闭源 C 驱动由 Driver Host 隔离边界保护，不进入内核地址空间。第一阶段优先稳定设备资源句柄、IOQueue/IOBuffer、事件和 reset/revoke 这些对象语义，不急于冻结巨大的设备 API 面。
+**驱动**：SDK 提供 Rust 安全绑定。闭源 C 驱动由 Driver Host 隔离边界保护，不进入内核地址空间。第一阶段优先稳定设备资源句柄、IOQueue/IOBuffer、事件和 reset/revoke 这些对象语义，不急于冻结巨大的设备 API 面。驱动对象模型和 ABI 边界归属 [08-driver-and-kernel.md](./08-driver-and-kernel.md)，本文只讨论工程化要求。
 
-这里的 SDK 不应只是一层 syscall/FIDL 绑定，而应把**内核旁路作为第一公民的数据面能力**显式支持进去：
+从工程化角度看，SDK 不应只是一层 syscall/FIDL 绑定，而应把**内核旁路作为第一公民的数据面能力**显式支持进去：
 
 - queue/ring 映射和 descriptor helper
 - registered memory / frame pool / DMA 生命周期管理

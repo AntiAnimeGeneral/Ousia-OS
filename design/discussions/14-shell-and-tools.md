@@ -29,11 +29,11 @@ Nushell 是唯一解决了"管道不传文本"的现实 shell。`ls` 输出 tabl
 
 **Stream 是一等类型**：`stream.open "app-logs" | where level == "error" | follow`
 
-**配置不是 dotfile**：`config set shell.prompt "starship"` → 原子更新、可回滚（`config rollback`）。没有 `.bashrc`。
+**配置不是 dotfile**：Shell 只提供 `config set` / `config rollback` 这类交互入口；配置服务的事务、校验和同步模型归属 [15-environment-and-deps.md](./15-environment-and-deps.md)。没有 `.bashrc`。
 
 ## 实现策略
 
-第一阶段基于 Nushell 改造：替换 FS 层（走 Object Store）、进程启动（走 Capsule 管理器）、添加 `query`/`cap`/`config` 命令、添加 Stream 类型。第二阶段开发完全原生的 Shell。
+第一阶段基于 Nushell 改造：替换 FS 层（走 Object Store）、进程启动（走 Capsule 管理器）、添加 `query`/`cap`/`config` 命令、添加 Stream 类型。第二阶段开发完全原生的 Shell。Shell 不重新定义 Object Store、配置服务或 Communication Fabric，只暴露它们的交互界面。
 
 Linux 兼容域内保留 bash/POSIX shell，作为过渡而非终点。
 

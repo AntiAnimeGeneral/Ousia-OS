@@ -1,12 +1,16 @@
-# 09 — 异步模型与 mmap 的张力
+# 09 — 异步语义与 mmap 的张力
 
 > 对应 `target.md` §4.5
+
+## 本章定位
+
+本文不再定义 Ousia 的完整通信模型。统一通信基座、Portal / Operation / Continuation / EventPort / SharedQueue 等原语归属 [17-communication-fabric.md](./17-communication-fabric.md)。本文只讨论一个边界问题：Ousia 坚持异步优先时，如何与 `mmap` 这种硬件层面的同步缺页模型共存。
 
 ## 异步优先的含义
 
 不是语法层面（每个 API 返回 Future），是语义层面：长耗时操作必须可取消（>1ms 的都有取消入口）、等待不阻塞调度器（等待线程暂停但调度器可切换）、组合操作有显式语义（all/any/race/timeout）、背压是系统原语而非用户态框架的附加逻辑。
 
-内核提供统一的 EventPort / WaitSet：`wait(events, timeout)` / `signal` / `cancel`。Event 来源包括：Operation completion、Portal readable、TimerExpired、DeviceInterrupt、StreamReadable、MemoryObjectLost、QueueReadable、FenceReached、ProcessTerminated。更完整的通信基座见 [17-communication-fabric.md](./17-communication-fabric.md)。
+内核提供统一的 EventPort / WaitSet：`wait(events, timeout)` / `signal` / `cancel`。Event 来源包括 Operation completion、TimerExpired、DeviceInterrupt、StreamReadable、MemoryObjectLost、QueueReadable、FenceReached、ProcessTerminated 等。完整事件来源和通信路径见 [17-communication-fabric.md](./17-communication-fabric.md)。
 
 ## mmap 的同步本质
 
@@ -41,16 +45,6 @@
 
 **背压**：Stream 通过缓冲区水位线传导——消费者慢 → 生产者 `write()` 限速。跨进程传导：A 的 Stream 连到 B，B 的消费速度影响 A 的生产速度。
 
-## IPC 与异步请求
-
-Ousia 的 IPC 不以单一模型承载所有负载：
-
-- 小控制消息走 Portal fast call，避免队列化和额外缓冲。
-- 真正异步请求走 Operation + Continuation + EventPort，由系统统一管理 completion、cancel、timeout、late reply 和 pending quota。
-- 高频数据面走 SharedQueue / IOQueue + MemoryObject / IOBuffer + Event / Fence，避免逐消息 syscall 或 IPC。
-
-因此，“异步优先”不是要求每个调用都变成内核 buffered Channel，而是要求每个可能等待的 Operation 都有明确的完成、取消、超时和背压语义。
-
 ## 同步包装层
 
 提供语法糖（`fs::read_sync()` = `fs::read().block_on()`）方便简单脚本和初始化阶段使用。但不允许掩盖异步本质。理想情况下，构建工具链可静态检测：
@@ -61,9 +55,10 @@ Ousia 的 IPC 不以单一模型承载所有负载：
 ## 开放问题
 
 1. 取消的传播范围：已产生的副作用（部分写入）是否需要回滚？由谁负责？
-2. Operation 与 SharedQueue 的边界：多小的消息继续走 Operation，多大的消息强制走 SharedQueue 或 MemoryObject？
+2. mmap dirty page 与 Operation cancellation 的边界：当异步事务取消时，已产生的脏页由 Pager 丢弃、保留还是转为显式回滚？
 
 ## 相关章节
 
 - [06-pager-and-memory.md](./06-pager-and-memory.md) — Pager 超时和崩溃模型
 - [07-compute-and-scheduling.md](./07-compute-and-scheduling.md) — 缺页 stall 时的调度行为
+- [17-communication-fabric.md](./17-communication-fabric.md) — 统一通信基座
