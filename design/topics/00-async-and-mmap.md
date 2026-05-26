@@ -1,6 +1,6 @@
 # 00 — 异步语义与 mmap 的张力
 
-> 对应 `target.md` §4.5
+> 补充 [target.md](../target.md) 中异步优先目标与 mmap 缺页语义之间的边界。
 
 ## 本章定位
 

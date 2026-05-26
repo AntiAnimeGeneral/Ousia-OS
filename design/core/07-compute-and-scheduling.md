@@ -1,6 +1,6 @@
 # 07 — 计算域、调度与异构硬件
 
-> 对应 `target.md` §3.6 + §4.4 + §4.12
+> 承接 [target.md](../target.md) 中的 Compute Domain、执行等级、交互保活与异构资源目标。
 
 ## Compute Domain：统一异构资源描述
 

@@ -1,6 +1,6 @@
 # 04 — 环境与配置管理
 
-> 对应 `target.md` §1.1 + §3.1 + §3.2 + §4.1
+> 补充 [target.md](../target.md) 中运行环境、配置服务和安装污染治理目标。
 >
 > 依赖解析、Package Cell 生命周期、多版本并存的权威设计见 [02-package-cell.md](../core/02-package-cell.md)。本文只讨论 Capsule 启动时环境如何生成，以及系统/用户配置为什么不应退化为 shell 初始化脚本或配置文件碎片。
 

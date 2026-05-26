@@ -1,6 +1,6 @@
 # 04 — 服务图与 Bootstrap
 
-> 对应 `target.md` §3.4
+> 承接 [target.md](../target.md) 中的服务图、名字解析与系统组织目标。
 
 ## 讨论范围
 

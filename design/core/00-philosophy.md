@@ -1,6 +1,6 @@
 # 00 — 反 Unix 立场与设计总纲
 
-> 对应 `target.md` §0 + §2
+> 展开 [target.md](../target.md) 中的设计立场与目标约束。
 
 ## 讨论范围
 
@@ -160,6 +160,6 @@ Ousia OS 的立场：
 
 ## 相关章节
 
-- [01-pain-points.md](./01-pain-points.md) — 核心痛点详细分析
+- [pain-points.md](../pain-points.md) — 核心痛点详细分析
 - [03-capsule-and-capability.md](./03-capsule-and-capability.md) — 沙盒与能力模型
 - [06-roadmap.md](../topics/06-roadmap.md) — 路线图与非目标

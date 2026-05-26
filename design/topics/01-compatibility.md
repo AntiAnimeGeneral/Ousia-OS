@@ -1,6 +1,6 @@
 # 01 — Linux 兼容
 
-> 对应 `target.md` §4.7
+> 补充 [target.md](../target.md) 中 Compatibility Domain 与原生 API 边界目标。
 
 ## 为什么兼容层必须是隔离的，不是嵌入的
 

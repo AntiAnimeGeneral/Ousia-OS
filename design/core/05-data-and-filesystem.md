@@ -1,6 +1,6 @@
 # 05 — 数据抽象与文件系统
 
-> 对应 `target.md` §3.5 + §4.6
+> 承接 [target.md](../target.md) 中的数据语义、Object Store、Stream 与文件系统目标。
 > 深挖材料：[00-fs-vm.md](../deep-dives/00-fs-vm.md)（目录树分析与 FS+VM 整合）
 
 本文是数据抽象与文件系统的主设计。`deep-dives/00-fs-vm.md` 是深挖材料，用于展开目录树、索引和 FS/VM 边界的论证；若两者冲突，以本文和 `06-pager-and-memory.md` 的契约为准。

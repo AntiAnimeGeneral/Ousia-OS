@@ -1,6 +1,6 @@
 # 08 — 内核原语与通用驱动框架
 
-> 对应 `target.md` §4.3 + §4.9
+> 承接 [target.md](../target.md) 中的 Hardware Core、用户态驱动与设备旁路目标。
 
 ## 讨论范围
 

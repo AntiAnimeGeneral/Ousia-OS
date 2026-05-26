@@ -1,6 +1,6 @@
 # 09 — Communication Fabric
 
-> 对应 `target.md` §4.3 + §4.5
+> 承接 [target.md](../target.md) 中的统一通信、异步请求、事件等待与旁路数据面目标。
 >
 > 相关备忘录：[../research/00-ipc-sel4-fuchsia.md](../research/00-ipc-sel4-fuchsia.md)
 >

@@ -1,6 +1,6 @@
 # 06 — Pager-backed Memory Object
 
-> 对应 `target.md` §3.7
+> 承接 [target.md](../target.md) 中的 Pager-backed Memory Object 与 VM 协作目标。
 
 ## 讨论范围
 
