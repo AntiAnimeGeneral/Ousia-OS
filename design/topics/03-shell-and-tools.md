@@ -1,6 +1,6 @@
 # 03 — Shell 与交互环境
 
-> 补充 [target.md](../target.md) 中服务图、数据对象和异步工具体验目标。
+> 补充 [target.md](../target.md) 中服务图、数据对象和交互工具体验目标。
 
 ## 传统 Shell 为什么不行
 

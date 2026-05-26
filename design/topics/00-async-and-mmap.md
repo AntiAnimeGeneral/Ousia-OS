@@ -1,14 +1,16 @@
-# 00 — 异步语义与 mmap 的张力
+# 00 — 同步、异步与 mmap 的边界
 
-> 补充 [target.md](../target.md) 中异步优先目标与 mmap 缺页语义之间的边界。
+> 补充 [target.md](../target.md) 中同步、异步、等待与 `mmap` 缺页语义之间的边界。
 
 ## 本章定位
 
-本文不再定义 Ousia 的完整通信模型。统一通信基座、Portal / Operation / Continuation / EventPort / SharedQueue 等原语归属 [02-communication-fabric.md](../core/02-communication-fabric.md)。本文只讨论一个边界问题：Ousia 坚持异步优先时，如何与 `mmap` 这种硬件层面的同步缺页模型共存。
+本文不再定义 Ousia 的完整通信模型。统一通信基座、Portal / Operation / Continuation / EventPort / SharedQueue 等原语归属 [02-communication-fabric.md](../core/02-communication-fabric.md)。本文只讨论一个边界问题：同步调用、异步 Operation、事件等待和 `mmap` 这种硬件层面的同步缺页模型如何作为一等抽象共存。
 
-## 异步优先的含义
+## 同步与异步都是一等抽象
 
-不是语法层面（每个 API 返回 Future），是语义层面：长耗时操作必须可取消（>1ms 的都有取消入口）、等待不阻塞调度器（等待线程暂停但调度器可切换）、组合操作有显式语义（all/any/race/timeout）、背压是系统原语而非用户态框架的附加逻辑。
+Ousia OS 不把所有 API 强行做成 Future，也不把所有请求压回阻塞调用。正确边界是：短控制面 RPC 可以是同步 fast call；可能等待外部事件的工作应能表达为异步 Operation；高吞吐数据面走 SharedQueue / IOQueue；内存映射和缺页保留硬件同步语义。
+
+系统需要统一治理的是等待、取消、超时、背压、优先级传播和观测，而不是统一成某一种编程范式。长耗时操作应尽量提供可取消入口（>1ms 的路径原则上都应说明取消点或不可取消理由）、等待不阻塞调度器（等待线程暂停但调度器可切换）、组合操作有显式语义（all/any/race/timeout）、背压是系统原语而非用户态框架的附加逻辑。
 
 内核提供统一的 EventPort / WaitSet：`wait(events, timeout)` / `signal` / `cancel`。Event 来源包括 Operation completion、TimerExpired、DeviceInterrupt、StreamReadable、MemoryObjectLost、QueueReadable、FenceReached、ProcessTerminated 等。完整事件来源和通信路径见 [02-communication-fabric.md](../core/02-communication-fabric.md)。
 
@@ -16,7 +18,7 @@
 
 `*ptr = 42` 是 CPU 指令，不经过系统调用，也不能返回 Future。缺页时线程被硬件阻塞——这是 CPU 的硬性行为，软件无法改变。mmap 在访问未映射页时与同步阻塞 IO 没有本质区别——线程完全 stall，直到 Pager 响应。
 
-## 共存策略
+## 路径选择策略
 
 | 场景           | 推荐模型                         | 原因                                             |
 | -------------- | -------------------------------- | ------------------------------------------------ |
@@ -31,7 +33,7 @@
 
 **关键保证**：mmap 只阻塞使用它的 Capsule 的线程，不阻塞整个系统。BG 任务因缺页 stall 时，调度器立即切换到其他可运行线程。BG 的缺页请求被 Pager 以低优先级处理。
 
-## 异步原语：取消、超时、背压
+## 等待治理：取消、超时、背压
 
 **取消**是协作式的——内核发送取消信号，操作在下一个安全点检查并响应。取消的语义由操作类型决定：
 
@@ -41,13 +43,13 @@
 
 强制取消仅用于 Capsule 被杀死时的资源清理。
 
-**超时**：每个异步操作可附加 timeout。超时后操作被取消、资源释放、Stream 仍处于可用状态。
+**超时**：每个可等待操作可附加 timeout。超时后操作被取消、资源释放、Stream 仍处于可用状态。同步 fast call 如果可能长时间等待，应显式降级为可等待 Operation 或声明不可取消边界。
 
 **背压**：Stream 通过缓冲区水位线传导——消费者慢 → 生产者 `write()` 限速。跨进程传导：A 的 Stream 连到 B，B 的消费速度影响 A 的生产速度。
 
-## 同步包装层
+## 同步 API 的位置
 
-提供语法糖（`fs::read_sync()` = `fs::read().block_on()`）方便简单脚本和初始化阶段使用。但不允许掩盖异步本质。理想情况下，构建工具链可静态检测：
+同步 API 不是低等包装。短 RPC、初始化阶段、脚本式工具和明确可接受阻塞的后台任务都可以使用同步接口。限制不在于“同步是否被允许”，而在于它是否掩盖了长时间等待、不可取消副作用或交互线程上的调度风险。理想情况下，构建工具链可静态检测：
 
 - Interactive 等级的 Capsule 中使用了同步 IO → 编译警告
 - 事件循环线程中调用 `block_on()` → 编译错误
