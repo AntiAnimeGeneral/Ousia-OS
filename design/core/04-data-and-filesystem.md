@@ -1,9 +1,9 @@
-# 05 — 数据抽象与文件系统
+# 04 — 数据抽象与文件系统
 
 > 承接 [target.md](../target.md) 中的数据语义、Object Store、Stream 与文件系统目标。
 > 深挖材料：[00-fs-vm.md](../deep-dives/00-fs-vm.md)（目录树分析与 FS+VM 整合）
 
-本文是数据抽象与文件系统的主设计。`deep-dives/00-fs-vm.md` 是深挖材料，用于展开目录树、索引和 FS/VM 边界的论证；若两者冲突，以本文和 `06-pager-and-memory.md` 的契约为准。
+本文是数据抽象与文件系统的主设计。`deep-dives/00-fs-vm.md` 是深挖材料，用于展开目录树、索引和 FS/VM 边界的论证；若两者冲突，以本文和 `05-pager-and-memory.md` 的契约为准。
 
 ## 为什么不用"目录树 + 字节流"
 
@@ -58,4 +58,4 @@ Ousia OS 把这六个角色拆成了四个不同的一等抽象：
 ## 相关章节
 
 - [00-fs-vm.md](../deep-dives/00-fs-vm.md) — 目录树分析、索引设计、结构化类型边界、FS+VM 整合
-- [06-pager-and-memory.md](./06-pager-and-memory.md) — Pager 细节
+- [05-pager-and-memory.md](./05-pager-and-memory.md) — Pager 细节

@@ -1,4 +1,4 @@
-# 07 — 计算域、调度与异构硬件
+# 06 — 计算域、调度与异构硬件
 
 > 承接 [target.md](../target.md) 中的 Compute Domain、执行等级、交互保活与异构资源目标。
 
@@ -56,5 +56,5 @@ GPU 调度不是黑盒。Ousia OS 理解 GPU 内部多引擎（Graphics/Compute/
 
 ## 相关章节
 
-- [08-driver-and-kernel.md](./08-driver-and-kernel.md) — GPU 驱动与调度器接口
+- [07-driver-and-kernel.md](./07-driver-and-kernel.md) — GPU 驱动与调度器接口
 - [00-async-and-mmap.md](../topics/00-async-and-mmap.md) — 取消和背压的异步语义

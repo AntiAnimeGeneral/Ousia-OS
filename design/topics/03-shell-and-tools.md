@@ -45,6 +45,6 @@ Linux 兼容域内保留 bash/POSIX shell，作为过渡而非终点。
 
 ## 相关章节
 
-- [04-service-graph.md](../core/04-service-graph.md) — 服务发现
-- [05-data-and-filesystem.md](../core/05-data-and-filesystem.md) — Object Store 交互
+- [03-service-graph.md](../core/03-service-graph.md) — 服务发现
+- [04-data-and-filesystem.md](../core/04-data-and-filesystem.md) — Object Store 交互
 - [04-environment-and-config.md](./04-environment-and-config.md) — 配置不是文件

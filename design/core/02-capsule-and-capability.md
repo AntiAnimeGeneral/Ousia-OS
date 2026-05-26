@@ -1,4 +1,4 @@
-# 03 — 沙盒与能力模型
+# 02 — 沙盒与能力模型
 
 > 承接 [target.md](../target.md) 中的默认沙盒、显式授权与能力权限目标。
 
@@ -182,6 +182,6 @@ Ousia OS:
 
 ## 相关章节
 
-- [02-package-cell.md](./02-package-cell.md) — Cell 如何声明能力需求
-- [04-service-graph.md](./04-service-graph.md) — 通过 Service Graph 发现和授权服务
-- [08-driver-and-kernel.md](./08-driver-and-kernel.md) — 设备能力句柄和 IOMMU
+- [01-package-cell.md](./01-package-cell.md) — Cell 如何声明能力需求
+- [03-service-graph.md](./03-service-graph.md) — 通过 Service Graph 发现和授权服务
+- [07-driver-and-kernel.md](./07-driver-and-kernel.md) — 设备能力句柄和 IOMMU

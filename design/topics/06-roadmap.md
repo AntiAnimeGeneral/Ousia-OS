@@ -52,25 +52,25 @@
 
 ### 顶层入口
 
-| 文件                                      | 归属                         |
-| ----------------------------------------- | ---------------------------- |
-| [pain-points.md](../pain-points.md)       | 问题定义与痛点枚举           |
-| [target.md](../target.md)                 | 目标、约束、判断标准与阅读线 |
-| [glossary.md](../glossary.md)             | 项目自造术语和设计术语       |
+| 文件                                | 归属                         |
+| ----------------------------------- | ---------------------------- |
+| [pain-points.md](../pain-points.md) | 问题定义与痛点枚举           |
+| [target.md](../target.md)           | 目标、约束、判断标准与阅读线 |
+| [glossary.md](../glossary.md)       | 项目自造术语和设计术语       |
 
 ### 主线设计
 
 | #   | 文件                                                                 | 归属                         |
 | --- | -------------------------------------------------------------------- | ---------------------------- |
 | 00  | [00-philosophy.md](../core/00-philosophy.md)                         | 设计立场与顶层原则           |
-| 02  | [02-package-cell.md](../core/02-package-cell.md)                     | 软件单元、依赖、生命周期     |
-| 03  | [03-capsule-and-capability.md](../core/03-capsule-and-capability.md) | 运行隔离与能力权限           |
-| 04  | [04-service-graph.md](../core/04-service-graph.md)                   | 服务发现、版本协商、启动     |
-| 05  | [05-data-and-filesystem.md](../core/05-data-and-filesystem.md)       | Object Store / Stream 主设计 |
-| 06  | [06-pager-and-memory.md](../core/06-pager-and-memory.md)             | Pager-backed Memory Object   |
-| 07  | [07-compute-and-scheduling.md](../core/07-compute-and-scheduling.md) | 调度、计算域、异构资源       |
-| 08  | [08-driver-and-kernel.md](../core/08-driver-and-kernel.md)           | 内核/驱动边界与 IO 原语      |
-| 09  | [09-communication-fabric.md](../core/09-communication-fabric.md)     | 统一通信基座                 |
+| 01  | [01-package-cell.md](../core/01-package-cell.md)                     | 软件单元、依赖、生命周期     |
+| 02  | [02-capsule-and-capability.md](../core/02-capsule-and-capability.md) | 运行隔离与能力权限           |
+| 03  | [03-service-graph.md](../core/03-service-graph.md)                   | 服务发现、版本协商、启动     |
+| 04  | [04-data-and-filesystem.md](../core/04-data-and-filesystem.md)       | Object Store / Stream 主设计 |
+| 05  | [05-pager-and-memory.md](../core/05-pager-and-memory.md)             | Pager-backed Memory Object   |
+| 06  | [06-compute-and-scheduling.md](../core/06-compute-and-scheduling.md) | 调度、计算域、异构资源       |
+| 07  | [07-driver-and-kernel.md](../core/07-driver-and-kernel.md)           | 内核/驱动边界与 IO 原语      |
+| 08  | [08-communication-fabric.md](../core/08-communication-fabric.md)     | 统一通信基座                 |
 
 ### 边界专题
 
@@ -97,10 +97,10 @@
 
 为避免同一设计在多个章节各自演化，后续新增内容按下面规则归属：
 
-- **通信、异步请求、事件等待、服务间旁路队列**：归属 [09-communication-fabric.md](../core/09-communication-fabric.md)。其他章节只说明如何使用这些原语。
-- **Package Cell、依赖解析、多版本并存、生命周期**：归属 [02-package-cell.md](../core/02-package-cell.md)。环境章节只消费解析结果。
+- **通信、异步请求、事件等待、服务间旁路队列**：归属 [08-communication-fabric.md](../core/08-communication-fabric.md)。其他章节只说明如何使用这些原语。
+- **Package Cell、依赖解析、多版本并存、生命周期**：归属 [01-package-cell.md](../core/01-package-cell.md)。环境章节只消费解析结果。
 - **运行环境、用户/系统配置、配置服务**：归属 [04-environment-and-config.md](./04-environment-and-config.md)。Shell 章节只描述交互命令。
-- **Object Store / Stream 的主设计**：归属 [05-data-and-filesystem.md](../core/05-data-and-filesystem.md)。[00-fs-vm.md](../deep-dives/00-fs-vm.md) 只放调研、论证和细化方案。
-- **Pager-backed Memory Object 契约**：归属 [06-pager-and-memory.md](../core/06-pager-and-memory.md)。FS 深挖只讨论它如何被存储服务使用。
-- **内核/驱动边界、IOQueue/IOBuffer/Doorbell/Fence**：归属 [08-driver-and-kernel.md](../core/08-driver-and-kernel.md)。`reference/` 下文档只保留参考、矩阵和草案。
+- **Object Store / Stream 的主设计**：归属 [04-data-and-filesystem.md](../core/04-data-and-filesystem.md)。[00-fs-vm.md](../deep-dives/00-fs-vm.md) 只放调研、论证和细化方案。
+- **Pager-backed Memory Object 契约**：归属 [05-pager-and-memory.md](../core/05-pager-and-memory.md)。FS 深挖只讨论它如何被存储服务使用。
+- **内核/驱动边界、IOQueue/IOBuffer/Doorbell/Fence**：归属 [07-driver-and-kernel.md](../core/07-driver-and-kernel.md)。`reference/` 下文档只保留参考、矩阵和草案。
 - **实现语言、构建、测试、更新**：归属 [02-engineering.md](./02-engineering.md)。不要在工程章节重复具体子系统设计。

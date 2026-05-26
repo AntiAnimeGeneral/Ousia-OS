@@ -161,5 +161,5 @@ Ousia OS 的立场：
 ## 相关章节
 
 - [pain-points.md](../pain-points.md) — 核心痛点详细分析
-- [03-capsule-and-capability.md](./03-capsule-and-capability.md) — 沙盒与能力模型
+- [02-capsule-and-capability.md](./02-capsule-and-capability.md) — 沙盒与能力模型
 - [06-roadmap.md](../topics/06-roadmap.md) — 路线图与非目标
