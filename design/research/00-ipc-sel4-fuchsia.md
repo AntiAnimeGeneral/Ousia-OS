@@ -1357,7 +1357,7 @@ Fuchsia 完全遵循了同一模式——VMO 就是 seL4 Frame 的对应物：
 ### 从 Fuchsia 学到的
 
 - **结构化消息的类型安全是有真实价值的**。FIDL 的编译时保证消除了整类运行时错误。Ousia 不需要全套 FIDL，但应提供自描述消息格式（如 tagged union + Cap'n Proto 风格的零拷贝布局）。
-- **Channel 的双向性 + txid 匹配是异步请求-响应的优雅方案**。Ousia 的异步 Operation 可以借鉴 txid 机制，但这只覆盖长耗时请求路径；短同步 fast call、共享队列和内存映射仍是一等路径。
+- **Channel 的双向性 + txid 匹配是异步请求-响应的优雅方案**。Ousia 如果选择异步优先，可以借鉴 txid 机制——无论是内核实现还是用户态实现。
 - **对象信号（per-object signals）比独立 Notification 对象更便利**。`wait_many` 使得单线程事件循环成为可能。但代价是信号状态与对象生命周期耦合——Ousia 需要权衡。
 
 ### 重新审视 Ousia 的设计选择（修订结论）

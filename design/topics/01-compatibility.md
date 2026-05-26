@@ -1,6 +1,6 @@
-# 01 — Linux 兼容
+# 10 — Linux 兼容
 
-> 补充 [target.md](../target.md) 中 Compatibility Domain 与原生 API 边界目标。
+> 对应 `target.md` §4.7
 
 ## 为什么兼容层必须是隔离的，不是嵌入的
 
@@ -41,4 +41,4 @@ Linux 兼容域 (轻量 VM)
 
 - [00-philosophy.md](../core/00-philosophy.md) — 兼容层不污染原生层
 - [06-service-graph.md](../core/06-service-graph.md) — 网关作为特殊服务
-- [04-environment-and-config.md](./04-environment-and-config.md) — 兼容域内的传统库环境
+- [15-environment-and-deps.md](./04-environment-and-config.md) — 兼容域内的传统库环境
