@@ -1,4 +1,4 @@
-# 07 — 内核原语与通用驱动框架
+# 04 — 内核原语与通用驱动框架
 
 > 承接 [target.md](../target.md) 中的 Hardware Core、用户态驱动与设备旁路目标。
 
@@ -228,7 +228,7 @@ IOBuffer {
 - **IOBuffer** 面向设备可达性、pin 生命周期和 DMA 授权
 - 两者可以共享页框和映射元数据，但第一阶段不强行合并成单一万能类型
 
-这样才能和 [05-pager-and-memory.md](./05-pager-and-memory.md) 的 VM 语义保持一致。
+这样才能和 [03-pager-and-memory.md](./03-pager-and-memory.md) 的 VM 语义保持一致。
 
 ### 5.4 IOQueue
 
@@ -373,8 +373,8 @@ App / Device Service
 
 ## 相关章节
 
-- [02-capsule-and-capability.md](./02-capsule-and-capability.md) — 设备能力句柄和资源授权
-- [05-pager-and-memory.md](./05-pager-and-memory.md) — Memory Object 与 DMA/注册内存的边界
-- [06-compute-and-scheduling.md](./06-compute-and-scheduling.md) — GPU 调度、功耗预算与执行等级
+- [01-capsule-and-capability.md](./01-capsule-and-capability.md) — 设备能力句柄和资源授权
+- [03-pager-and-memory.md](./03-pager-and-memory.md) — Memory Object 与 DMA/注册内存的边界
+- [05-compute-and-scheduling.md](./05-compute-and-scheduling.md) — GPU 调度、功耗预算与执行等级
 - [02-engineering.md](../topics/02-engineering.md) — 驱动 SDK、回放测试和 ABI 收敛策略
 - [06-roadmap.md](../topics/06-roadmap.md) — 驱动框架原型的分阶段落地

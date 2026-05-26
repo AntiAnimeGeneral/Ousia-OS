@@ -53,5 +53,5 @@ Capsule 持有身份句柄，在与其他服务交互时出示。内核不实现
 
 ## 相关章节
 
-- [01-package-cell.md](../core/01-package-cell.md) — 发布者签名验证
-- [02-capsule-and-capability.md](../core/02-capsule-and-capability.md) — 身份句柄作为能力类型
+- [08-package-cell.md](../core/08-package-cell.md) — 发布者签名验证
+- [01-capsule-and-capability.md](../core/01-capsule-and-capability.md) — 身份句柄作为能力类型

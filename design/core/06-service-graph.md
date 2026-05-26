@@ -1,4 +1,4 @@
-# 03 — 服务图与 Bootstrap
+# 06 — 服务图与 Bootstrap
 
 > 承接 [target.md](../target.md) 中的服务图、名字解析与系统组织目标。
 
@@ -184,6 +184,6 @@ NameService.register({
 ## 相关章节
 
 - [00-philosophy.md](./00-philosophy.md) — 反"路径即身份"的哲学立场
-- [01-package-cell.md](./01-package-cell.md) — Cell 如何声明服务暴露
-- [02-capsule-and-capability.md](./02-capsule-and-capability.md) — 能力句柄传递
+- [08-package-cell.md](./08-package-cell.md) — Cell 如何声明服务暴露
+- [01-capsule-and-capability.md](./01-capsule-and-capability.md) — 能力句柄传递
 - [06-roadmap.md](../topics/06-roadmap.md) — 名字服务在第一阶段的落地

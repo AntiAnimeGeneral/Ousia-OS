@@ -18,7 +18,7 @@
 4. [03-subsystem-path-matrix.md](./03-subsystem-path-matrix.md)
    FS / GPU / NIC / NVMe 的统一路径矩阵：哪些走 Portal / Operation，哪些走 syscall，哪些走 bypass。
 
-这些 reference 文档是参考材料，不是最终规范。通信原语以 [core/08-communication-fabric.md](../core/08-communication-fabric.md) 为准；驱动和旁路设计以 [core/07-driver-and-kernel.md](../core/07-driver-and-kernel.md) 为准。
+这些 reference 文档是参考材料，不是最终规范。通信原语以 [core/02-communication-fabric.md](../core/02-communication-fabric.md) 为准；驱动和旁路设计以 [core/04-driver-and-kernel.md](../core/04-driver-and-kernel.md) 为准。
 
 ## 当前最重要的三条判断
 

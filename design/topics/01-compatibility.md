@@ -40,5 +40,5 @@ Linux 兼容域 (轻量 VM)
 ## 相关章节
 
 - [00-philosophy.md](../core/00-philosophy.md) — 兼容层不污染原生层
-- [03-service-graph.md](../core/03-service-graph.md) — 网关作为特殊服务
+- [06-service-graph.md](../core/06-service-graph.md) — 网关作为特殊服务
 - [04-environment-and-config.md](./04-environment-and-config.md) — 兼容域内的传统库环境

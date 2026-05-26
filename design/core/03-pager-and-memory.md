@@ -1,4 +1,4 @@
-# 05 — Pager-backed Memory Object
+# 03 — Pager-backed Memory Object
 
 > 承接 [target.md](../target.md) 中的 Pager-backed Memory Object 与 VM 协作目标。
 
@@ -189,6 +189,6 @@ Pager 可以主动：
 
 ## 相关章节
 
-- [04-data-and-filesystem.md](./04-data-and-filesystem.md) — 存储核心服务如何使用 Pager
-- [06-compute-and-scheduling.md](./06-compute-and-scheduling.md) — 内存带宽调度
-- [07-driver-and-kernel.md](./07-driver-and-kernel.md) — DMA 与内存注册
+- [07-data-and-filesystem.md](./07-data-and-filesystem.md) — 存储核心服务如何使用 Pager
+- [05-compute-and-scheduling.md](./05-compute-and-scheduling.md) — 内存带宽调度
+- [04-driver-and-kernel.md](./04-driver-and-kernel.md) — DMA 与内存注册

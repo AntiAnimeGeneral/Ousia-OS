@@ -1,10 +1,10 @@
-# 08 — Communication Fabric
+# 02 — Communication Fabric
 
 > 承接 [target.md](../target.md) 中的统一通信、异步请求、事件等待与旁路数据面目标。
 >
 > 相关备忘录：[../research/00-ipc-sel4-fuchsia.md](../research/00-ipc-sel4-fuchsia.md)
 >
-> 本文是通信语义的主设计。驱动队列的设备侧细节归属 [07-driver-and-kernel.md](./07-driver-and-kernel.md)，异步与 `mmap` 的张力归属 [00-async-and-mmap.md](../topics/00-async-and-mmap.md)。
+> 本文是通信语义的主设计。驱动队列的设备侧细节归属 [04-driver-and-kernel.md](./04-driver-and-kernel.md)，异步与 `mmap` 的张力归属 [00-async-and-mmap.md](../topics/00-async-and-mmap.md)。
 
 ## 讨论范围
 
