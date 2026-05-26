@@ -4,7 +4,7 @@
 
 项目自造术语和重新定义过的设计术语见 [glossary.md](./glossary.md)。除非特别说明，Portal、Operation、Continuation、Communication Fabric 等词都是 Ousia OS 的设计术语，不指代某个现有系统的专有技术。
 
-目前依然是草案，随时接受更好的重构。
+本文作为设计入口和主线索引，约束各专题文档的目标边界与阅读顺序。
 
 ## 阅读顺序
 

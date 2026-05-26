@@ -93,7 +93,7 @@
 - **通信、异步请求、事件等待、服务间旁路队列**：归属 [02-communication-fabric.md](../core/02-communication-fabric.md)。其他章节只说明如何使用这些原语。
 - **Package Cell、依赖解析、多版本并存、生命周期**：归属 [08-package-cell.md](../core/08-package-cell.md)。环境章节只消费解析结果。
 - **运行环境、用户/系统配置、配置服务**：归属 [04-environment-and-config.md](./04-environment-and-config.md)。Shell 章节只描述交互命令。
-- **Object Store / Stream 的主设计**：归属 [07-data-and-filesystem.md](../core/07-data-and-filesystem.md)。[00-fs-vm.md](../deep-dives/00-fs-vm.md) 只放调研、论证和细化方案。
+- **Object Store / Stream 的主设计**：归属 [07-data-and-filesystem.md](../core/07-data-and-filesystem.md)。[00-fs-vm.md](../deep-dives/00-fs-vm.md) 承载调研、论证和细化方案。
 - **Pager-backed Memory Object 契约**：归属 [03-pager-and-memory.md](../core/03-pager-and-memory.md)。FS 深挖只讨论它如何被存储服务使用。
-- **内核/驱动边界、IOQueue/IOBuffer/Doorbell/Fence**：归属 [04-driver-and-kernel.md](../core/04-driver-and-kernel.md)。`ref/` 下文档只保留参考、矩阵和草案。
+- **内核/驱动边界、IOQueue/IOBuffer/Doorbell/Fence**：归属 [04-driver-and-kernel.md](../core/04-driver-and-kernel.md)。`reference/` 下文档承载背景材料、路径矩阵和 SDK 轮廓。
 - **实现语言、构建、测试、更新**：归属 [02-engineering.md](./02-engineering.md)。不要在工程章节重复具体子系统设计。

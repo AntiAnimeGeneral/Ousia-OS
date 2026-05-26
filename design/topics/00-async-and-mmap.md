@@ -4,7 +4,7 @@
 
 ## 本章定位
 
-本文不再定义 Ousia 的完整通信模型。统一通信基座、Portal / Operation / Continuation / EventPort / SharedQueue 等原语归属 [02-communication-fabric.md](../core/02-communication-fabric.md)。本文只讨论一个边界问题：同步调用、异步 Operation、事件等待和 `mmap` 这种硬件层面的同步缺页模型如何作为一等抽象共存。
+统一通信基座、Portal / Operation / Continuation / EventPort / SharedQueue 等原语归属 [02-communication-fabric.md](../core/02-communication-fabric.md)。本文聚焦一个边界问题：同步调用、异步 Operation、事件等待和 `mmap` 这种硬件层面的同步缺页模型如何作为一等抽象共存。
 
 ## 同步与异步都是一等抽象
 

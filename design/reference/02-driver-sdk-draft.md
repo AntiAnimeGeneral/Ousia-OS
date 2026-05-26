@@ -1,8 +1,8 @@
-# 02 — Ousia Driver SDK 草案
+# 02 — Ousia Driver SDK 轮廓
 
 ## 讨论范围
 
-本文不是最终 API 规格，而是 Driver SDK 的草案轮廓。目标是先稳定对象模型和分层，再决定长期 ABI 细节。
+本文聚焦 Driver SDK 的对象模型、分层、运行时、恢复模型和工具链边界。长期 ABI 细节由对象语义和故障契约稳定后收敛。
 
 ## 1. 设计目标
 
@@ -67,7 +67,7 @@ Ousia Driver SDK 需要同时满足四个目标：
 
 推荐接口风格：syscall + Portal / Operation 协作
 
-## 4. SDK 包结构草案
+## 4. SDK 包结构
 
 ### ousia-driver-core
 

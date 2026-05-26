@@ -28,7 +28,7 @@ Ousia 的通信系统必须同时满足五个目标：
 
 ## 2. 核心原语族
 
-Ousia 的通信基座暂称 **Communication Fabric**。这是 Ousia 文档中的设计术语，不指代现有某个具体技术或产品。
+Ousia 的通信基座称为 **Communication Fabric**。这是 Ousia 文档中的设计术语，不指代现有某个具体技术或产品。
 
 ### 2.1 Portal
 

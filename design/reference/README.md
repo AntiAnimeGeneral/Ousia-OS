@@ -1,8 +1,6 @@
 # 参考索引：高性能驱动与内核旁路
 
-本文档改为目录分治。目的不是把所有判断塞进一篇长文，而是把 Ousia 当前关于高性能驱动、kernel bypass、SDK 和子系统路径划分的探索拆成可独立 review 的几块。
-
-当前所有内容都应视为**待定稿**。
+本目录按主题组织 Ousia 关于高性能驱动、kernel bypass、SDK 和子系统路径划分的参考材料，便于独立阅读和 review。
 
 ## 阅读顺序
 
@@ -13,12 +11,12 @@
    当前先进实现的架构模式：WDDM、Linux DRM、Fuchsia DFv2、DriverKit、io_uring、AF_XDP、SPDK、Asterinas。
 
 3. [02-driver-sdk-draft.md](./02-driver-sdk-draft.md)
-   Ousia Driver SDK 草案：对象模型、分层、运行时、恢复模型、工具链。
+   Ousia Driver SDK 轮廓：对象模型、分层、运行时、恢复模型、工具链。
 
 4. [03-subsystem-path-matrix.md](./03-subsystem-path-matrix.md)
    FS / GPU / NIC / NVMe 的统一路径矩阵：哪些走 Portal / Operation，哪些走 syscall，哪些走 bypass。
 
-这些 reference 文档是参考材料，不是最终规范。通信原语以 [core/02-communication-fabric.md](../core/02-communication-fabric.md) 为准；驱动和旁路设计以 [core/04-driver-and-kernel.md](../core/04-driver-and-kernel.md) 为准。
+这些 reference 文档提供背景、比较和草图。通信原语由 [core/02-communication-fabric.md](../core/02-communication-fabric.md) 定义；驱动和旁路设计由 [core/04-driver-and-kernel.md](../core/04-driver-and-kernel.md) 定义。
 
 ## 当前最重要的三条判断
 

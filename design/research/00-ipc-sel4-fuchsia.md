@@ -2,7 +2,7 @@
 
 > 备忘录 · 2026-05-25
 >
-> 状态：调研备忘录。本文前半部分用于理解 seL4/Fuchsia 的 IPC 设计；Ousia 的当前收束方案以 [02-communication-fabric.md](../core/02-communication-fabric.md) 为准。本文后半部分保留了若干历史推导，并在“对 Ousia OS 的启示”中标记了修订结论。
+> 状态：调研备忘录。本文用于理解 seL4/Fuchsia 的 IPC 设计，并提炼 Ousia Communication Fabric 的参考约束。规范性设计见 [02-communication-fabric.md](../core/02-communication-fabric.md)。
 
 ## 为什么 IPC 是微内核/能力系统的命门
 
@@ -1360,11 +1360,11 @@ Fuchsia 完全遵循了同一模式——VMO 就是 seL4 Frame 的对应物：
 - **Channel 的双向性 + txid 匹配是异步请求-响应的优雅方案**。Ousia 如果选择异步优先，可以借鉴 txid 机制——无论是内核实现还是用户态实现。
 - **对象信号（per-object signals）比独立 Notification 对象更便利**。`wait_many` 使得单线程事件循环成为可能。但代价是信号状态与对象生命周期耦合——Ousia 需要权衡。
 
-### 重新审视 Ousia 的设计选择（修订结论）
+### Ousia 的设计选择
 
-结合本文档讨论和后续 Communication Fabric 设计，Ousia OS 的关键选择不应再表述为“同步 IPC vs 异步 Channel”的二选一，也不应表述为“同步 Endpoint + SaveCaller 足以覆盖所有异步场景”。更准确的结论是：Ousia 需要统一通信原语族，让小 RPC、异步请求、流式通信、内核旁路和设备队列各走最低成本路径，同时共享同一套能力、等待、取消、背压、调度和观测语义。
+Ousia OS 的关键选择不是“同步 IPC vs 异步 Channel”的二选一，也不是“同步 Endpoint + SaveCaller 覆盖所有异步场景”。Ousia 需要统一通信原语族，让小 RPC、异步请求、流式通信、内核旁路和设备队列各走最低成本路径，同时共享同一套能力、等待、取消、背压、调度和观测语义。
 
-修订后的选择如下：
+设计选择如下：
 
 | 选择             | 选项 A (seL4 风格)     | 选项 B (Fuchsia 风格)      | 本文倾向                                                                         |
 | ---------------- | ---------------------- | -------------------------- | -------------------------------------------------------------------------------- |
@@ -1393,18 +1393,18 @@ Ousia 的通信路径应按负载类型分流：
 
 因此，“异步 IPC”在 Ousia 中不是 Fuchsia Channel 的同义词。它指 Operation 生命周期、Continuation 回复权和 EventPort completion routing 是系统级语义。txid、Future 表、IDL schema 和服务框架仍在用户态。
 
-### 对早期推导的修正
+### 极简原语路线的边界
 
-下面“历史推导”“追问一/二/三/四/五”保留为早期推导和性能直觉材料，但不再代表 Ousia 的最终通信设计。尤其是以下判断已被修订：
+仅用少量极简原语覆盖全部通信场景会丢失若干系统级语义。需要特别避免以下收缩：
 
 - “Endpoint + Notification + MemoryObject + SaveCaller，仅此四种原语”过窄，缺少 Operation、EventPort/WaitSet、SharedQueue、Fence/Timeline 对统一生态和旁路通信的支撑。
 - “用同步 Call + 线程池模拟 call_async”不应作为真正异步请求的主路径。真正异步请求应走 Operation + Continuation + EventPort。
-- “内核异步 IPC 队列不需要”仍可理解为“不照搬通用 buffered Channel”，但 Ousia 必须提供原生异步 Operation 生命周期和 completion routing。
+- “内核异步 IPC 队列不需要”可以理解为“不照搬通用 buffered Channel”，但 Ousia 必须提供原生异步 Operation 生命周期和 completion routing。
 - 性能数字只作为数量级直觉，不应作为 ABI 或系统承诺。
 
-### 过时推导摘要：两路径、SaveCaller 与线程池异步
+### 两路径、SaveCaller 与线程池异步的经验
 
-早期推导曾尝试用 `Endpoint + Notification + MemoryObject + SaveCaller` 作为完整 IPC 基座，并把异步调用主要放到用户态框架中实现。这条路线保留了几个有价值的洞见：
+一种极简路线是用 `Endpoint + Notification + MemoryObject + SaveCaller` 作为完整 IPC 基座，并把异步调用主要放到用户态框架中实现。这条路线提供了几个有价值的洞见：
 
 - 小消息 RPC 应尽量走直接交接，避免进入通用内核消息队列。
 - 回复权应对象化，服务端可以保存并稍后完成请求。
@@ -1412,14 +1412,14 @@ Ousia 的通信路径应按负载类型分流：
 - 线程池包装阻塞 `Call` 不是零成本方案，不能作为真正异步请求的主路径。
 - 不应照搬通用 buffered Channel，把所有通信都压进内核消息队列。
 
-但这条路线现在已经过时，不能作为 Ousia 的最终通信设计。原因是：
+但这条路线不足以作为 Ousia 的完整通信设计。原因是：
 
 - 它把 Operation 生命周期、completion routing、cancel、timeout、late reply、pending quota 等系统级语义过多推给用户态框架。
 - 它没有把 EventPort / WaitSet 作为统一等待聚合器，导致 async runtime、设备事件、MemoryObject lost、Fence 等事件容易各自为政。
 - 它没有把 SharedQueue / IOQueue 作为普通服务通信和设备通信的共同旁路基座。
 - 它没有把 Fence / Timeline 提升为跨队列、跨设备、跨 Capsule 的统一同步对象。
 
-因此，本备忘录的当前结论以 [02-communication-fabric.md](../core/02-communication-fabric.md) 为准：Ousia 不照搬通用 buffered Channel，也不退回“四个极简 IPC 原语”。Ousia 提供统一 Communication Fabric：Portal fast path、Operation lifecycle、Continuation reply right、EventPort waiting、SharedQueue / IOQueue bypass、MemoryObject / IOBuffer data transfer、Fence / Timeline synchronization。
+规范性设计见 [02-communication-fabric.md](../core/02-communication-fabric.md)：Ousia 不照搬通用 buffered Channel，也不退回“四个极简 IPC 原语”。Ousia 提供统一 Communication Fabric：Portal fast path、Operation lifecycle、Continuation reply right、EventPort waiting、SharedQueue / IOQueue bypass、MemoryObject / IOBuffer data transfer、Fence / Timeline synchronization。
 
 ---
 
