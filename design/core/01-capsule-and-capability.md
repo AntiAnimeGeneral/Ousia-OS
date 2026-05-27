@@ -103,6 +103,14 @@ Ousia OS:
 
 权限从"身份属性"变成了"可传递的对象"。
 
+### 身份、管理员与能力
+
+Identity 只证明"谁是这个主体"，不直接赋予运行时权限。用户、设备所有者、组织和发布者身份都只能参与授权决策；决策结果必须变成 Capability、租约、策略记录或密钥解封装权限。
+
+Ousia 不定义 Unix `root`。需要高权限管理时，系统授予可拆分的管理能力，例如 DeviceOwnerCapability、SystemUpdateCapability、RecoveryCapability、PolicyAdminCapability、NamespaceAdminCapability 和 KeyRecoveryCapability。这些能力可以由去中心化 Identity、组织 Identity、本地恢复密钥或硬件根持有，并且必须可审计、可委托、可撤销。
+
+PIN 或生物识别只解锁本地 Key Agent，用于批准短期签名、解密或敏感能力授予；它不是身份私钥，也不是全局管理员口令。完整身份与恢复策略归属 [05-identity-and-accounts.md](../topics/05-identity-and-accounts.md)。
+
 ---
 
 ## 能力撤销：分阶段实现

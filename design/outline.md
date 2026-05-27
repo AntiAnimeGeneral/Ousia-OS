@@ -87,7 +87,7 @@
 | 实现语言、构建、测试、更新                                                                        | [topics/02-engineering.md](./topics/02-engineering.md)                       | 不重复具体子系统设计。                           |
 | Shell、交互工具和命令体验                                                                         | [topics/03-shell-and-tools.md](./topics/03-shell-and-tools.md)               | 不定义 Package Cell 或配置服务。                 |
 | 运行环境、配置服务、兼容域库视图                                                                  | [topics/04-environment-and-config.md](./topics/04-environment-and-config.md) | 不重新定义依赖解析。                             |
-| 身份、账户、信任和发布者                                                                          | [topics/05-identity-and-accounts.md](./topics/05-identity-and-accounts.md)   | 第一阶段只引用预留身份句柄。                     |
+| 身份、账户、Device Owner、Key Agent、FSKeyPolicy、信任和发布者                                    | [topics/05-identity-and-accounts.md](./topics/05-identity-and-accounts.md)   | 第一阶段只引用预留身份句柄和密钥策略元数据。     |
 | 第一阶段路线、非目标、阶段验收                                                                    | [topics/06-roadmap.md](./topics/06-roadmap.md)                               | 只引用需求编号和 owning 文档，不复制文档地图。   |
 
 ## 4. AI 查漏补缺清单

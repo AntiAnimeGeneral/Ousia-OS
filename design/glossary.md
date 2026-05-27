@@ -32,6 +32,10 @@
 | Capability           | 不可伪造的权限对象或句柄，绑定对象和操作权限。                                              | 不是 Unix uid/gid 权限扩展。                              |
 | Session Capability   | 某个已授权会话的能力句柄，例如文件读取会话、旁路传输会话或设备队列会话。                    | 将一次 control-path 权限检查固化为后续 data-path 的边界。 |
 | Capability Broker    | 用于追踪跨 Capsule 能力转发、拆分和撤销通知的系统服务。                                     | 后续阶段能力，第一阶段不承诺完整级联撤销。                |
+| Identity             | 设备无关的去中心化身份，包含公钥、声明、设备绑定和恢复策略。                                | 证明"谁是主体"，不直接等于运行时权限。                    |
+| Device Owner         | 持有设备所有权或策略权威的一组管理能力。                                                    | 替代传统 root；是 Capability 集合，不是 uid。             |
+| Policy Authority     | 可管理系统策略、命名空间、恢复或更新的高权限主体。                                          | 可以是个人 Identity、组织 Identity 或恢复密钥。           |
+| Key Agent            | 本地受保护的密钥代理，代表用户执行受限签名或解密。                                          | PIN/生物识别只解锁它，不是私钥本身。                      |
 | Service Graph        | Ousia OS 的服务组织与发现模型。服务发现返回能力句柄，而不是路径或 IP。                      | 替代把系统命名全部压进文件树的做法。                      |
 | Bootstrapping Handle | 内核启动第一个用户态服务时注入的初始能力句柄集合。                                          | 用于解决名字服务自身的 bootstrap 问题。                   |
 
@@ -46,6 +50,8 @@
 | ProviderRoot               | 一个 FS Provider 根对象的能力句柄，可被绑定到另一个 provider 的命名空间中。                      | 用于 native FS 挂载 remote FS、加密 FS、同步层等。                  |
 | MountBinding               | 把 ProviderRoot 绑定到父命名空间某个名称下的系统对象。                                           | 比 symlink 更强，携带 capability、policy、watch 和撤销语义。        |
 | FS Provider                | 类似 FUSE 但面向 Object、Version、Lease、MemoryObject 和 Pager fault 的存储接入协议。            | 用于本地/远程/加密/同步存储服务接入，不以 POSIX path 回调为中心。   |
+| FSKeyPolicy                | 加密 FS 的密钥策略，描述 FS key 绑定到设备、身份、恢复密钥还是组织 recipient。                   | 决定拆盘后能否在另一台机器解密。                                    |
+| WrappedKey                 | 用某个 recipient 公钥包装的 FS Master Key。                                                      | 支持 identity/device/recovery/organization 多 recipient 解封装。    |
 | Stream                     | 数据流动抽象，支持背压、取消、批量、优先级、多播等。                                             | 不替代对象元数据、设备控制或服务发现。                              |
 | Pager-backed Memory Object | 在纯用户态 FS 方案中由用户态 Pager 供页、失效、回写并与内核 VM 协作的内存对象。                  | 文件映射、共享映射和用户态 FS 的关键原语。                          |
 | MemoryObject               | 内核可授权和映射的内存对象，面向 VM、共享、CoW、缺页和回写语义。                                 | 属于权威对象；授权、转移、撤销和销毁走 Control Path。               |

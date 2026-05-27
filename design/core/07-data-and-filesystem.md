@@ -64,6 +64,8 @@ Ousia 的文件系统问题不是“是否兼容 POSIX”，而是谁拥有 Obje
 
 纯用户态 FS 方案需要一套类似 FUSE 的接入接口，但它不应复刻 POSIX 的 `lookup/read/write/readdir` 回调宇宙。Ousia 的接口应是 **FS Provider**：面向 Object、NameBinding、Version、Lease、MemoryObject 和 Pager fault 的 provider 协议。远程 FS、加密 FS、同步盘、对象网关和兼容投影都通过它挂入系统。
 
+加密 FS 必须把存储加密和运行时授权分开。离线拆盘默认不可读；是否能在另一台机器挂载，取决于 FS 创建时声明的 `FSKeyPolicy`。推荐模型是 envelope encryption：FS 拥有随机 FS Master Key，对象或 extent 派生数据密钥；FS Master Key 被多个 `WrappedKey` 包装给 identity、device、recovery key 或 organization recipient。解封装由 Key Agent 完成，成功后 ProviderRoot 才能挂入 tree view；对象级访问仍由 ObjectHandle、Capability、lease 和审计策略控制。
+
 FS Provider 至少需要表达：
 
 - `resolve(name, version_policy) -> ObjectHandle`
@@ -74,6 +76,7 @@ FS Provider 至少需要表达：
 - `page_in` / `page_out` / `invalidate` / `prefetch`
 - `lease_acquire` / `lease_break` / `watch`
 - `durability_fence(local | remote | quorum)`
+- `unlock_fs(policy, wrapped_key, key_agent) -> ProviderRoot`
 
 这样远程 FS 可以把远端对象 materialize 成本地 Remote-backed MemoryObject，再通过 Pager 协议支持 `mmap`。tree view 负责命名、挂载和导航；真正的映射身份是 ObjectHandle + version/lease + MemoryObject Capability。
 
