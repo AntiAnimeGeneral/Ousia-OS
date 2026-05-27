@@ -1,6 +1,6 @@
-# 12 — 路线图与非目标
+# 06 — 路线图与非目标
 
-> 对应 `target.md` §2、`requirements.md`、`target.md` §5 + §6 + §7 + §8
+> 对应 [target.md](../target.md) §5 + §6 + §7，以及 [requirements.md](../requirements.md) 的需求编号。全文档地图见 [outline.md](../outline.md)。
 
 ## 非目标（第一阶段绝对不做）
 
@@ -57,70 +57,6 @@
 
 1. 消除隐式全局状态？ 2. 权限显式、可审计、可回收？ 3. 支持异步、取消、背压？ 4. 前台交互被保护？ 5. 消除对 PATH/bashrc/profile 依赖？ 6. 强化 Package Cell 和 Capsule？ 7. 兼容性限制在边界上？ 8. 对异构硬件友好？ 9. 遵循 let-it-crash？ 10. 故障可测试、可观测、可诊断？
 
-## 文档索引与归属
+## 文档地图
 
-### 主线设计
-
-| #   | 文件                                                                 | 归属                                     |
-| --- | -------------------------------------------------------------------- | ---------------------------------------- |
-| 00  | [00-philosophy.md](../core/00-philosophy.md)                         | 设计立场与顶层原则                       |
-| 00  | [00-philosophy.md](../core/00-philosophy.md)                         | 设计哲学                                 |
-| 01  | [01-capsule-and-capability.md](../core/01-capsule-and-capability.md) | 运行隔离与能力权限                       |
-| 02  | [02-communication-fabric.md](../core/02-communication-fabric.md)     | 统一通信基座                             |
-| 03  | [03-pager-and-memory.md](../core/03-pager-and-memory.md)             | MemoryObject 与 Pager 边界               |
-| 04  | [04-driver-and-kernel.md](../core/04-driver-and-kernel.md)           | 内核/驱动边界与 IO 原语                  |
-| 05  | [05-compute-and-scheduling.md](../core/05-compute-and-scheduling.md) | 调度、计算域、异构资源                   |
-| 06  | [06-service-graph.md](../core/06-service-graph.md)                   | 服务发现、版本协商、启动                 |
-| 07  | [07-data-and-filesystem.md](../core/07-data-and-filesystem.md)       | Object Namespace / Store / Stream 主设计 |
-| 08  | [08-package-cell.md](../core/08-package-cell.md)                     | 软件单元、依赖、生命周期                 |
-
-### 边界专题
-
-| #   | 文件                                                           | 归属                 |
-| --- | -------------------------------------------------------------- | -------------------- |
-| 00  | [00-async-and-mmap.md](./00-async-and-mmap.md)                 | 异步语义与 mmap 张力 |
-| 01  | [01-compatibility.md](./01-compatibility.md)                   | Linux 兼容域         |
-| 02  | [02-engineering.md](./02-engineering.md)                       | 工程化、构建、测试   |
-| 03  | [03-shell-and-tools.md](./03-shell-and-tools.md)               | Shell 与交互工具     |
-| 04  | [04-environment-and-config.md](./04-environment-and-config.md) | 环境与配置管理       |
-| 05  | [05-identity-and-accounts.md](./05-identity-and-accounts.md)   | 身份与信任模型       |
-
-### 深挖与参考
-
-| #   | 文件                                             | 归属                       |
-| --- | ------------------------------------------------ | -------------------------- |
-| req | [../requirements.md](../requirements.md)         | 需求库与抽象推导索引       |
-| 06  | [06-roadmap.md](./06-roadmap.md)                 | 路线图与非目标             |
-| 00  | [00-fs-vm.md](../deep-dives/00-fs-vm.md)         | FS/VM 深挖材料，不是主规范 |
-| ref | [../reference/README.md](../reference/README.md) | 驱动、旁路、子系统路径参考 |
-
-全局术语表见 [../glossary.md](../glossary.md)。
-
-## 文档层级
-
-Ousia 文档按“问题 → 目标 → 需求/推导 → 主设计 → 深挖/参考”组织：
-
-| 层级     | 文档                                | 职责                                                                 |
-| -------- | ----------------------------------- | -------------------------------------------------------------------- |
-| 问题层   | [pain-points.md](../pain-points.md) | 解释为什么现有系统不够好，提供案例和动机。                           |
-| 总纲层   | [target.md](../target.md)           | 定义愿景目标、需求摘要、推导摘要、设计约束、非目标和落地顺序。 |
-| 需求层   | [requirements.md](../requirements.md) | 保存可增长的硬需求库、抽象推导索引和结论落点。 |
-| 主设计层 | [core/](../core/)                   | 定义可长期演进的系统抽象和主线契约。每个主设计应说明承接了哪些需求。 |
-| 专题层   | [topics/](./)                       | 处理跨主线的边界问题、工程路线、兼容性和路线图。                     |
-| 深挖层   | [deep-dives/](../deep-dives/)       | 保存论证、候选方案、裁决标准和开放问题，不作为唯一主规范。           |
-| 参考层   | [reference/](../reference/)         | 保存路径矩阵、SDK 草案、调研材料和可替换的工程背景。                 |
-
-泛目标和硬需求都必须保留，但用途不同：泛目标决定系统方向，硬需求决定第一阶段验收，抽象推导决定哪些设计是被需求迫出来的，主线章节再把这些抽象写成稳定契约。`target.md` 保持摘要入口；需求和推导增长时更新 [requirements.md](../requirements.md)。
-
-## 文档归属原则
-
-为避免同一设计在多个章节各自演化，后续新增内容按下面规则归属：
-
-- **通信、异步请求、事件等待、服务间旁路队列**：归属 [02-communication-fabric.md](../core/02-communication-fabric.md)。其他章节只说明如何使用这些原语。
-- **Package Cell、依赖解析、多版本并存、生命周期**：归属 [08-package-cell.md](../core/08-package-cell.md)。环境章节只消费解析结果。
-- **硬需求、需求编号、抽象推导索引和结论落点**：归属 [requirements.md](../requirements.md)。`target.md` 只保留摘要。
-- **运行环境、用户/系统配置、配置服务**：归属 [04-environment-and-config.md](./04-environment-and-config.md)。Shell 章节只描述交互命令。
-- **Object Namespace / Object Store / Stream 的主设计**：归属 [07-data-and-filesystem.md](../core/07-data-and-filesystem.md)。[00-fs-vm.md](../deep-dives/00-fs-vm.md) 承载调研、论证和细化方案。
-- **MemoryObject 与 Pager 边界**：归属 [03-pager-and-memory.md](../core/03-pager-and-memory.md)。FS 深挖只讨论两种 FS 放置方案下如何使用它。
-- **内核/驱动边界、IOQueue/IOBuffer/Doorbell/Fence**：归属 [04-driver-and-kernel.md](../core/04-driver-and-kernel.md)。`reference/` 下文档承载背景材料、路径矩阵和 SDK 轮廓。
-- **实现语言、构建、测试、更新**：归属 [02-engineering.md](./02-engineering.md)。不要在工程章节重复具体子系统设计。
+完整阅读顺序、文档层级、语义归属和 AI 查漏补缺清单见 [outline.md](../outline.md)。本章只维护第一阶段路线、非目标和阶段验收。

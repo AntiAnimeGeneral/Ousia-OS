@@ -1,10 +1,10 @@
 # Ousia OS 总纲
 
-本文档是 Ousia OS 设计文档的入口。它只回答五件事：现有系统哪里错了，Ousia OS 想建立什么秩序，第一阶段必须满足哪些硬需求，需求如何推出核心抽象，以及这些目标和抽象分别由哪些主线章节承接。完整需求库和抽象推导见 [requirements.md](./requirements.md)。
+本文档是 Ousia OS 设计文档的总纲。它只回答五件事：现有系统哪里错了，Ousia OS 想建立什么秩序，第一阶段必须满足哪些硬需求，需求如何推出核心抽象，以及这些目标和抽象分别由哪些主线章节承接。完整文档地图见 [outline.md](./outline.md)，完整需求库和抽象推导见 [requirements.md](./requirements.md)。
 
 项目自造术语和重新定义过的设计术语见 [glossary.md](./glossary.md)。除非特别说明，Portal、Operation、Continuation、Communication Fabric 等词都是 Ousia OS 的设计术语，不指代某个现有系统的专有技术。
 
-本文作为设计入口和主线索引，约束各专题文档的愿景边界、需求边界、抽象边界与阅读顺序。随需求增长而扩展的内容应进入 [requirements.md](./requirements.md)，不要堆入总纲。
+本文作为总纲入口，约束各专题文档的愿景边界、需求边界和抽象边界。随需求增长而扩展的内容应进入 [requirements.md](./requirements.md)，文档归属和查漏补缺规则由 [outline.md](./outline.md) 维护。
 
 ## 阅读顺序
 
@@ -13,7 +13,7 @@ Ousia OS 的组织逻辑应从问题开始，而不是从抽象开始：
 1. 先读 [pain-points.md](./pain-points.md)，理解现代软件栈的核心痛点。
 2. 再读本文的目标摘要和判断标准，确认系统为什么要做、第一阶段必须满足什么。
 3. 需要追踪需求和抽象推导时，读 [requirements.md](./requirements.md)。
-4. 然后按 [06-roadmap.md](./topics/06-roadmap.md) 的文档索引进入各主线设计：先读 OS 基建原语，再读基于这些原语构建的平台服务。
+4. 按 [outline.md](./outline.md) 的阅读路径进入主线设计，再用 [06-roadmap.md](./topics/06-roadmap.md) 查看第一阶段落地顺序。
 
 ## 1. 痛点
 
