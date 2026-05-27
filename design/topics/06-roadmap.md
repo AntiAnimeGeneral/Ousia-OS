@@ -1,6 +1,6 @@
 # 12 — 路线图与非目标
 
-> 对应 `target.md` §2.1 + §5 + §6 + §7 + §8
+> 对应 `target.md` §2.2 + §2.3 + §5 + §6 + §7 + §8
 
 ## 非目标（第一阶段绝对不做）
 
@@ -35,21 +35,23 @@
 
 ## 需求驱动原则
 
-第一阶段路线图以 [target.md](../target.md) 的硬需求为验收入口。每个阶段都必须能说明它验证了哪条需求；如果一个阶段只验证抽象名称，而不能验证类 FUSE 接入、目录挂载、mmap、zero-copy、同步/异步一等、能力撤销或兼容域边界中的至少一项，它就不应进入第一阶段主线。
+第一阶段路线图以 [target.md](../target.md) 的硬需求为验收入口。每个阶段都必须能说明它验证了哪条需求；如果一个阶段只验证抽象名称，而不能验证类 FUSE 接入、目录挂载、mmap、zero-copy、同步/异步一等、能力撤销、兼容域边界或 Package Cell 生命周期中的至少一项，它就不应进入第一阶段主线。
+
+需求编号来自 [target.md](../target.md) §2.2：R1 类 FUSE 接入，R2 目录挂载，R3 mmap，R4 zero-copy / low-copy，R5 同步/异步一等，R6 用户态服务热路径，R7 能力权限，R8 兼容域边界，R9 远程资源，R10 Package Cell 生命周期。
 
 ## 第一阶段落地顺序
 
-| Phase                   | 目标                                                                  | 核心验证                                                        |
-| ----------------------- | --------------------------------------------------------------------- | --------------------------------------------------------------- |
-| 1a: 微内核原语          | QEMU 中启动内核，任务+Portal/Operation+能力句柄+抢占调度+启动句柄注入 | 两个任务通过 Portal fast call 传递能力句柄                      |
-| 1a.5: 异步通信原语      | Continuation + EventPort/WaitSet + timeout/cancel/late reply          | 一个任务提交异步 Operation，另一个任务延迟完成并唤醒 Future     |
-| 1b: 名字服务+Capsule    | Service Graph bootstrap + Capsule 生命周期                            | Capsule 通过名字服务发现并调用另一个 Capsule                    |
-| 1c: Object Namespace    | 路径解析 + ProviderRoot + MountBinding + ObjectHandle 缓存与撤销      | native 目录挂载 remote provider；应用拿到统一 ObjectHandle       |
-| 1d: MemoryObject        | 缺页处理 + 纯用户态 Pager / 纯内核 Object Store 两条供页路径          | mmap 缺页正常供页；故障按所选 FS 放置方案处理                   |
-| 1e: 最小对象存储        | 对象 CRUD + 元数据 + 标签 + 目录树兼容投影；裁决用户态或内核态落地    | "路径不是唯一真相"                                              |
-| 1f: Package Cell 原型   | 声明式安装/激活/回滚/卸载 + 多版本并存                                | 安装两个依赖不同版本库的 Cell                                   |
-| 1g: 驱动框架原型        | 设备能力句柄 + IOMMU 授权 + IOQueue/IOBuffer + 用户态 MMIO            | 用户态 NVMe 队列提交/完成；驱动崩溃→撤销 DMA→复位→恢复          |
-| 1h: 兼容层              | Linux 兼容域（类 WSL2 VM）+ 兼容域网关                                | 兼容域内运行 bash+gcc+编译 C 程序                               |
+| Phase                 | 需求      | 目标                                                                  | 核心验证                                                    |
+| --------------------- | --------- | --------------------------------------------------------------------- | ----------------------------------------------------------- |
+| 1a: 微内核原语        | R5, R7    | QEMU 中启动内核，任务+Portal/Operation+能力句柄+抢占调度+启动句柄注入 | 两个任务通过 Portal fast call 传递能力句柄                  |
+| 1a.5: 异步通信原语    | R5, R6    | Continuation + EventPort/WaitSet + timeout/cancel/late reply          | 一个任务提交异步 Operation，另一个任务延迟完成并唤醒 Future |
+| 1b: 名字服务+Capsule  | R7, R10   | Service Graph bootstrap + Capsule 生命周期                            | Capsule 通过名字服务发现并调用另一个 Capsule                |
+| 1c: Object Namespace  | R1, R2, R7, R8, R9 | 路径解析 + ProviderRoot + MountBinding + ObjectHandle 缓存与撤销 | native 目录挂载 remote provider；应用拿到统一 ObjectHandle  |
+| 1d: MemoryObject      | R3, R4, R9 | 缺页处理 + 纯用户态 Pager / 纯内核 Object Store 两条供页路径          | mmap 缺页正常供页；故障按所选 FS 放置方案处理               |
+| 1e: 最小对象存储      | R1, R2, R3 | 对象 CRUD + 元数据 + 标签 + 目录树兼容投影；裁决用户态或内核态落地    | "路径不是唯一真相"                                          |
+| 1f: Package Cell 原型 | R7, R10   | 声明式安装/激活/回滚/卸载 + 多版本并存                                | 安装两个依赖不同版本库的 Cell                               |
+| 1g: 驱动框架原型      | R4, R6, R7 | 设备能力句柄 + IOMMU 授权 + IOQueue/IOBuffer + 用户态 MMIO            | 用户态 NVMe 队列提交/完成；驱动崩溃→撤销 DMA→复位→恢复      |
+| 1h: 兼容层            | R1, R2, R7, R8 | Linux 兼容域（类 WSL2 VM）+ 兼容域网关                            | 兼容域内运行 bash+gcc+编译 C 程序                           |
 
 ## 设计判断标准
 
@@ -59,18 +61,18 @@
 
 ### 主线设计
 
-| #   | 文件                                                                 | 归属                         |
-| --- | -------------------------------------------------------------------- | ---------------------------- |
-| 00  | [00-philosophy.md](../core/00-philosophy.md)                         | 设计立场与顶层原则           |
-| 00  | [00-philosophy.md](../core/00-philosophy.md)                         | 设计哲学                     |
-| 01  | [01-capsule-and-capability.md](../core/01-capsule-and-capability.md) | 运行隔离与能力权限           |
-| 02  | [02-communication-fabric.md](../core/02-communication-fabric.md)     | 统一通信基座                 |
-| 03  | [03-pager-and-memory.md](../core/03-pager-and-memory.md)             | MemoryObject 与 Pager 边界   |
-| 04  | [04-driver-and-kernel.md](../core/04-driver-and-kernel.md)           | 内核/驱动边界与 IO 原语      |
-| 05  | [05-compute-and-scheduling.md](../core/05-compute-and-scheduling.md) | 调度、计算域、异构资源       |
-| 06  | [06-service-graph.md](../core/06-service-graph.md)                   | 服务发现、版本协商、启动     |
+| #   | 文件                                                                 | 归属                                     |
+| --- | -------------------------------------------------------------------- | ---------------------------------------- |
+| 00  | [00-philosophy.md](../core/00-philosophy.md)                         | 设计立场与顶层原则                       |
+| 00  | [00-philosophy.md](../core/00-philosophy.md)                         | 设计哲学                                 |
+| 01  | [01-capsule-and-capability.md](../core/01-capsule-and-capability.md) | 运行隔离与能力权限                       |
+| 02  | [02-communication-fabric.md](../core/02-communication-fabric.md)     | 统一通信基座                             |
+| 03  | [03-pager-and-memory.md](../core/03-pager-and-memory.md)             | MemoryObject 与 Pager 边界               |
+| 04  | [04-driver-and-kernel.md](../core/04-driver-and-kernel.md)           | 内核/驱动边界与 IO 原语                  |
+| 05  | [05-compute-and-scheduling.md](../core/05-compute-and-scheduling.md) | 调度、计算域、异构资源                   |
+| 06  | [06-service-graph.md](../core/06-service-graph.md)                   | 服务发现、版本协商、启动                 |
 | 07  | [07-data-and-filesystem.md](../core/07-data-and-filesystem.md)       | Object Namespace / Store / Stream 主设计 |
-| 08  | [08-package-cell.md](../core/08-package-cell.md)                     | 软件单元、依赖、生命周期     |
+| 08  | [08-package-cell.md](../core/08-package-cell.md)                     | 软件单元、依赖、生命周期                 |
 
 ### 边界专题
 
@@ -92,6 +94,21 @@
 | ref | [../reference/README.md](../reference/README.md) | 驱动、旁路、子系统路径参考 |
 
 全局术语表见 [../glossary.md](../glossary.md)。
+
+## 文档层级
+
+Ousia 文档按“问题 → 目标 → 需求 → 主设计 → 深挖/参考”组织：
+
+| 层级 | 文档 | 职责 |
+| ---- | ---- | ---- |
+| 问题层 | [pain-points.md](../pain-points.md) | 解释为什么现有系统不够好，提供案例和动机。 |
+| 总纲层 | [target.md](../target.md) | 定义愿景目标、第一阶段硬需求、抽象推导、设计约束、非目标和落地顺序。 |
+| 主设计层 | [core/](../core/) | 定义可长期演进的系统抽象和主线契约。每个主设计应说明承接了哪些需求。 |
+| 专题层 | [topics/](./) | 处理跨主线的边界问题、工程路线、兼容性和路线图。 |
+| 深挖层 | [deep-dives/](../deep-dives/) | 保存论证、候选方案、裁决标准和开放问题，不作为唯一主规范。 |
+| 参考层 | [reference/](../reference/) | 保存路径矩阵、SDK 草案、调研材料和可替换的工程背景。 |
+
+泛目标和硬需求都必须保留，但用途不同：泛目标决定系统方向，硬需求决定第一阶段验收，抽象推导决定哪些设计是被需求迫出来的，主线章节再把这些抽象写成稳定契约。
 
 ## 文档归属原则
 

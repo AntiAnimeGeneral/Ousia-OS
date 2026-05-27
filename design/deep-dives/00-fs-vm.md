@@ -229,16 +229,16 @@ Object Store 核心成为内核 ABI，但不等于 POSIX VFS。内核提供 Ousi
 
 两个 FS 放置候选的裁决不看“纯粹性”，而看哪些语义值得成为 OS 永久底座：
 
-| 维度 | 纯用户态 FS | 纯内核态 FS |
-| ---- | ----------- | ----------- |
-| Object Store API 演进 | 更容易 | 更受 ABI 约束 |
-| mmap / page fault | 依赖 Pager fast path | 内核内闭环 |
-| metadata-heavy workload | 依赖 Provider fast call、batch、SDK cache、generation invalidation | 内核对象缓存天然存在 |
-| fsync / msync / writeback | 跨边界协议复杂 | 内核统一协调 |
-| 安全与 TCB | FS bug 隔离于用户态 | FS bug 是内核 bug |
-| 用户态/远程 FS | Tier-1，自然 | 仍需 FS Provider 接口 |
-| POSIX 兼容 | 用户态 VFS 投影 | 用户态 VFS 投影 |
-| 多存储实现 | 自然 | 需要内核 ABI 预留 |
+| 维度                      | 纯用户态 FS                                                        | 纯内核态 FS           |
+| ------------------------- | ------------------------------------------------------------------ | --------------------- |
+| Object Store API 演进     | 更容易                                                             | 更受 ABI 约束         |
+| mmap / page fault         | 依赖 Pager fast path                                               | 内核内闭环            |
+| metadata-heavy workload   | 依赖 Provider fast call、batch、SDK cache、generation invalidation | 内核对象缓存天然存在  |
+| fsync / msync / writeback | 跨边界协议复杂                                                     | 内核统一协调          |
+| 安全与 TCB                | FS bug 隔离于用户态                                                | FS bug 是内核 bug     |
+| 用户态/远程 FS            | Tier-1，自然                                                       | 仍需 FS Provider 接口 |
+| POSIX 兼容                | 用户态 VFS 投影                                                    | 用户态 VFS 投影       |
+| 多存储实现                | 自然                                                               | 需要内核 ABI 预留     |
 
 ---
 
