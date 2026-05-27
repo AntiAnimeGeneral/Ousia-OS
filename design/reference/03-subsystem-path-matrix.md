@@ -19,12 +19,12 @@
 
 ## 1. 总矩阵
 
-| 子系统 | 控制面（默认 Portal/Operation）                    | 机制面（默认 syscall）                                    | 数据面（默认 bypass）                                        | 默认拥有者                   | 何时允许直通                       | 恢复契约                                          |
-| ------ | -------------------------------------------------- | --------------------------------------------------------- | ------------------------------------------------------------ | ---------------------------- | ---------------------------------- | ------------------------------------------------- |
-| FS     | 纯用户态 FS：Portal/Operation 到 FS 服务；纯内核态 FS：内核 Object Store 原语 | 纯用户态 FS：MemoryObject、Pager 通道、页框、回写确认；纯内核态 FS：Object Store + page cache | 纯用户态 FS：SharedQueue/Pager-backed MemoryObject；纯内核态 FS：IOQueue/IOBuffer/MemoryObject | FS 服务 / Pager 或内核 Object Store | 数据库、存储服务、专用 Capsule     | `MEMORY_OBJECT_LOST` 或内核 Object Store journal 恢复 |
-| GPU    | 上下文创建、资源授权、编译策略、显示策略、恢复编排 | MMIO 授权、显存隔离、IOMMU、irq、reset、调度仲裁          | command queue、mapped buffer、doorbell、fence / timeline     | Device Service + Driver Host | 高性能图形 / 计算服务              | `DEVICE_LOST`、queue poison、reset 后重建上下文   |
-| NIC    | 网络策略、路由、防火墙、队列授权、服务发现         | queue bind、memory register、irq、IOMMU、revoke           | RX/TX/Fill/Completion ring、UMEM 风格 registered memory      | 网络服务                     | 包处理器、交换面、特权网络服务     | queue revoke、drop stats、device lost、queue 迁移 |
-| NVMe   | namespace 管理、flush policy、多路径、资源分配     | queue create、DMA map/revoke、irq bind、reset             | admin / io queue、registered buffer、poll / interrupt hybrid | 存储服务                     | 数据库、target service、专用存储栈 | queue revoke、namespace lost、reset、重试或降级   |
+| 子系统 | 控制面（默认 Portal/Operation）                                               | 机制面（默认 syscall）                                                                        | 数据面（默认 bypass）                                                                          | 默认拥有者                          | 何时允许直通                       | 恢复契约                                              |
+| ------ | ----------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------- | ----------------------------------- | ---------------------------------- | ----------------------------------------------------- |
+| FS     | Object Namespace 统一路径解析、ProviderRoot 挂载和 ObjectHandle；纯用户态 FS：Portal/Operation 到 FS Provider；纯内核态 FS：内核 Object Store 原语 | MemoryObject、Pager 通道、页框、回写确认；纯内核态 FS 还包含 Object Store + page cache | 纯用户态 FS：SharedQueue/PageFaultQueue/MemoryObject；纯内核态 FS：IOQueue/IOBuffer/MemoryObject | FS Provider / Pager 或内核 Object Store | 数据库、存储服务、专用 Capsule     | `MEMORY_OBJECT_LOST`、provider lost 或内核 Object Store journal 恢复 |
+| GPU    | 上下文创建、资源授权、编译策略、显示策略、恢复编排                            | MMIO 授权、显存隔离、IOMMU、irq、reset、调度仲裁                                              | command queue、mapped buffer、doorbell、fence / timeline                                       | Device Service + Driver Host        | 高性能图形 / 计算服务              | `DEVICE_LOST`、queue poison、reset 后重建上下文       |
+| NIC    | 网络策略、路由、防火墙、队列授权、服务发现                                    | queue bind、memory register、irq、IOMMU、revoke                                               | RX/TX/Fill/Completion ring、UMEM 风格 registered memory                                        | 网络服务                            | 包处理器、交换面、特权网络服务     | queue revoke、drop stats、device lost、queue 迁移     |
+| NVMe   | namespace 管理、flush policy、多路径、资源分配                                | queue create、DMA map/revoke、irq bind、reset                                                 | admin / io queue、registered buffer、poll / interrupt hybrid                                   | 存储服务                            | 数据库、target service、专用存储栈 | queue revoke、namespace lost、reset、重试或降级       |
 
 ## 2. 文件系统不是“纯旁路子系统”
 
@@ -33,19 +33,20 @@
 - create / unlink / rename
 - 事务和日志
 - 索引维护
-- 路径投影
+- Object Namespace 路径解析、ProviderRoot 挂载、MountBinding、路径投影
 - 跨设备同步策略
 
-纯用户态 FS 方案中，这些停留在用户态存储服务。纯内核态 FS 方案中，它们成为内核 Object Store 原语，但仍不等同于 POSIX VFS。
+Object Namespace 是 OS 级 VFS-like 层，但不是 POSIX VFS。纯用户态 FS 方案中，FS 语义停留在用户态 FS Provider；纯内核态 FS 方案中，native Object Store 成为内核原语。两种方案都通过 Object Namespace 统一路径解析、跨 provider mount 和 ObjectHandle 发行。
 
 ### 机制面
 
-- Memory Object 创建与映射
+- MemoryObject 创建与映射
 - 缺页入口
 - 页框分配与回收
 - 等待对象
 - 脏页回写确认
-纯用户态 FS 方案中，机制面不包含内核元数据缓存 fast-path；性能依赖 Portal fast call、批量接口、SDK/兼容域缓存和 bypass session。纯内核态 FS 方案中，元数据缓存是内核 Object Store 的自然组成部分。
+
+纯用户态 FS 方案中，机制面不包含内核元数据缓存 fast-path；性能依赖 Portal fast call、批量接口、SDK/兼容域缓存和 bypass session。纯内核态 FS 方案中，热元数据缓存属于内核 Object Store 自身实现，不是跨用户态/内核边界的推送缓存。
 
 这些应停留在内核。
 

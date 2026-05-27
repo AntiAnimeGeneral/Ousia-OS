@@ -37,17 +37,21 @@
 
 ## 数据、存储与内存
 
-| 术语                        | 含义                                                                         | 备注                                                           |
-| --------------------------- | ---------------------------------------------------------------------------- | -------------------------------------------------------------- |
-| Object Store                | Ousia OS 的原生持久对象层，使用 OID、元数据、版本、索引和关系描述数据。      | 不是完整 SQL 数据库。                                          |
-| OID                         | Object ID，稳定对象标识，不依赖路径。                                        | 路径只是 OID 的命名索引之一。                                  |
-| NameBinding                 | 名称到 Object 或名称到名称的绑定关系。                                       | 用于统一路径引用、软/硬链接类语义。                            |
-| Stream                      | 数据流动抽象，支持背压、取消、批量、优先级、多播等。                         | 不替代对象元数据、设备控制或服务发现。                         |
-| Pager-backed Memory Object  | 在纯用户态 FS 方案中由用户态 Pager 供页、失效、回写并与内核 VM 协作的内存对象。 | 文件映射、共享映射和用户态 FS 的关键原语。                     |
-| MemoryObject                | 内核可授权和映射的内存对象，面向 VM、共享、CoW、缺页和回写语义。             | 属于权威对象；授权、转移、撤销和销毁走 Control Path。          |
-| MemoryDescriptor            | 对 MemoryObject / IOBuffer 或其切片的权威描述与授权句柄。                    | 可通过 Portal / Operation 转移；不在 bypass queue 热路径传递。 |
-| IOBuffer                    | 注册内存对象，面向 pin 生命周期、DMA 可达性、设备授权和零拷贝。              | 与 MemoryObject 可共享页框，但语义不同。                       |
-| IOQueue                     | 面向设备或高性能数据面的提交/完成队列。                                      | 设备侧 SharedQueue，带 DMA、doorbell、irq、fence 等语义。      |
+| 术语                       | 含义                                                                            | 备注                                                           |
+| -------------------------- | ------------------------------------------------------------------------------- | -------------------------------------------------------------- |
+| Object Store               | Ousia OS 的原生持久对象层，使用 OID、元数据、版本、索引和关系描述数据。         | 不是完整 SQL 数据库。                                          |
+| OID                        | Object ID，稳定对象标识，不依赖路径。                                           | 路径只是 OID 的命名索引之一。                                  |
+| Object Namespace           | OS 级 VFS-like 命名层，负责路径解析、NameBinding、ProviderRoot、挂载、watch 和撤销。 | 不是 POSIX VFS；中心对象是 ObjectHandle 和 Capability。         |
+| NameBinding                | 名称到 Object 或名称到名称的绑定关系。                                          | 用于统一路径引用、软/硬链接类语义。                            |
+| ProviderRoot               | 一个 FS Provider 根对象的能力句柄，可被绑定到另一个 provider 的命名空间中。     | 用于 native FS 挂载 remote FS、加密 FS、同步层等。              |
+| MountBinding               | 把 ProviderRoot 绑定到父命名空间某个名称下的系统对象。                          | 比 symlink 更强，携带 capability、policy、watch 和撤销语义。    |
+| FS Provider                | 类似 FUSE 但面向 Object、Version、Lease、MemoryObject 和 Pager fault 的存储接入协议。 | 用于本地/远程/加密/同步存储服务接入，不以 POSIX path 回调为中心。 |
+| Stream                     | 数据流动抽象，支持背压、取消、批量、优先级、多播等。                            | 不替代对象元数据、设备控制或服务发现。                         |
+| Pager-backed Memory Object | 在纯用户态 FS 方案中由用户态 Pager 供页、失效、回写并与内核 VM 协作的内存对象。 | 文件映射、共享映射和用户态 FS 的关键原语。                     |
+| MemoryObject               | 内核可授权和映射的内存对象，面向 VM、共享、CoW、缺页和回写语义。                | 属于权威对象；授权、转移、撤销和销毁走 Control Path。          |
+| MemoryDescriptor           | 对 MemoryObject / IOBuffer 或其切片的权威描述与授权句柄。                       | 可通过 Portal / Operation 转移；不在 bypass queue 热路径传递。 |
+| IOBuffer                   | 注册内存对象，面向 pin 生命周期、DMA 可达性、设备授权和零拷贝。                 | 与 MemoryObject 可共享页框，但语义不同。                       |
+| IOQueue                    | 面向设备或高性能数据面的提交/完成队列。                                         | 设备侧 SharedQueue，带 DMA、doorbell、irq、fence 等语义。      |
 
 ## 硬件、驱动与调度
 

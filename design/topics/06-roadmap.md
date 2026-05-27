@@ -1,6 +1,6 @@
 # 12 — 路线图与非目标
 
-> 对应 `target.md` §5 + §6 + §7 + §8
+> 对应 `target.md` §2.1 + §5 + §6 + §7 + §8
 
 ## 非目标（第一阶段绝对不做）
 
@@ -20,8 +20,8 @@
   纯内核态 FS 方案还包含 Object Store 核心
 
 第 1 层: 基础系统服务
-  名字服务(←内核启动句柄注入)、Capsule 管理器、网络服务、
-  设备管理与 Driver Manager/Index/Host、日志与观测；
+  名字服务(←内核启动句柄注入)、Object Namespace、Capsule 管理器、
+  网络服务、设备管理与 Driver Manager/Index/Host、日志与观测；
   纯用户态 FS 方案还包含对象存储服务与 Pager 监督服务
 
 第 2 层: 平台服务
@@ -33,6 +33,10 @@
 
 **Bootstrap**：内核注入初始句柄 → 启动名字服务(第一个用户态进程) → 启动 Capsule 管理器 → 依次启动所有第 1 层服务 → 第 2 层服务 → 用户应用。
 
+## 需求驱动原则
+
+第一阶段路线图以 [target.md](../target.md) 的硬需求为验收入口。每个阶段都必须能说明它验证了哪条需求；如果一个阶段只验证抽象名称，而不能验证类 FUSE 接入、目录挂载、mmap、zero-copy、同步/异步一等、能力撤销或兼容域边界中的至少一项，它就不应进入第一阶段主线。
+
 ## 第一阶段落地顺序
 
 | Phase                   | 目标                                                                  | 核心验证                                                        |
@@ -40,11 +44,12 @@
 | 1a: 微内核原语          | QEMU 中启动内核，任务+Portal/Operation+能力句柄+抢占调度+启动句柄注入 | 两个任务通过 Portal fast call 传递能力句柄                      |
 | 1a.5: 异步通信原语      | Continuation + EventPort/WaitSet + timeout/cancel/late reply          | 一个任务提交异步 Operation，另一个任务延迟完成并唤醒 Future     |
 | 1b: 名字服务+Capsule    | Service Graph bootstrap + Capsule 生命周期                            | Capsule 通过名字服务发现并调用另一个 Capsule                    |
-| 1c: MemoryObject        | 缺页处理 + 纯用户态 Pager / 纯内核 Object Store 两条供页路径          | mmap 缺页正常供页；故障按所选 FS 放置方案处理                   |
-| 1d: 最小对象存储        | 对象 CRUD + 元数据 + 标签 + 目录树兼容投影；裁决用户态或内核态落地    | "路径不是唯一真相"                                              |
-| 1e: Package Cell 原型   | 声明式安装/激活/回滚/卸载 + 多版本并存                                | 安装两个依赖不同版本库的 Cell                                   |
-| 1f: 驱动框架原型        | 设备能力句柄 + IOMMU 授权 + IOQueue/IOBuffer + 用户态 MMIO            | 用户态 NVMe 队列提交/完成；驱动崩溃→撤销 DMA→复位→恢复          |
-| 1g: 兼容层              | Linux 兼容域（类 WSL2 VM）+ 兼容域网关                                | 兼容域内运行 bash+gcc+编译 C 程序                               |
+| 1c: Object Namespace    | 路径解析 + ProviderRoot + MountBinding + ObjectHandle 缓存与撤销      | native 目录挂载 remote provider；应用拿到统一 ObjectHandle       |
+| 1d: MemoryObject        | 缺页处理 + 纯用户态 Pager / 纯内核 Object Store 两条供页路径          | mmap 缺页正常供页；故障按所选 FS 放置方案处理                   |
+| 1e: 最小对象存储        | 对象 CRUD + 元数据 + 标签 + 目录树兼容投影；裁决用户态或内核态落地    | "路径不是唯一真相"                                              |
+| 1f: Package Cell 原型   | 声明式安装/激活/回滚/卸载 + 多版本并存                                | 安装两个依赖不同版本库的 Cell                                   |
+| 1g: 驱动框架原型        | 设备能力句柄 + IOMMU 授权 + IOQueue/IOBuffer + 用户态 MMIO            | 用户态 NVMe 队列提交/完成；驱动崩溃→撤销 DMA→复位→恢复          |
+| 1h: 兼容层              | Linux 兼容域（类 WSL2 VM）+ 兼容域网关                                | 兼容域内运行 bash+gcc+编译 C 程序                               |
 
 ## 设计判断标准
 
@@ -64,7 +69,7 @@
 | 04  | [04-driver-and-kernel.md](../core/04-driver-and-kernel.md)           | 内核/驱动边界与 IO 原语      |
 | 05  | [05-compute-and-scheduling.md](../core/05-compute-and-scheduling.md) | 调度、计算域、异构资源       |
 | 06  | [06-service-graph.md](../core/06-service-graph.md)                   | 服务发现、版本协商、启动     |
-| 07  | [07-data-and-filesystem.md](../core/07-data-and-filesystem.md)       | Object Store / Stream 主设计 |
+| 07  | [07-data-and-filesystem.md](../core/07-data-and-filesystem.md)       | Object Namespace / Store / Stream 主设计 |
 | 08  | [08-package-cell.md](../core/08-package-cell.md)                     | 软件单元、依赖、生命周期     |
 
 ### 边界专题
@@ -95,7 +100,7 @@
 - **通信、异步请求、事件等待、服务间旁路队列**：归属 [02-communication-fabric.md](../core/02-communication-fabric.md)。其他章节只说明如何使用这些原语。
 - **Package Cell、依赖解析、多版本并存、生命周期**：归属 [08-package-cell.md](../core/08-package-cell.md)。环境章节只消费解析结果。
 - **运行环境、用户/系统配置、配置服务**：归属 [04-environment-and-config.md](./04-environment-and-config.md)。Shell 章节只描述交互命令。
-- **Object Store / Stream 的主设计**：归属 [07-data-and-filesystem.md](../core/07-data-and-filesystem.md)。[00-fs-vm.md](../deep-dives/00-fs-vm.md) 承载调研、论证和细化方案。
+- **Object Namespace / Object Store / Stream 的主设计**：归属 [07-data-and-filesystem.md](../core/07-data-and-filesystem.md)。[00-fs-vm.md](../deep-dives/00-fs-vm.md) 承载调研、论证和细化方案。
 - **MemoryObject 与 Pager 边界**：归属 [03-pager-and-memory.md](../core/03-pager-and-memory.md)。FS 深挖只讨论两种 FS 放置方案下如何使用它。
 - **内核/驱动边界、IOQueue/IOBuffer/Doorbell/Fence**：归属 [04-driver-and-kernel.md](../core/04-driver-and-kernel.md)。`reference/` 下文档承载背景材料、路径矩阵和 SDK 轮廓。
 - **实现语言、构建、测试、更新**：归属 [02-engineering.md](./02-engineering.md)。不要在工程章节重复具体子系统设计。

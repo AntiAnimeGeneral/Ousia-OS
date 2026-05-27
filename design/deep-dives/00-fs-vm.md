@@ -183,60 +183,60 @@ du /scope/:
 
 **对相同操作，没有系统性性能退化。** 对绝大多数真实搜索意图（按类型/时间/标签），Ousia OS 有数量级优势。**最常被担心的按名搜索，传统 FS 用户之所以依赖它，恰恰是因为传统 FS 缺少类型索引——Ousia OS 从根本上减少了这种需求。**
 
-## 2.6 FS 放置：两个候选方案
+## 2.6 FS 放置与 Object Namespace
 
-Ousia 的 FS 边界只保留两个互斥候选：**纯用户态 FS** 与 **纯内核态 FS**。之前的“用户态 FS 权威 + 内核元数据缓存 / fast-path assist”折中方案不再作为主线，因为它同时引入两边的复杂度：内核需要理解一部分 FS 语义，用户态 FS 又要维护跨边界一致性。
+Ousia 的 FS 边界只保留两个互斥候选：**纯用户态 FS** 与 **纯内核态 FS**。之前的“用户态 FS 权威 + 内核元数据缓存 / fast-path assist”折中方案不作为主线，因为它迫使内核理解一部分 FS 语义，同时又保留跨边界一致性复杂度。
+
+但“不内置 POSIX 文件系统语义”不等于“不需要 VFS”。为了统一路径解析、跨 provider 挂载、watch、revoke、`mmap(path)` 和兼容域路径投影，Ousia 必须有 OS 级 **Object Namespace / VFS-like** 层。
+
+这个层负责名字到对象能力的解析，而不负责完整 FS 实现：
+
+```
+Path / Name / Selector
+  → Object Namespace
+  → NameBinding / MountBinding / ProviderRoot
+  → ObjectHandle
+  → MemoryObject / Stream / Operation
+```
+
+它和 Linux VFS 的差异是：中心对象不是 inode、dentry、fd 和 `file_operations`，而是 ObjectHandle、NameBinding、ProviderRoot、Capability、Version、Lease 和 fast-path descriptor。它允许 native FS、remote FS、加密 FS、同步层和兼容投影成为同一命名空间中的 Provider，而应用只看到统一的 Object API。
 
 ### 方案 A：纯用户态 FS
 
-内核提供通用 substrate：Capability、Portal / Operation、MemoryObject、Pager 通道、IOQueue / IOBuffer、SharedQueue、EventPort、IOMMU / DMA 和调度。FS 服务拥有 Object Store 的全部权威语义：OID、路径/标签/类型/时间索引、元数据、事务、版本、压缩、加密、GC、快照、权限和缓存策略。
+内核提供通用 substrate：Capability、Portal / Operation、MemoryObject、Pager 通道、IOQueue / IOBuffer、SharedQueue、EventPort、IOMMU / DMA 和调度。FS Provider 拥有 Object Store 的全部权威语义：OID、路径/标签/类型/时间索引、元数据、事务、版本、压缩、加密、GC、快照、权限和缓存策略。
 
-```
-Application / Compatibility Domain
-  → FS SDK / POSIX VFS cache / batch query
-  → Portal / SharedQueue / Operation
-  → User-space FS / Object Store
-  → Pager + IOQueue / IOBuffer
-  → Kernel VM / IOMMU / scheduler / device substrate
-```
-
-优势：语义边界最清晰，FS 不进入内核 TCB；Object Store 可以作为系统服务演进；兼容投影、专用存储服务和原生对象 API 可以共存。代价：mmap fault、metadata-heavy workload、writeback/fsync 和 crash recovery 都依赖高质量 IPC、批量接口、缓存失效和 Pager 协议。
+Object Namespace 可以把一个 ProviderRoot 挂载到另一个 Provider 的目录下。例如 native provider 的 `/home/alice/remote` 可以绑定到 remote provider 的根对象。解析 `/home/alice/remote/a.txt` 时，Namespace 先在 native provider 中解析到 MountBinding，再切换 provider context，最后返回 `ObjectHandle{provider=remote, oid=...}`。应用使用同一套 API，差异只表现为延迟、failure event、consistency mode 和 durability fence。
 
 这一方案必须把以下能力做成第一等工程对象：
 
 - Portal fast call 与批量 metadata API
+- FS Provider 接口：Object / Version / Lease / MemoryObject / Pager fault，而不是 POSIX FUSE path callback
+- ProviderRoot / MountBinding / NamespaceView
 - SDK / 兼容域缓存与 generation invalidation
 - SharedQueue + TransferArena bypass session
-- 专用 Pager fault channel、prefetch 和批量供页
+- 专用 Pager fault queue、prefetch 和批量供页
 - `fsync` / `msync` / journal commit 的跨边界协议
+
+远程 FS 的 `mmap` 由这个接口反推出来：远端对象先成为本地 Remote-backed MemoryObject，缺页命中本地 cache 或触发 Provider fetch，完成后由 Pager 向内核交付页面。CPU fault 不直接等价于任意远程 RPC。
 
 ### 方案 B：纯内核态 FS
 
 Object Store 核心成为内核 ABI，但不等于 POSIX VFS。内核提供 Ousia 原生 FS 原语：ObjectHandle、ObjectInfo、extent IO、版本/快照、事务/持久化、MemoryObject/page cache、async zero-copy IO queue 和 capability-based 权限检查。POSIX 兼容层仍在用户态，把 `open/stat/read/write` 翻译到这些原生对象原语。
 
-```
-Application / Compatibility Domain
-  → Native Object API / POSIX facade
-  → Kernel Object Store primitives
-  → Page cache / MemoryObject / async IO queue / writeback
-  → Kernel VM / IOMMU / scheduler / device substrate
-```
-
-优势：热路径和持久化闭环最强；mmap 缺页、page cache、dirty page、journal、fsync/msync 和 zero-copy async IO 可以在内核内统一协调；不需要为 FS 再设计一套跨边界元数据缓存协议。代价：内核 TCB 大幅扩大；Object Store API 必须长期稳定；FS bug 成为内核 bug；多种 FS 实现和策略替换更受约束。
-
-这一方案必须避免滑回 POSIX：内核永久化的是 Ousia Object Store 原语，不是 `fd`、`cwd`、`uid/gid path permission`、`ioctl`、`/dev` 或 `/proc`。
+即使选择纯内核态 FS，Object Namespace 仍然必要：它负责 NamespaceView、ProviderRoot、跨 provider 挂载、兼容域路径投影和用户态 FS Provider 接入。区别只是 native Object Store 的 provider 实现在内核内。
 
 ### 裁决标准
 
-两个方案的裁决不看“纯粹性”，而看哪些语义值得成为 OS 永久底座：
+两个 FS 放置候选的裁决不看“纯粹性”，而看哪些语义值得成为 OS 永久底座：
 
 | 维度 | 纯用户态 FS | 纯内核态 FS |
 | ---- | ----------- | ----------- |
 | Object Store API 演进 | 更容易 | 更受 ABI 约束 |
-| mmap / page fault | 依赖 Pager IPC | 内核内闭环 |
-| metadata-heavy workload | 依赖 SDK/兼容域缓存和批量 API | 内核对象缓存天然存在 |
+| mmap / page fault | 依赖 Pager fast path | 内核内闭环 |
+| metadata-heavy workload | 依赖 Provider fast call、batch、SDK cache、generation invalidation | 内核对象缓存天然存在 |
 | fsync / msync / writeback | 跨边界协议复杂 | 内核统一协调 |
 | 安全与 TCB | FS bug 隔离于用户态 | FS bug 是内核 bug |
+| 用户态/远程 FS | Tier-1，自然 | 仍需 FS Provider 接口 |
 | POSIX 兼容 | 用户态 VFS 投影 | 用户态 VFS 投影 |
 | 多存储实现 | 自然 | 需要内核 ABI 预留 |
 
@@ -298,8 +298,9 @@ Application / Compatibility Domain
 1. **底层**：Object Store = CoW + 自描述 extent + per-object 压缩加密 + 池化存储
 2. **中间层**：多索引（路径+标签+自动），路径是主索引不是唯一索引
 3. **上层**：目录树为 OID 的命名方案之一，保留层级和路径便利性
-4. **FS 放置**：只保留纯用户态 FS 与纯内核态 FS 两个候选，混合态元数据缓存方案不再作为主线
-5. **VM**：纯用户态 FS 依赖 Pager-backed Memory Object；纯内核态 FS 让 Object Store 与 page cache 在内核内闭环
+4. **Object Namespace**：OS 内置 VFS-like 层，用 ProviderRoot / MountBinding 统一 native 与 remote FS
+5. **FS 放置**：只保留纯用户态 FS 与纯内核态 FS 两个候选，混合态元数据缓存方案不再作为主线
+6. **VM**：纯用户态 FS 依赖 Pager-backed Memory Object；纯内核态 FS 让 Object Store 与 page cache 在内核内闭环
 
 **目录树没有被抛弃——它被降级为 OID 的命名方案之一。** 保留路径的便利，釜底抽薪地解决"路径即身份"。
 

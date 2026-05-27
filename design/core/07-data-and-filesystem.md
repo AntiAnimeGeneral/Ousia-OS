@@ -13,7 +13,23 @@
 
 对象由 OID 标识，不依赖路径。每个对象自带元数据（类型、大小、时间）、自动索引、版本历史。操作包括 `create`, `read`, `write`（原子替换）, `delete`, `query`, `list_versions`, `revert`, `watch`, `relate`。
 
-目录树是兼容投影——对 POSIX 兼容域提供路径视图，原生应用直接用 OID 和标签。
+目录树是命名投影——对 POSIX 兼容域提供路径视图，原生应用可以直接使用 OID、标签和对象能力句柄。
+
+## Object Namespace / VFS-like 层
+
+Ousia 不把 POSIX 文件系统语义内置进内核，但必须内置一个 OS 级 **Object Namespace**。它是 VFS-like 层，负责统一路径解析、跨 FS Provider 挂载、NameBinding、ProviderRoot、watch、revoke、generation invalidation，以及 path/name 到 ObjectHandle / MemoryObject 的入口。
+
+这个层的中心不是 inode、dentry、fd 和 `file_operations`，而是：
+
+- `NameBinding`：名称到 Object、名称到名称、名称到 ProviderRoot 的绑定
+- `ProviderRoot`：一个 FS Provider 根对象的 capability，可挂载到另一个 provider 的命名空间中
+- `MountBinding`：把 ProviderRoot 绑定到父目录 NameBinding 下的系统对象
+- `ObjectHandle`：解析后的对象能力，携带 provider、rights、version、lease 和 fast-path descriptor
+- `NamespaceView`：Capsule 看到的命名空间视图，用于兼容域、沙箱和工作区
+
+例如 native FS 中的 `/home/alice/remote` 可以是一个指向 remote FS ProviderRoot 的 MountBinding。应用解析 `/home/alice/remote/a.txt` 时，Namespace 先在 native provider 中解析到挂载点，再切换到 remote provider 继续解析，最后返回统一的 ObjectHandle。应用仍然使用同一套 Object API；native 和 remote 的差异只表现为延迟、failure event、consistency mode 和 durability fence。
+
+因此，Ousia 的立场是：不内置 POSIX VFS，但内置 Object/Provider/Capability VFS。没有这个层，统一路径解析、远程挂载、权限撤销、watch 和 `mmap(path)` 都会退化为各 FS Provider 的私有约定。
 
 ## Stream 抽象
 
@@ -45,6 +61,21 @@ Ousia 的文件系统问题不是“是否兼容 POSIX”，而是谁拥有 Obje
 内核只提供 Capability、Portal/Operation、MemoryObject、Pager 通道、IOQueue/IOBuffer、SharedQueue、EventPort、IOMMU/DMA 和调度机制。Object Store 的命名、索引、元数据、事务、版本、压缩、加密、GC、权限和缓存策略全部由用户态 FS 服务拥有。
 
 这一方案的优势是语义边界最干净，FS 可以作为系统服务演进，多种存储服务和兼容投影可以共存。代价是 mmap 缺页、持久化确认和 metadata-heavy workload 都依赖高质量 IPC、批量接口、客户端缓存、bypass session 和 Pager 协议。
+
+纯用户态 FS 方案需要一套类似 FUSE 的接入接口，但它不应复刻 POSIX 的 `lookup/read/write/readdir` 回调宇宙。Ousia 的接口应是 **FS Provider**：面向 Object、NameBinding、Version、Lease、MemoryObject 和 Pager fault 的 provider 协议。远程 FS、加密 FS、同步盘、对象网关和兼容投影都通过它挂入系统。
+
+FS Provider 至少需要表达：
+
+- `resolve(name, version_policy) -> ObjectHandle`
+- `bind_provider_root(parent, name, ProviderRoot, mount_policy)`
+- `query(object, fields) -> ObjectInfo`
+- `read_extent` / `write_extent` / `commit_transaction`
+- `create_memory_object(object, cache_policy, fault_policy)`
+- `page_in` / `page_out` / `invalidate` / `prefetch`
+- `lease_acquire` / `lease_break` / `watch`
+- `durability_fence(local | remote | quorum)`
+
+这样远程 FS 可以把远端对象 materialize 成本地 Remote-backed MemoryObject，再通过 Pager 协议支持 `mmap`。路径只负责解析，真正的映射身份是 ObjectHandle + version/lease + MemoryObject Capability。
 
 ### 方案 B：纯内核态 FS
 
