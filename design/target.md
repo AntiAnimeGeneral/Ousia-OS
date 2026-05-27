@@ -39,7 +39,7 @@ Ousia OS 的设计不是为了“重写一个 Unix”，而是因为现有系统
 
 ### 1.4 文件系统抽象落后于现代数据使用方式
 
-“目录树 + 字节流文件”是有用的兼容视图，但不应是原生数据模型的唯一真相。现代应用需要稳定对象 ID、元数据、索引、版本、事务、流和配置语义。
+目录树是必须保留的一等命名和导航抽象，但“路径字符串 + 字节流文件”不应独占原生数据模型。现代应用需要稳定对象 ID、tree view、元数据、索引、版本、事务、流和配置语义共同表达数据。
 
 主线章节：[07-data-and-filesystem.md](./core/07-data-and-filesystem.md)，VM 细节见 [03-pager-and-memory.md](./core/03-pager-and-memory.md)。
 
@@ -170,7 +170,7 @@ Ousia OS 的第一阶段分层如下，详细路线见 [06-roadmap.md](./topics/
 3. Service Graph bootstrap 与 Capsule 生命周期。
 4. Object Namespace：路径解析、ProviderRoot、MountBinding、ObjectHandle 解析缓存和撤销。
 5. MemoryObject、缺页处理，以及纯用户态 Pager / 纯内核 Object Store 两条供页路径。
-6. 最小 Object Store 与目录树兼容投影；裁决其作为用户态服务还是内核原语落地。
+6. 最小 Object Store 与 tier-1 tree view；裁决其作为用户态服务还是内核原语落地。
 7. Package Cell 安装、激活、回滚、卸载和多版本并存。
 8. 用户态驱动框架：设备能力句柄、IOMMU 授权、IOQueue/IOBuffer、用户态 MMIO。
 9. Linux Compatibility Domain 与兼容域网关。

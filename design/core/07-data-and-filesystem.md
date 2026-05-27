@@ -5,15 +5,15 @@
 
 本文是数据抽象与文件系统的主设计。`deep-dives/00-fs-vm.md` 是深挖材料，用于展开目录树、索引和 FS/VM 边界的论证。文件系统放置目前只保留两个互斥候选：纯用户态 FS 与纯内核态 FS；混合态元数据缓存/fast-path assist 不作为主线方案。
 
-## 为什么不用"目录树 + 字节流"
+## 为什么不只用"目录树 + 字节流"
 
 字节流文件没有结构、索引、版本、关系、事务——现代应用反复在文件系统之上重建这些基础设施（SQLite 是最广泛部署的数据库）。Ousia OS 的 Object Store 位于"字节流文件"和"应用数据库"之间：提供基础结构、索引、版本，但不做完整 SQL 引擎。
 
 ## Object Store
 
-对象由 OID 标识，不依赖路径。每个对象自带元数据（类型、大小、时间）、自动索引、版本历史。操作包括 `create`, `read`, `write`（原子替换）, `delete`, `query`, `list_versions`, `revert`, `watch`, `relate`。
+对象由 OID 标识，不依赖路径；tree view 由 Object Namespace 维护，是同样一等的命名、导航、挂载和作用域抽象。每个持久对象都应能出现在某个 tree view 中，但对象身份、版本和权限不被某个路径字符串独占。对象自带元数据（类型、大小、时间）、自动索引、版本历史。操作包括 `create`, `read`, `write`（原子替换）, `delete`, `query`, `list_versions`, `revert`, `watch`, `relate`。
 
-目录树是命名投影——对 POSIX 兼容域提供路径视图，原生应用可以直接使用 OID、标签和对象能力句柄。
+目录树不是降级的兼容投影；它是 Object Namespace 的 tier-1 tree view。POSIX 兼容域看到的是这个 tree view 的兼容翻译，原生应用可以同时使用路径、OID、标签和对象能力句柄。
 
 ## Object Namespace / VFS-like 层
 
@@ -43,12 +43,12 @@ Stream 原生支持：背压、取消、批量、优先级、多播。
 
 Ousia OS 把这六个角色拆成了四个不同的一等抽象：
 
-| 职责     | Unix                | Ousia OS                     |
-| -------- | ------------------- | ---------------------------- |
-| 持久存储 | fd (open + path)    | Object (OID + 元数据 + 版本) |
-| 数据流动 | fd (read/write)     | Stream                       |
-| 设备控制 | fd + ioctl          | 设备能力句柄 + 队列对象      |
-| 服务发现 | 路径约定 + 环境变量 | Service Graph                |
+| 职责     | Unix                | Ousia OS                                 |
+| -------- | ------------------- | ---------------------------------------- |
+| 持久存储 | fd (open + path)    | Object (OID + tree view + 元数据 + 版本) |
+| 数据流动 | fd (read/write)     | Stream                                   |
+| 设备控制 | fd + ioctl          | 设备能力句柄 + 队列对象                  |
+| 服务发现 | 路径约定 + 环境变量 | Service Graph                            |
 
 **Stream 只传输不解释。** 语义是上层的事。硬约束：Stream 不替代设备控制、不替代对象元数据查询、不替代服务发现。如果 Stream 子类型（NetworkStream/FileStream）的 API 严重分叉，宁可拆开，不要强行统一。
 
@@ -75,7 +75,7 @@ FS Provider 至少需要表达：
 - `lease_acquire` / `lease_break` / `watch`
 - `durability_fence(local | remote | quorum)`
 
-这样远程 FS 可以把远端对象 materialize 成本地 Remote-backed MemoryObject，再通过 Pager 协议支持 `mmap`。路径只负责解析，真正的映射身份是 ObjectHandle + version/lease + MemoryObject Capability。
+这样远程 FS 可以把远端对象 materialize 成本地 Remote-backed MemoryObject，再通过 Pager 协议支持 `mmap`。tree view 负责命名、挂载和导航；真正的映射身份是 ObjectHandle + version/lease + MemoryObject Capability。
 
 ### 方案 B：纯内核态 FS
 

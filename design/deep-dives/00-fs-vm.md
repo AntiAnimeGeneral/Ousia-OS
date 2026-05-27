@@ -28,7 +28,7 @@
 2. **元数据和数据自描述** — b-tree 元数据，extent 携带 checksum。不需要 fsck
 3. **压缩加密是存储层能力** — per-object 或 per-extent 透明压缩/加密
 4. **快照版本内建** — 不是用户手动 `cp -r backup`。object 级版本管理
-5. **路径只是数据的一个索引** — fxfs 最明确。路径不应是唯一身份
+5. **路径和身份应解耦** — fxfs 最明确。tree view 是一等命名入口，但路径不应是唯一身份
 6. **Flash-first** — 关注写放大而非碎片整理。CoW 天然 flash-friendly
 7. **存储池化** — 多盘合并为一个 pool。用户不关心数据在哪块盘上
 
@@ -65,12 +65,12 @@
 
 ## 2.3 四种解决方案
 
-| 方案                           | 代表                 | 为何不选                                                         |
-| ------------------------------ | -------------------- | ---------------------------------------------------------------- |
-| A: 纯标签                      | Gmail 标签, TMSU     | 无层级=无作用域=无权限继承=工具链全废                            |
-| B: **内容寻址 + 目录树为视图** | Nix, Git, IPFS, fxfs | ✅ **Ousia OS 选这个**                                           |
-| C: reflink 打补丁              | bcachefs/btrfs       | 只解决存储层去重，不解决命名模型                                 |
-| D: 数据库文件系统              | WinFS, BeFS          | WinFS 过度设计已失败。数据库开销 vs 路径遍历的简单性矛盾不可调和 |
+| 方案                                 | 代表                 | 为何不选                                                         |
+| ------------------------------------ | -------------------- | ---------------------------------------------------------------- |
+| A: 纯标签                            | Gmail 标签, TMSU     | 无层级=无作用域=无权限继承=工具链全废                            |
+| B: **稳定对象身份 + 一等目录树视图** | Nix, Git, IPFS, fxfs | ✅ **Ousia OS 选这个**                                           |
+| C: reflink 打补丁                    | bcachefs/btrfs       | 只解决存储层去重，不解决命名模型                                 |
+| D: 数据库文件系统                    | WinFS, BeFS          | WinFS 过度设计已失败。数据库开销 vs 路径遍历的简单性矛盾不可调和 |
 
 ## 2.4 Ousia OS 方案 B 的具体设计
 
@@ -88,11 +88,11 @@ Object Store:
   OID → { data, metadata, versions, extents, checksums, compression, encryption }
 ```
 
-**路径 = OID 的一个命名引用。** 类比 Git：路径即 Git ref，OID 即 blob sha。移动文件 = 更新 ref。删除文件 = 删除 ref（数据在 object store 待到 GC）。
+**路径 = tree view 中的命名引用，OID = 稳定对象身份。** 类比 Git：路径接近 ref，OID 接近 blob sha。移动文件 = 更新 NameBinding。删除文件 = 删除 tree view 引用（数据在 object store 待到 GC）。
 
 ### 设计要点
 
-**① 对象身份是 OID，不是路径。**
+**① 对象身份是 OID，tree view 是一等命名入口。** 普通文件应能出现在某个 tree view 中；路径变化不改变对象身份，OID 也不取代人类可导航的路径层级。
 
 **② 索引分自动和显式两类。** 类型（MIME）、时间、大小、内容哈希自动维护——任何对象创建时自动更新索引。路径和标签是用户/应用显式管理。这就是图片管理器不再需要自建库的原因：
 
@@ -105,9 +105,9 @@ Ousia OS:  query({type: "image/png", size: (10MB, ∞)})  → 倒排索引交集
 
 **③ 查询 API 是 predicate → set intersection**，AND 语义，O(最小结果集)。不需要 SQL 解析器。`list_prefix()` 兼容传统路径遍历。
 
-**④ 标签是路径的平行维。** 路径有层级（擅长表达归属），标签扁平（擅长表达跨维度属性）。两者互补。同一个 OID 同时有路径和标签。
+**④ 标签是 tree view 的平行维。** tree view 有层级（擅长表达归属、挂载和作用域），标签扁平（擅长表达跨维度属性）。两者互补。同一个 OID 同时有路径和标签。
 
-**⑤ 权限绑定 OID，不绑定路径。** `alice 有 Capability{oid-1234, READ}` → 不管通过路径还是标签访问，权限一致。路径上的权限只是批量授权的便利机制。
+**⑤ 权限以对象能力为准，tree view 可作为批量授权入口。** `alice 有 Capability{oid-1234, READ}` → 不管通过路径还是标签访问，权限一致。目录上的策略用于作用域授权、默认继承和挂载边界，但最终访问仍落到 ObjectHandle / Capability。
 
 **⑥ 版本在 Object 层，目录树指向最新。** `/photos/IMG@v2` 或 `/photos/IMG@{2024-07-15}` 访问历史版本。
 
@@ -121,7 +121,7 @@ NameBinding { source: Name, target: Object(OID) | Name(Path) }
 解析器自动跟踪链, visited set 防循环。
 ```
 
-没有"不能硬链接目录"的限制——目录只是路径索引的一层命名结构，不是存储对象。没有"dangling symlink"——解析失败返回 ENOENT，和文件不存在一样。
+目录是 tree view 的命名结构，不是对象身份本身。没有"dangling symlink"——解析失败返回 ENOENT，和文件不存在一样。
 
 **⑧ 目录大小计算 — 去重和递归是唯一特殊处理。**
 
@@ -297,12 +297,12 @@ Object Store 核心成为内核 ABI，但不等于 POSIX VFS。内核提供 Ousi
 
 1. **底层**：Object Store = CoW + 自描述 extent + per-object 压缩加密 + 池化存储
 2. **中间层**：多索引（路径+标签+自动），路径是主索引不是唯一索引
-3. **上层**：目录树为 OID 的命名方案之一，保留层级和路径便利性
+3. **上层**：tree view 是一等命名、导航和作用域抽象，和 OID 稳定身份正交
 4. **Object Namespace**：OS 内置 VFS-like 层，用 ProviderRoot / MountBinding 统一 native 与 remote FS
 5. **FS 放置**：只保留纯用户态 FS 与纯内核态 FS 两个候选，混合态元数据缓存方案不再作为主线
 6. **VM**：纯用户态 FS 依赖 Pager-backed Memory Object；纯内核态 FS 让 Object Store 与 page cache 在内核内闭环
 
-**目录树没有被抛弃——它被降级为 OID 的命名方案之一。** 保留路径的便利，釜底抽薪地解决"路径即身份"。
+**目录树没有被抛弃，也不只是兼容投影。** Ousia 保留 tier-1 tree view，用它承载人类导航、作用域、挂载和兼容生态；同时用 OID / ObjectHandle 解决"路径即身份"带来的引用漂移。
 
 ---
 

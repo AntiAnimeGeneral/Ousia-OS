@@ -14,7 +14,7 @@ Ousia OS 的第一阶段解决方案：**兼容域是类似 WSL2 的轻量 VM，
 Ousia OS 原生空间
   ├── 原生 App
   ├── 兼容域网关 (Proxy/Gateway)
-  │     ├── 文件:   Linux 路径 ↔ Object ID
+  │     ├── 文件:   Linux 路径 ↔ tree view / ObjectHandle
   │     ├── 窗口:   X11/Wayland ↔ 原生窗口协议
   │     ├── 网络:   socket fd ↔ 网络能力句柄
   │     ├── 剪贴板: X11 selection ↔ 原生剪贴板服务

@@ -4,7 +4,7 @@
 
 ## 传统 Shell 为什么不行
 
-POSIX shell 的根本假设与 Ousia OS 全面冲突：一切是文件路径（Ousia OS 是 OID）、程序通过 `exec` + 环境变量启动（Ousia OS 是 Capsule + 能力声明）、管道是字节流（应该是类型化记录流）、配置是 dotfile（应去文件化）、权限继承 uid/gid（应是 Capability 句柄）。
+POSIX shell 的根本假设与 Ousia OS 全面冲突：一切都被压成文件路径（Ousia OS 区分 tree view、ObjectHandle、OID 和 Capability）、程序通过 `exec` + 环境变量启动（Ousia OS 是 Capsule + 能力声明）、管道是字节流（应该是类型化记录流）、配置是 dotfile（应去文件化）、权限继承 uid/gid（应是 Capability 句柄）。
 
 最核心的矛盾：**管道传递文本 vs 管道传递结构化数据。** `ls -l | awk '{print $5}'` 依赖文本解析，文件名有空格就出错。Ousia OS 中 `ls` 返回 `Stream<{name, oid, size, type, tags}>`，后续管道直接访问字段——不需要 `awk`/`sed`/`cut`。
 
@@ -33,7 +33,7 @@ Nushell 是唯一解决了"管道不传文本"的现实 shell。`ls` 输出 tabl
 
 ## 实现策略
 
-第一阶段基于 Nushell 改造：替换 FS 层（走 Object Store）、进程启动（走 Capsule 管理器）、添加 `query`/`cap`/`config` 命令、添加 Stream 类型。第二阶段开发完全原生的 Shell。Shell 不重新定义 Object Store、配置服务或 Communication Fabric，只暴露它们的交互界面。
+第一阶段基于 Nushell 改造：替换 FS 层（走 Object Namespace / Object Store）、进程启动（走 Capsule 管理器）、添加 `query`/`cap`/`config` 命令、添加 Stream 类型。第二阶段开发完全原生的 Shell。Shell 不重新定义 Object Store、配置服务或 Communication Fabric，只暴露它们的交互界面。
 
 Linux 兼容域内保留 bash/POSIX shell，作为过渡而非终点。
 
