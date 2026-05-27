@@ -1,18 +1,19 @@
 # Ousia OS 总纲
 
-本文档是 Ousia OS 设计文档的入口。它只回答五件事：现有系统哪里错了，Ousia OS 想建立什么秩序，第一阶段必须满足哪些硬需求，这些需求推出哪些核心抽象，以及这些目标和抽象分别由哪些主线章节承接。
+本文档是 Ousia OS 设计文档的入口。它只回答五件事：现有系统哪里错了，Ousia OS 想建立什么秩序，第一阶段必须满足哪些硬需求，需求如何推出核心抽象，以及这些目标和抽象分别由哪些主线章节承接。完整需求库和抽象推导见 [requirements.md](./requirements.md)。
 
 项目自造术语和重新定义过的设计术语见 [glossary.md](./glossary.md)。除非特别说明，Portal、Operation、Continuation、Communication Fabric 等词都是 Ousia OS 的设计术语，不指代某个现有系统的专有技术。
 
-本文作为设计入口和主线索引，约束各专题文档的愿景边界、需求边界、抽象边界与阅读顺序。
+本文作为设计入口和主线索引，约束各专题文档的愿景边界、需求边界、抽象边界与阅读顺序。随需求增长而扩展的内容应进入 [requirements.md](./requirements.md)，不要堆入总纲。
 
 ## 阅读顺序
 
 Ousia OS 的组织逻辑应从问题开始，而不是从抽象开始：
 
 1. 先读 [pain-points.md](./pain-points.md)，理解现代软件栈的核心痛点。
-2. 再读本文的目标、硬需求、抽象推导和判断标准，确认系统为什么要做、必须满足什么、哪些抽象是被需求推出的。
-3. 然后按 [06-roadmap.md](./topics/06-roadmap.md) 的文档索引进入各主线设计：先读 OS 基建原语，再读基于这些原语构建的平台服务。
+2. 再读本文的目标摘要和判断标准，确认系统为什么要做、第一阶段必须满足什么。
+3. 需要追踪需求和抽象推导时，读 [requirements.md](./requirements.md)。
+4. 然后按 [06-roadmap.md](./topics/06-roadmap.md) 的文档索引进入各主线设计：先读 OS 基建原语，再读基于这些原语构建的平台服务。
 
 ## 1. 痛点
 
@@ -64,53 +65,42 @@ Ousia OS 的设计不是为了“重写一个 Unix”，而是因为现有系统
 
 ## 2. 目标、需求与抽象推导
 
-本节按四层组织：**愿景目标**说明系统想建立什么秩序，**硬需求**说明第一阶段必须被验证的能力，**抽象推导**说明这些需求强制推出哪些基础抽象，**设计约束**说明做取舍时不能越过的边界。后续主线章节应从这里承接需求，而不是先发明抽象再寻找理由。
+本节按四层组织：**愿景目标**说明系统想建立什么秩序，**硬需求摘要**说明第一阶段必须被验证的能力类别，**抽象推导摘要**说明哪些抽象是被需求强制推出的，**设计约束**说明做取舍时不能越过的边界。完整需求和推导索引见 [requirements.md](./requirements.md)。
 
 ### 2.1 愿景目标
 
 Ousia OS 的目标是建立一套新的默认秩序：软件以声明式单元交付，运行默认受能力约束，系统以服务图组织，数据拥有语义，通信和调度原生支持同步调用、异步 Operation、等待、取消、背压和优先级传播，兼容性被限制在边界上。
 
-| 目标域         | 顶层目标                                                                 | 主线承接 |
-| -------------- | ------------------------------------------------------------------------ | -------- |
-| 软件交付       | 软件交付、依赖解析、运行环境、服务生命周期和回滚由系统统一管理           | Package Cell、Service Graph |
-| 权限与隔离     | Capsule 默认无权限，所有资源访问都通过 Capability 显式授予、传递和回收   | Capsule、Capability |
-| 系统组织       | Service Graph 替代全局命名空间成为原生系统组织方式                      | Service Graph |
-| 通信与等待     | Communication Fabric 统一同步调用、异步请求、事件等待和高吞吐数据面      | Portal、Operation、Continuation、EventPort、SharedQueue |
-| 数据与 VM      | Object Namespace、Object Store、Stream 和 MemoryObject 构成原生命名、数据与 VM 模型 | Object Namespace、MemoryObject |
-| 计算与调度     | Compute Domain 和 Execution Class 统一描述异构计算、实时性、交互性、吞吐和功耗预算 | Compute Domain、Execution Class |
-| 驱动与硬件     | 驱动主逻辑默认在用户态运行，内核只提供隔离、仲裁、复位、IOMMU/DMA、MMIO 授权和 fast-path assist | Hardware Core、Driver Host |
-| 兼容性         | Linux/POSIX 兼容通过 Compatibility Domain 承接，不污染原生 API           | Compatibility Domain |
+| 目标域     | 顶层目标                                                                                        | 主线承接                                                |
+| ---------- | ----------------------------------------------------------------------------------------------- | ------------------------------------------------------- |
+| 软件交付   | 软件交付、依赖解析、运行环境、服务生命周期和回滚由系统统一管理                                  | Package Cell、Service Graph                             |
+| 权限与隔离 | Capsule 默认无权限，所有资源访问都通过 Capability 显式授予、传递和回收                          | Capsule、Capability                                     |
+| 系统组织   | Service Graph 替代全局命名空间成为原生系统组织方式                                              | Service Graph                                           |
+| 通信与等待 | Communication Fabric 统一同步调用、异步请求、事件等待和高吞吐数据面                             | Portal、Operation、Continuation、EventPort、SharedQueue |
+| 数据与 VM  | Object Namespace、Object Store、Stream 和 MemoryObject 构成原生命名、数据与 VM 模型             | Object Namespace、MemoryObject                          |
+| 计算与调度 | Compute Domain 和 Execution Class 统一描述异构计算、实时性、交互性、吞吐和功耗预算              | Compute Domain、Execution Class                         |
+| 驱动与硬件 | 驱动主逻辑默认在用户态运行，内核只提供隔离、仲裁、复位、IOMMU/DMA、MMIO 授权和 fast-path assist | Hardware Core、Driver Host                              |
+| 兼容性     | Linux/POSIX 兼容通过 Compatibility Domain 承接，不污染原生 API                                  | Compatibility Domain                                    |
 
-### 2.2 第一阶段硬需求
+### 2.2 第一阶段硬需求摘要
 
-硬需求是第一阶段验收条件，不是实现细节偏好。一个主线设计如果不能说明自己满足哪条硬需求，就不应成为第一阶段核心设计；一个抽象如果不能自然满足相关硬需求，就说明抽象边界需要重画。
+硬需求是第一阶段验收条件，不是实现细节偏好。完整需求编号、验收条件和主线承接见 [requirements.md](./requirements.md)。总纲只保留需求类别：
 
-| 编号 | 需求                                   | 验收条件                                                                                      | 主线承接 |
-| ---- | -------------------------------------- | --------------------------------------------------------------------------------------------- | -------- |
-| R1   | 类 FUSE 的存储接入                     | 本地、远程、加密、同步和兼容投影存储都能作为 provider 接入系统                                | FS Provider |
-| R2   | FS 可挂载到目录                        | native provider 的目录下可挂载 remote provider；路径解析跨 provider 后仍返回统一 ObjectHandle | Object Namespace |
-| R3   | mmap 必须是原生能力                    | 文件/对象可映射为 MemoryObject；缺页路径有明确供页者、故障模型、优先级和回写边界              | MemoryObject、Pager |
-| R4   | 大数据路径支持 zero-copy / low-copy    | 大块 IO、mmap、设备 DMA、共享缓冲区和 provider fast path 不因抽象边界被迫复制                 | IOBuffer、SharedQueue、TransferArena |
-| R5   | 同步与异步都是一等调用形态             | 小控制面支持低延迟 sync call；长请求可取消、超时、等待、late reply                            | Communication Fabric |
-| R6   | 用户态服务不能牺牲热路径               | 高频 FS/driver/network 路径具备 fast call、batch、queue、bypass 或 direct descriptor 形态     | Portal fast call、bypass session |
-| R7   | 权限必须可组合、可审计、可撤销         | 打开、挂载、mmap、DMA、跨 Capsule 传递都必须由 Capability 表达并可撤销                        | Capability、ObjectHandle、DMA capability |
-| R8   | 兼容性不能污染原生 API                 | POSIX open/read/write/mount/fuse 由兼容域或网关翻译，不成为原生对象模型                       | Compatibility Domain、POSIX projection |
-| R9   | 远程资源必须是一等场景                 | 远程 FS、远程服务和远程对象的延迟、断连、一致性和 durability fence 有系统级表达               | Remote-backed MemoryObject、Lease、Fence |
-| R10  | 安装、升级、回滚和多版本并存必须系统化 | 应用不依赖 PATH/bashrc/profile 拼装；依赖和生命周期由系统记录、激活和回滚                     | Package Cell、Environment / Config Service |
+- 存储接入：类 FUSE provider、目录挂载、远程 FS、兼容投影。
+- VM 与数据路径：`mmap`、Remote-backed MemoryObject、zero-copy / low-copy、共享队列和 DMA 授权。
+- 通信与热路径：同步/异步一等、Portal fast call、batch、bypass session、late reply。
+- 权限与兼容：Capability 授权、审计、撤销，以及 POSIX 兼容域边界。
+- 软件生命周期：Package Cell 安装、升级、回滚、多版本并存和环境声明化。
 
-### 2.3 抽象推导
+### 2.3 抽象推导摘要
 
-硬需求的作用是压缩设计空间。Ousia 的核心抽象应从需求组合中推出，而不是从现有系统名词复制而来。
+硬需求的作用是压缩设计空间。Ousia 的核心抽象应从需求组合中推出，而不是从现有系统名词复制而来。完整推导表和结论落点见 [requirements.md](./requirements.md)。当前已经接受的主线结论是：
 
-| 需求组合 | 结论 |
-| -------- | ---- |
-| R1 + R2 + R3 | 系统不能只提供私有 RPC 文件服务；必须有 Object Namespace、FS Provider、ObjectHandle 和 MemoryObject。 |
-| R1 + R2 + R8 | 系统不能内置 POSIX VFS 作为原生模型；需要 Object/Provider/Capability VFS-like 层，POSIX 由兼容域投影。 |
-| R3 + R4 + R9 | 远程 FS 的 mmap 必须落成本地 Remote-backed MemoryObject；CPU fault 不能直接等价为任意远程 RPC。 |
-| R4 + R6 + R7 | zero-copy 不是裸共享内存；必须由 Capability 授权 MemoryDescriptor、IOBuffer、SharedQueue 和 IOMMU 映射。 |
-| R5 + R6 | Communication Fabric 不能只是 Future 框架，也不能只是阻塞 IPC；必须同时有 Portal fast call、Operation、Continuation、EventPort 和 bypass session。 |
-| R7 + R8 | 兼容域不能绕过原生权限模型；兼容域网关必须把 POSIX 资源翻译为受 Capability 约束的原生对象。 |
-| R10 + R7 | Package Cell 的依赖、环境和服务暴露必须生成可审计的能力请求，而不是修改全局 PATH 或 profile。 |
+- `类 FUSE 接入 + 目录挂载 + mmap` 推出 Object Namespace、FS Provider、ObjectHandle 和 MemoryObject。
+- `类 FUSE 接入 + 目录挂载 + POSIX 隔离` 推出 Object/Provider/Capability VFS-like 层，而不是 POSIX VFS。
+- `mmap + zero-copy + 远程资源` 推出 Remote-backed MemoryObject；CPU fault 不能直接等价为任意远程 RPC。
+- `zero-copy + 用户态热路径 + Capability` 推出受授权的 MemoryDescriptor、IOBuffer、SharedQueue 和 IOMMU 映射。
+- `同步/异步一等 + 用户态热路径` 推出 Portal fast call、Operation、Continuation、EventPort 和 bypass session。
 
 ### 2.4 设计约束
 
