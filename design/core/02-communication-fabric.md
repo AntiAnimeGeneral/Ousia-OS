@@ -333,10 +333,10 @@ data path:
 
 Bypass 不表示“没有端点”，而是把端点分成 control plane 和 data plane：
 
-- control plane endpoint 是 Capability 对象，例如 `FsPortal`、`FileHandle`、`ReadSession`。
+- control plane endpoint 是 Capability 对象，例如服务 Portal、对象 Handle 或数据传输 Session。
 - data plane transport 是该 endpoint 授权后的 `SharedQueue + shared memory + SDK TransferArena`。
 
-以用户态 FS 读取文件为例：
+以纯用户态 FS 方案下的读取为例：
 
 ```text
 open:
@@ -382,6 +382,8 @@ quota / inflight budget is available
 这些检查不应重新执行完整 path lookup 或 ACL traversal。完整权限检查发生在 `open` 和 `create_read_session`；热路径只验证请求是否仍落在该 session 固化的权限快照内。
 
 如果客户端绕过 SDK，OS 不保证 descriptor 语义正确，也不保证 payload 不变。OS 保证的是：未授权 Capsule 拿不到 queue/shared memory/event handle；共享内存不会在仍被引用时释放；映射权限不能被客户端扩大；peer lost、revoke 和 poison 可被观测。协议违规应被限制在该 session 内，FS 可以 drop、返回 CQE error、poison session 或 revoke session。
+
+纯内核态 FS 方案下，高频文件 IO 更自然地落在 IOQueue / IOBuffer / CompletionQueue 上：调用方提交 ObjectHandle + offset + len + IOBuffer 的 descriptor，内核 Object Store 消费请求并完成 CQE。SharedQueue 仍用于用户态服务之间的 bypass 协议，不是内核 Object Store 的必要热路径。
 
 ### 3.6 IPC SDK 与服务框架
 

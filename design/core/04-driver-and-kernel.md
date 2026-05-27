@@ -32,7 +32,7 @@
 - 中断路由
 - 时钟
 - 通用的 IOQueue/IOBuffer 基础
-- Pager-backed Memory Object
+- MemoryObject / Pager 基础
 - 设备 quiesce、reset、revoke、isolate
 - early console / panic path / boot storage minimal path
 
@@ -41,7 +41,7 @@
 - 厂商驱动策略
 - GPU 编译器和 shader 栈
 - 大型 class driver
-- 文件系统格式实现
+- 文件系统格式实现（若选择纯内核态 FS 方案，本条改为禁止 POSIX/VFS 式兼容语义进入内核；Object Store 核心可成为内核 ABI）
 - 网络协议策略
 - 包管理、名字解析、服务发现
 - 可扩展策略插件的任意执行环境
@@ -222,7 +222,7 @@ IOBuffer {
 
 它覆盖：NVMe PRP/SGL、NIC packet buffer、GPU buffer object、audio ring、camera frame buffer 等典型场景。
 
-但 IOBuffer 不应和 Pager-backed Memory Object 被草率地视为“同一种对象”。更准确的关系是：
+但 IOBuffer 不应和 MemoryObject 被草率地视为“同一种对象”。更准确的关系是：
 
 - **Memory Object** 面向 VM 映射、缺页、共享和回写
 - **IOBuffer** 面向设备可达性、pin 生命周期和 DMA 授权

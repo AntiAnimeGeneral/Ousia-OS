@@ -43,10 +43,9 @@
 | OID                         | Object ID，稳定对象标识，不依赖路径。                                        | 路径只是 OID 的命名索引之一。                                  |
 | NameBinding                 | 名称到 Object 或名称到名称的绑定关系。                                       | 用于统一路径引用、软/硬链接类语义。                            |
 | Stream                      | 数据流动抽象，支持背压、取消、批量、优先级、多播等。                         | 不替代对象元数据、设备控制或服务发现。                         |
-| Pager-backed Memory Object  | 可由用户态 Pager 供页、失效、回写并与内核 VM 协作的内存对象。                | 文件映射、共享映射和用户态 FS 的关键原语。                     |
+| Pager-backed Memory Object  | 在纯用户态 FS 方案中由用户态 Pager 供页、失效、回写并与内核 VM 协作的内存对象。 | 文件映射、共享映射和用户态 FS 的关键原语。                     |
 | MemoryObject                | 内核可授权和映射的内存对象，面向 VM、共享、CoW、缺页和回写语义。             | 属于权威对象；授权、转移、撤销和销毁走 Control Path。          |
 | MemoryDescriptor            | 对 MemoryObject / IOBuffer 或其切片的权威描述与授权句柄。                    | 可通过 Portal / Operation 转移；不在 bypass queue 热路径传递。 |
-| Metadata Cache / 元数据快取 | 内核中由用户态 FS 推送维护的热路径只读缓存，如路径到 OID、OID 到基础元数据。 | 目标是让热路径查询不经过 IPC。                                 |
 | IOBuffer                    | 注册内存对象，面向 pin 生命周期、DMA 可达性、设备授权和零拷贝。              | 与 MemoryObject 可共享页框，但语义不同。                       |
 | IOQueue                     | 面向设备或高性能数据面的提交/完成队列。                                      | 设备侧 SharedQueue，带 DMA、doorbell、irq、fence 等语义。      |
 
