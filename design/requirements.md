@@ -47,7 +47,7 @@
 1. 在本文增加新的 `R#`，写清验收条件和主线承接。
 2. 如果需求会改变抽象边界，增加或更新 `D#` 推导。
 3. 如果推导结论已经被接受，把稳定契约写入对应 `core/` 主设计。
-4. 如果只是论证、性能比较或候选方案，放入 `deep-dives/` 或 `reference/`，不要塞回 `target.md`。
+4. 如果只是外部参考、论证、性能比较或候选方案，放入 `notes/reference/` 或 `notes/analysis/`，不要塞回 `target.md`。
 5. 更新 [06-roadmap.md](./topics/06-roadmap.md) 中的 phase 到需求编号映射。
 
 `target.md` 应保持可读入口，不承担完整需求库职责。

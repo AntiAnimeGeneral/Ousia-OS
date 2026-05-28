@@ -1,9 +1,9 @@
 # 07 — 数据抽象与文件系统
 
 > 承接 [target.md](../target.md) 中的数据语义、Object Store、Stream 与文件系统目标，以及 R1/R2/R3/R4/R8/R9 硬需求。
-> 深挖材料：[00-fs-vm.md](../deep-dives/00-fs-vm.md)（目录树分析与 FS+VM 整合）
+> 分析材料：[00-fs-vm.md](../notes/analysis/00-fs-vm.md)（目录树分析与 FS+VM 整合）
 
-本文是数据抽象与文件系统的主设计。`deep-dives/00-fs-vm.md` 是深挖材料，用于展开目录树、索引和 FS/VM 边界的论证。文件系统放置目前只保留两个互斥候选：纯用户态 FS 与纯内核态 FS；混合态元数据缓存/fast-path assist 不作为主线方案。
+本文是数据抽象与文件系统的主设计。`notes/analysis/00-fs-vm.md` 是分析材料，用于展开目录树、索引和 FS/VM 边界的论证。文件系统放置目前只保留两个互斥候选：纯用户态 FS 与纯内核态 FS；混合态元数据缓存/fast-path assist 不作为主线方案。
 
 ## 为什么不只用"目录树 + 字节流"
 
@@ -103,5 +103,5 @@ Object Store 核心语义成为内核 ABI：ObjectHandle、对象元数据、ext
 
 ## 相关章节
 
-- [00-fs-vm.md](../deep-dives/00-fs-vm.md) — 目录树分析、索引设计、结构化类型边界、FS+VM 整合
+- [00-fs-vm.md](../notes/analysis/00-fs-vm.md) — 目录树分析、索引设计、结构化类型边界、FS+VM 整合
 - [03-pager-and-memory.md](./03-pager-and-memory.md) — Pager 细节

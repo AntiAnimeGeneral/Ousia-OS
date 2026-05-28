@@ -2,11 +2,11 @@
 
 > 对应 `target.md` §3.5 + §3.7 + §4.6
 >
-> 姊妹篇：[07-data-and-filesystem.md](../core/07-data-and-filesystem.md)（顶层设计）, [03-pager-and-memory.md](../core/03-pager-and-memory.md)（Pager 细节）
+> 姊妹篇：[07-data-and-filesystem.md](../../core/07-data-and-filesystem.md)（顶层设计）, [03-pager-and-memory.md](../../core/03-pager-and-memory.md)（Pager 细节）
 
 ## 讨论范围
 
-本文是 [07-data-and-filesystem.md](../core/07-data-and-filesystem.md) 与 [03-pager-and-memory.md](../core/03-pager-and-memory.md) 的深挖材料，展开目录树、索引和 FS/VM 边界的论证。三部分：现代 FS 实践调研 → 目录树问题分析与 Ousia OS 方案 → VM 整合。顶层契约由 07/03 的主设计章节定义。
+本文是 [07-data-and-filesystem.md](../../core/07-data-and-filesystem.md) 与 [03-pager-and-memory.md](../../core/03-pager-and-memory.md) 的深挖材料，展开目录树、索引和 FS/VM 边界的论证。三部分：现代 FS 实践调研 → 目录树问题分析与 Ousia OS 方案 → VM 整合。顶层契约由 07/03 的主设计章节定义。
 
 ---
 
@@ -142,7 +142,7 @@ du /scope/:
 | **Blob**   | ✅ 保留       | 默认。支持随机读写/mmap/CoW/版本/hole punch                                                                                                                                                                                                               |
 | **Stream** | ✅ 内置       | 只追加语义、不可变历史、时间索引。GC 按时间窗口，不需要 CoW                                                                                                                                                                                               |
 | **Array**  | ❌ 不支持     | `mmap` + `struct` 已是 O(1) 随机访问。类型爆炸和 schema 演化代价远大于收益                                                                                                                                                                                |
-| **KV**     | ❌ 问错了问题 | **配置文件是错误的抽象**。配置管理归属 [04-environment-and-config.md](../topics/04-environment-and-config.md) 的类型化配置服务，而不是在 Object Store 里加 KV 类型存配置文件。Object Store 不应因为兼容 `.yaml` / `.toml` / `.env` 而膨胀成通用配置数据库 |
+| **KV**     | ❌ 问错了问题 | **配置文件是错误的抽象**。配置管理归属 [04-environment-and-config.md](../../topics/04-environment-and-config.md) 的类型化配置服务，而不是在 Object Store 里加 KV 类型存配置文件。Object Store 不应因为兼容 `.yaml` / `.toml` / `.env` 而膨胀成通用配置数据库 |
 
 第一阶段：Blob + Stream。两个类型。不用更多。
 
@@ -244,7 +244,7 @@ Object Store 核心成为内核 ABI，但不等于 POSIX VFS。内核提供 Ousi
 
 # 第三部分：与 VM 系统的整合
 
-> Pager 基本设计见 [03-pager-and-memory.md](../core/03-pager-and-memory.md)。此处只讨论两种 FS 放置方案下的 VM 边界。
+> Pager 基本设计见 [03-pager-and-memory.md](../../core/03-pager-and-memory.md)。此处只讨论两种 FS 放置方案下的 VM 边界。
 
 ## 3.1 VM 边界随 FS 放置变化
 
@@ -308,7 +308,7 @@ Object Store 核心成为内核 ABI，但不等于 POSIX VFS。内核提供 Ousi
 
 ## 相关章节
 
-- [07-data-and-filesystem.md](../core/07-data-and-filesystem.md) — Object Store + Stream 顶层设计
-- [03-pager-and-memory.md](../core/03-pager-and-memory.md) — Pager 细节（崩溃模型、缺页协议）
-- [00-philosophy.md](../core/00-philosophy.md) — 反"一切皆文件"和"路径即身份"的哲学基础
-- [06-roadmap.md](../topics/06-roadmap.md) — 实现顺序
+- [07-data-and-filesystem.md](../../core/07-data-and-filesystem.md) — Object Store + Stream 顶层设计
+- [03-pager-and-memory.md](../../core/03-pager-and-memory.md) — Pager 细节（崩溃模型、缺页协议）
+- [00-philosophy.md](../../core/00-philosophy.md) — 反"一切皆文件"和"路径即身份"的哲学基础
+- [06-roadmap.md](../../topics/06-roadmap.md) — 实现顺序

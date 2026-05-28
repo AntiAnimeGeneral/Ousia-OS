@@ -38,33 +38,29 @@
 | 身份与账户            | [topics/05-identity-and-accounts.md](./topics/05-identity-and-accounts.md)   | 当设计涉及用户身份、设备身份、信任和 Package Cell 发布者时。 |
 | 路线图                | [topics/06-roadmap.md](./topics/06-roadmap.md)                               | 当需要确定第一阶段顺序、非目标和验收闭环时。                 |
 
-### 1.4 深挖、研究与参考
+### 1.4 参考与分析笔记
 
-| 类别            | 文档                                                                               | 职责                                                                   |
-| --------------- | ---------------------------------------------------------------------------------- | ---------------------------------------------------------------------- |
-| FS/VM 深挖      | [deep-dives/00-fs-vm.md](./deep-dives/00-fs-vm.md)                                 | 保存 FS/VM 候选方案、调研、裁决标准和开放问题。                        |
-| IPC 研究        | [research/00-ipc-sel4-fuchsia.md](./research/00-ipc-sel4-fuchsia.md)               | 保存 seL4 / Fuchsia IPC 背景和比较材料。                               |
-| 旁路参考        | [reference/00-bypass-first-class.md](./reference/00-bypass-first-class.md)         | 解释内核旁路作为第一公民的数据面模式。                                 |
-| 驱动模式参考    | [reference/01-modern-driver-patterns.md](./reference/01-modern-driver-patterns.md) | 比较 WDDM、DRM、DFv2、DriverKit、io_uring、AF_XDP、SPDK、Asterinas。   |
-| Driver SDK 草案 | [reference/02-driver-sdk-draft.md](./reference/02-driver-sdk-draft.md)             | 保存 SDK 轮廓、API 草图和工具链方向。                                  |
-| 子系统路径矩阵  | [reference/03-subsystem-path-matrix.md](./reference/03-subsystem-path-matrix.md)   | 比较 FS / GPU / NIC / NVMe 的 control path、data path 和 bypass 边界。 |
-| 事件等待参考    | [reference/04-epoll-and-kqueue.md](./reference/04-epoll-and-kqueue.md)             | 比较 epoll / kqueue 的 wait set、ready notification 和 rearm 语义。    |
-| 参考索引        | [reference/README.md](./reference/README.md)                                       | 组织 reference 阅读顺序。                                              |
+| 类别         | 文档                                                                               | 职责                                                       |
+| ------------ | ---------------------------------------------------------------------------------- | ---------------------------------------------------------- |
+| 外部参考     | [notes/reference/README.md](./notes/reference/README.md)                           | 保存外部系统、外部机制和现有技术模式。                     |
+| IPC 参考     | [notes/reference/00-ipc-sel4-fuchsia.md](./notes/reference/00-ipc-sel4-fuchsia.md) | 保存 seL4 / Fuchsia IPC 背景、机制和比较材料。             |
+| 事件等待参考 | [notes/reference/01-epoll-and-kqueue.md](./notes/reference/01-epoll-and-kqueue.md) | 比较 epoll / kqueue 的 wait set、ready notification 语义。 |
+| 设计分析     | [notes/analysis/README.md](./notes/analysis/README.md)                             | 保存 Ousia 设计判断、候选方案、SDK 草案和子系统路径矩阵。  |
+| FS/VM 分析   | [notes/analysis/00-fs-vm.md](./notes/analysis/00-fs-vm.md)                         | 保存 FS/VM 候选方案、调研、裁决标准和开放问题。            |
 
 ## 2. 文档层级
 
-| 层级     | 文档                                 | 职责                                                           |
-| -------- | ------------------------------------ | -------------------------------------------------------------- |
-| 大纲层   | 本文                                 | 提供全文档地图、阅读路径、归属表和查漏补缺清单。               |
-| 问题层   | [pain-points.md](./pain-points.md)   | 解释为什么现有系统不够好，提供案例和动机。                     |
-| 总纲层   | [target.md](./target.md)             | 定义愿景目标、需求摘要、推导摘要、设计约束、非目标和落地顺序。 |
-| 需求层   | [requirements.md](./requirements.md) | 保存可增长的硬需求库、抽象推导索引和结论落点。                 |
-| 术语层   | [glossary.md](./glossary.md)         | 定义项目术语，避免同一概念在不同文档漂移。                     |
-| 主设计层 | [core/](./core/)                     | 定义可长期演进的系统抽象和主线契约。                           |
-| 专题层   | [topics/](./topics/)                 | 处理跨主线的边界问题、工程路线、兼容性和路线图。               |
-| 深挖层   | [deep-dives/](./deep-dives/)         | 保存论证、候选方案、裁决标准和开放问题，不作为唯一主规范。     |
-| 研究层   | [research/](./research/)             | 保存外部系统研究和设计背景。                                   |
-| 参考层   | [reference/](./reference/)           | 保存路径矩阵、SDK 草案、调研材料和可替换的工程背景。           |
+| 层级     | 文档                                   | 职责                                                           |
+| -------- | -------------------------------------- | -------------------------------------------------------------- |
+| 大纲层   | 本文                                   | 提供全文档地图、阅读路径、归属表和查漏补缺清单。               |
+| 问题层   | [pain-points.md](./pain-points.md)     | 解释为什么现有系统不够好，提供案例和动机。                     |
+| 总纲层   | [target.md](./target.md)               | 定义愿景目标、需求摘要、推导摘要、设计约束、非目标和落地顺序。 |
+| 需求层   | [requirements.md](./requirements.md)   | 保存可增长的硬需求库、抽象推导索引和结论落点。                 |
+| 术语层   | [glossary.md](./glossary.md)           | 定义项目术语，避免同一概念在不同文档漂移。                     |
+| 主设计层 | [core/](./core/)                       | 定义可长期演进的系统抽象和主线契约。                           |
+| 专题层   | [topics/](./topics/)                   | 处理跨主线的边界问题、工程路线、兼容性和路线图。               |
+| 笔记层   | [notes/reference/](./notes/reference/) | 保存外部系统、外部机制和现有技术模式，不作为 Ousia 规范。      |
+| 分析层   | [notes/analysis/](./notes/analysis/)   | 保存 Ousia 设计推导、候选方案、草案和深挖，不作为最终规范。    |
 
 ## 3. 语义归属表
 
@@ -100,7 +96,7 @@ AI review 全文档时，应按下列顺序检查：
 3. `target.md` 是否仍保持摘要入口，没有吸收完整需求库或详细论证。
 4. `topics/06-roadmap.md` 的 phase 是否引用了正确需求编号。
 5. 同一术语是否只在 [glossary.md](./glossary.md) 定义一次。
-6. 深挖和参考文档中的新结论是否已经同步回 owning core 文档，或明确标记为候选方案。
+6. notes 中的新结论是否已经同步回 owning core/topics 文档，或明确标记为候选方案。
 7. POSIX、Unix、FUSE、VFS、path、file 等兼容概念是否停留在兼容层或投影层，没有污染原生 API。
 8. 同步和异步是否都保持 first-class，没有把其中一种写成唯一正确路径。
 9. 用户态服务、微内核、能力模型和旁路路径是否仍满足热路径性能约束。
@@ -113,5 +109,5 @@ AI review 全文档时，应按下列顺序检查：
 - [glossary.md](./glossary.md) 定义术语，不保存设计论证。
 - `core/` 文档保存稳定契约，不保留长篇外部系统调研。
 - `topics/` 文档处理跨主线边界，不拥有主抽象定义。
-- `deep-dives/` 和 `reference/` 文档可以展开论证和草案，但结论稳定后必须回写 owning 文档。
+- `notes/reference/` 只保存外部材料；`notes/analysis/` 可以展开论证、草案和深挖，但结论稳定后必须回写 owning 文档。
 - 当同一语义在多个文档出现时，保留 owning 文档中的定义，其他位置改成链接、编号或一句话摘要。
