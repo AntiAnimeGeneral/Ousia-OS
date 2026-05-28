@@ -48,6 +48,7 @@
 | 驱动模式参考    | [reference/01-modern-driver-patterns.md](./reference/01-modern-driver-patterns.md) | 比较 WDDM、DRM、DFv2、DriverKit、io_uring、AF_XDP、SPDK、Asterinas。   |
 | Driver SDK 草案 | [reference/02-driver-sdk-draft.md](./reference/02-driver-sdk-draft.md)             | 保存 SDK 轮廓、API 草图和工具链方向。                                  |
 | 子系统路径矩阵  | [reference/03-subsystem-path-matrix.md](./reference/03-subsystem-path-matrix.md)   | 比较 FS / GPU / NIC / NVMe 的 control path、data path 和 bypass 边界。 |
+| 事件等待参考    | [reference/04-epoll-and-kqueue.md](./reference/04-epoll-and-kqueue.md)             | 比较 epoll / kqueue 的 wait set、ready notification 和 rearm 语义。    |
 | 参考索引        | [reference/README.md](./reference/README.md)                                       | 组织 reference 阅读顺序。                                              |
 
 ## 2. 文档层级

@@ -16,6 +16,9 @@
 4. [03-subsystem-path-matrix.md](./03-subsystem-path-matrix.md)
    FS / GPU / NIC / NVMe 的统一路径矩阵：哪些走 Portal / Operation，哪些走 syscall，哪些走 bypass。
 
+5. [04-epoll-and-kqueue.md](./04-epoll-and-kqueue.md)
+   Linux `epoll` 与 BSD/macOS `kqueue` 的事件等待模型，以及它们对 Ousia EventPort / WaitSet 的启示。
+
 这些 reference 文档提供背景、比较和草图。通信原语由 [core/02-communication-fabric.md](../core/02-communication-fabric.md) 定义；驱动和旁路设计由 [core/04-driver-and-kernel.md](../core/04-driver-and-kernel.md) 定义。
 
 ## 当前最重要的三条判断
