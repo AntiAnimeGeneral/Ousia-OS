@@ -71,17 +71,17 @@ Ousia OS 的设计不是为了“重写一个 Unix”，而是因为现有系统
 
 Ousia OS 的目标是建立一套新的默认秩序：软件以声明式单元交付，运行默认受能力约束，系统以服务图组织，数据拥有语义，身份去中心化且不等同于权限，通信和调度原生支持同步调用、异步 Operation、等待、取消、背压和优先级传播，兼容性被限制在边界上。
 
-| 目标域     | 顶层目标                                                                                        | 主线承接                                                |
-| ---------- | ----------------------------------------------------------------------------------------------- | ------------------------------------------------------- |
-| 软件交付   | 软件交付、依赖解析、运行环境、服务生命周期和回滚由系统统一管理                                  | Package Cell、Service Graph                             |
+| 目标域     | 顶层目标                                                                                                         | 主线承接                                                |
+| ---------- | ---------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------- |
+| 软件交付   | 软件交付、依赖解析、运行环境、服务生命周期和回滚由系统统一管理                                                   | Package Cell、Service Graph                             |
 | 权限与隔离 | Capsule 默认无权限，所有资源访问都通过 Capability 显式授予；内核可见能力支持派生链硬撤销，服务语义授权按类别失效 | Capsule、Capability                                     |
-| 身份与信任 | Identity 证明主体，Device Owner / Policy Authority 替代传统 root，PIN 只解锁本地 Key Agent      | Identity、Key Agent                                     |
-| 系统组织   | Service Graph 替代全局命名空间成为原生系统组织方式                                              | Service Graph                                           |
-| 通信与等待 | Communication Fabric 统一同步调用、异步请求、事件等待和高吞吐数据面                             | Portal、Operation、Continuation、EventPort、SharedQueue |
-| 数据与 VM  | Object Namespace、Object Store、Stream 和 MemoryObject 构成原生命名、数据与 VM 模型             | Object Namespace、MemoryObject                          |
-| 计算与调度 | Compute Domain 和 Execution Class 统一描述异构计算、实时性、交互性、吞吐和功耗预算              | Compute Domain、Execution Class                         |
-| 驱动与硬件 | 驱动主逻辑默认在用户态运行，内核只提供隔离、仲裁、复位、IOMMU/DMA、MMIO 授权和 fast-path assist | Hardware Core、Driver Host                              |
-| 兼容性     | Linux/POSIX 兼容通过 Compatibility Domain 承接，不污染原生 API                                  | Compatibility Domain                                    |
+| 身份与信任 | Identity 证明主体，Device Owner / Policy Authority 替代传统 root，PIN 只解锁本地 Key Agent                       | Identity、Key Agent                                     |
+| 系统组织   | Service Graph 替代全局命名空间成为原生系统组织方式                                                               | Service Graph                                           |
+| 通信与等待 | Communication Fabric 统一同步调用、异步请求、事件等待和高吞吐数据面                                              | Portal、Operation、Continuation、EventPort、SharedQueue |
+| 数据与 VM  | Object Namespace、Object Store、Stream 和 MemoryObject 构成原生命名、数据与 VM 模型                              | Object Namespace、MemoryObject                          |
+| 计算与调度 | Compute Domain 和 Execution Class 统一描述异构计算、实时性、交互性、吞吐和功耗预算                               | Compute Domain、Execution Class                         |
+| 驱动与硬件 | 驱动主逻辑默认在用户态运行，内核只提供隔离、仲裁、复位、IOMMU/DMA、MMIO 授权和 fast-path assist                  | Hardware Core、Driver Host                              |
+| 兼容性     | Linux/POSIX 兼容通过 Compatibility Domain 承接，不污染原生 API                                                   | Compatibility Domain                                    |
 
 ### 2.2 第一阶段硬需求摘要
 

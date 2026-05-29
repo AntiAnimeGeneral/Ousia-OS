@@ -1,6 +1,6 @@
-# 13 — 文件系统与 VM 深度设计
+# 00 — 文件系统与 VM 深度设计
 
-> 对应 `target.md` §3.5 + §3.7 + §4.6
+> 深挖 [target.md](../../target.md) 中的数据、VM、兼容性与性能目标。
 >
 > 姊妹篇：[07-data-and-filesystem.md](../../core/07-data-and-filesystem.md)（顶层设计）, [03-pager-and-memory.md](../../core/03-pager-and-memory.md)（Pager 细节）
 

@@ -1,6 +1,6 @@
 # 06 — 路线图与非目标
 
-> 对应 [target.md](../target.md) §5 + §6 + §7，以及 [requirements.md](../requirements.md) 的需求编号。全文档地图见 [outline.md](../outline.md)。
+> 承接 [target.md](../target.md) 的非目标、落地顺序和设计判断标准，以及 [requirements.md](../requirements.md) 的需求编号。全文档地图见 [outline.md](../outline.md)。
 
 ## 非目标（第一阶段绝对不做）
 
@@ -41,19 +41,19 @@
 
 ## 第一阶段落地顺序
 
-| Phase                 | 需求               | 目标                                                                  | 核心验证                                                    |
-| --------------------- | ------------------ | --------------------------------------------------------------------- | ----------------------------------------------------------- |
+| Phase                 | 需求               | 目标                                                                                     | 核心验证                                                    |
+| --------------------- | ------------------ | ---------------------------------------------------------------------------------------- | ----------------------------------------------------------- |
 | 0.5: 能力核心合同     | R7                 | CapSlot/CSpace 等价结构 + 派生链 + rights 单调性 + delete/revoke/destroy/generation 语义 | 派生 READ-only 后撤销父句柄后代；stale descriptor 明确失败  |
-| 1a: 微内核原语        | R5, R7             | QEMU 中启动内核，任务+Portal/Operation+能力句柄+抢占调度+启动句柄注入 | 两个任务通过 Portal fast call 传递能力句柄并验证撤销语义    |
-| 1a.5: 异步通信原语    | R5, R6             | Continuation + EventPort/WaitSet + timeout/cancel/late reply          | 一个任务提交异步 Operation，另一个任务延迟完成并唤醒 Future |
-| 1b: 名字服务+Capsule  | R7, R10            | Service Graph bootstrap + Capsule 生命周期                            | Capsule 通过名字服务发现并调用另一个 Capsule                |
-| 1c: Object Namespace  | R1, R2, R7, R8, R9 | 路径解析 + ProviderRoot + MountBinding + ObjectHandle 缓存与撤销      | native 目录挂载 remote provider；应用拿到统一 ObjectHandle  |
-| 1d: MemoryObject      | R3, R4, R9         | 缺页处理 + 纯用户态 Pager / 纯内核 Object Store 两条供页路径          | mmap 缺页正常供页；故障按所选 FS 放置方案处理               |
-| 1e: 最小对象存储      | R1, R2, R3         | 对象 CRUD + 元数据 + 标签 + tier-1 tree view；裁决用户态或内核态落地  | OID 与 tree view 正交；在冻结 FS / VM ABI 前完成放置裁决    |
-| 1e.5: 身份与密钥预留  | R7, R11            | IdentityHandle + Device Owner / Policy Authority + Key Agent 元数据   | PIN 不等于私钥或 root；加密 FS 可表达 key policy            |
-| 1f: Package Cell 原型 | R7, R10            | 声明式安装/激活/回滚/卸载 + 多版本并存                                | 安装两个依赖不同版本库的 Cell                               |
-| 1g: 驱动框架原型      | R4, R6, R7         | 设备能力句柄 + IOMMU 授权 + IOQueue/IOBuffer + 用户态 MMIO            | 用户态 NVMe 队列提交/完成；驱动崩溃→撤销 DMA→复位→恢复      |
-| 1h: 兼容层            | R1, R2, R7, R8     | Linux 兼容域（类 WSL2 VM）+ 兼容域网关                                | 兼容域内运行 bash+gcc+编译 C 程序                           |
+| 1a: 微内核原语        | R5, R7             | QEMU 中启动内核，任务+Portal/Operation+能力句柄+抢占调度+启动句柄注入                    | 两个任务通过 Portal fast call 传递能力句柄并验证撤销语义    |
+| 1a.5: 异步通信原语    | R5, R6             | Continuation + EventPort/WaitSet + timeout/cancel/late reply                             | 一个任务提交异步 Operation，另一个任务延迟完成并唤醒 Future |
+| 1b: 名字服务+Capsule  | R7, R10            | Service Graph bootstrap + Capsule 生命周期                                               | Capsule 通过名字服务发现并调用另一个 Capsule                |
+| 1c: Object Namespace  | R1, R2, R7, R8, R9 | 路径解析 + ProviderRoot + MountBinding + ObjectHandle 缓存与撤销                         | native 目录挂载 remote provider；应用拿到统一 ObjectHandle  |
+| 1d: MemoryObject      | R3, R4, R9         | 缺页处理 + 纯用户态 Pager / 纯内核 Object Store 两条供页路径                             | mmap 缺页正常供页；故障按所选 FS 放置方案处理               |
+| 1e: 最小对象存储      | R1, R2, R3         | 对象 CRUD + 元数据 + 标签 + tier-1 tree view；裁决用户态或内核态落地                     | OID 与 tree view 正交；在冻结 FS / VM ABI 前完成放置裁决    |
+| 1e.5: 身份与密钥预留  | R7, R11            | IdentityHandle + Device Owner / Policy Authority + Key Agent 元数据                      | PIN 不等于私钥或 root；加密 FS 可表达 key policy            |
+| 1f: Package Cell 原型 | R7, R10            | 声明式安装/激活/回滚/卸载 + 多版本并存                                                   | 安装两个依赖不同版本库的 Cell                               |
+| 1g: 驱动框架原型      | R4, R6, R7         | 设备能力句柄 + IOMMU 授权 + IOQueue/IOBuffer + 用户态 MMIO                               | 用户态 NVMe 队列提交/完成；驱动崩溃→撤销 DMA→复位→恢复      |
+| 1h: 兼容层            | R1, R2, R7, R8     | Linux 兼容域（类 WSL2 VM）+ 兼容域网关                                                   | 兼容域内运行 bash+gcc+编译 C 程序                           |
 
 ## 设计判断标准
 

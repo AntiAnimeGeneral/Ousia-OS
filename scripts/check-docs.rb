@@ -19,7 +19,7 @@ markdown_files = Dir.glob((DESIGN_DIR / "**/*.md").to_s).map { |path| Pathname.n
 
 markdown_files.each do |file|
   text = file.read
-  text.scan(/\[[^\]]*\]\(([^)]+)\)/).flatten.each do |raw_target|
+  text.scan(/\[([^\]]*)\]\(([^)]+)\)/).each do |link_text, raw_target|
     target = raw_target.strip.split(/\s+/, 2).first
     next if target.nil? || target.empty?
     next if target.start_with?("http://", "https://", "mailto:", "#")
@@ -28,22 +28,21 @@ markdown_files.each do |file|
     next if path.empty? || !path.end_with?(".md")
 
     full_path = (file.dirname / path).expand_path
-    next if full_path.file?
+    if full_path.file?
+      target_basename = Pathname.new(path).basename.to_s
+      if link_text.match?(/\A\d{2}-.+\.md\z/) && link_text != target_basename
+        errors << "markdown link text does not match target filename: #{file.relative_path_from(ROOT)} has [#{link_text}] -> #{target_basename}"
+      end
+
+      next
+    end
 
     errors << "broken markdown link: #{file.relative_path_from(ROOT)} -> #{target}"
   end
 end
 
-core_files = Dir.glob((CORE_DIR / "*.md").to_s).map { |path| Pathname.new(path) }.sort
-numbered_core_files = core_files.select { |file| file.basename.to_s.match?(/\A\d{2}-/) }
-actual_numbers = numbered_core_files.map { |file| file.basename.to_s[/\A\d{2}/].to_i }
-expected_numbers = (0...numbered_core_files.length).to_a
-
-if actual_numbers != expected_numbers
-  errors << "core chapter numbers are not continuous: expected #{expected_numbers.map { |n| format('%02d', n) }.join(', ')}, got #{actual_numbers.map { |n| format('%02d', n) }.join(', ')}"
-end
-
-numbered_core_files.each do |file|
+numbered_markdown_files = markdown_files.select { |file| file.basename.to_s.match?(/\A\d{2}-/) }
+numbered_markdown_files.each do |file|
   filename_number = file.basename.to_s[/\A\d{2}/]
   first_heading = file.each_line.find { |line| line.start_with?("# ") }
 
@@ -60,6 +59,15 @@ numbered_core_files.each do |file|
   end
 end
 
+core_files = Dir.glob((CORE_DIR / "*.md").to_s).map { |path| Pathname.new(path) }.sort
+numbered_core_files = core_files.select { |file| file.basename.to_s.match?(/\A\d{2}-/) }
+actual_numbers = numbered_core_files.map { |file| file.basename.to_s[/\A\d{2}/].to_i }
+expected_numbers = (0...numbered_core_files.length).to_a
+
+if actual_numbers != expected_numbers
+  errors << "core chapter numbers are not continuous: expected #{expected_numbers.map { |n| format('%02d', n) }.join(', ')}, got #{actual_numbers.map { |n| format('%02d', n) }.join(', ')}"
+end
+
 stale_core_refs = {
   "01-package-cell.md" => "08-package-cell.md",
   "02-capsule-and-capability.md" => "01-capsule-and-capability.md",
@@ -71,12 +79,23 @@ stale_core_refs = {
   "08-communication-fabric.md" => "02-communication-fabric.md"
 }
 
+stale_topic_refs = {
+  "10-compatibility.md" => "01-compatibility.md",
+  "15-environment-and-deps.md" => "04-environment-and-config.md"
+}
+
+stale_refs = stale_core_refs.merge(stale_topic_refs)
+
 markdown_files.each do |file|
   text = file.read
-  stale_core_refs.each do |old_name, new_name|
+  stale_refs.each do |old_name, new_name|
     next unless text.include?(old_name)
 
-    warnings << "possible stale core reference in #{file.relative_path_from(ROOT)}: #{old_name} should usually be #{new_name}"
+    errors << "stale reference in #{file.relative_path_from(ROOT)}: #{old_name} should usually be #{new_name}"
+  end
+
+  if text.match?(/target\.md[^\n]*§\d/)
+    errors << "stale target.md section reference in #{file.relative_path_from(ROOT)}"
   end
 end
 
