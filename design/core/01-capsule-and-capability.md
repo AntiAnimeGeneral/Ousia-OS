@@ -4,7 +4,7 @@
 
 ## 讨论范围
 
-Capsule 是 Ousia OS 的运行单元，Capability 是 Ousia OS 的权限单元。本文讨论两者的设计细节、交互方式，以及能力撤销的实现策略。
+Capsule 是 Ousia OS 的运行单元，Capability 是 Ousia OS 的权限单元。本文讨论两者的设计细节、交互方式，以及能力派生、转发和撤销的实现策略。
 
 ---
 
@@ -63,6 +63,9 @@ Capsule 启动时的默认视图：
 Capability {
     object: ObjectReference,   // 指向的目标对象
     rights: RightsMask,        // 允许的操作（READ | WRITE | EXEC | GRANT | ...）
+    parent: Option<CapabilityID>, // 内核可见派生来源
+    generation: Generation,    // 缓存描述符和映射失效版本
+    transfer: TransferPolicy,  // 是否可转发、可派生、需租约或 Broker
     audit_tag: AuditID,        // 传播链日志
 }
 ```
@@ -70,9 +73,10 @@ Capability {
 关键性质：
 
 - **不可伪造**：句柄由内核管理，用户态无法构造
-- **可传递**：通过 IPC 消息发送给其他 Capsule
-- **可拆分**：从 READ|WRITE 句柄派生出 READ-only 句柄
-- **可失效**：按能力类别支持直接撤销、租约过期或失效通知
+- **按策略可传递**：只有携带相应转发权限的句柄才能通过 IPC 发送给其他 Capsule
+- **可拆分**：从 READ|WRITE 句柄派生出 READ-only 句柄；派生后权限只能单调减少，不能增加
+- **可硬撤销**：内核可见能力维护派生链，支持删除当前句柄、撤销所有后代句柄和销毁底层对象
+- **可语义失效**：服务级授权按能力类别使用租约过期、generation 失效通知或 Broker 协议
 - **可审计**：传播链日志记录句柄从哪里来到哪里去
 
 ### 能力类型体系
@@ -113,9 +117,19 @@ PIN 或生物识别只解锁本地 Key Agent，用于批准短期签名、解密
 
 ---
 
-## 能力撤销：分阶段实现
+## 与 seL4 的关系：底层不应弱于 seL4
 
-### 为什么撤销量这么难
+seL4 的优雅之处在于边界极窄：内核只管理少量对象和 capability，所有 capability 位于 CSpace 中，复制、派生和删除都由内核记录；`CNode_Revoke` 删除某个 capability 的所有子 capability。它强的是**内核可见能力派生树上的硬撤销**，不是服务状态回滚、缓存数据追回或业务语义撤销。
+
+Ousia OS 不应宣称自己在微内核能力核心上天然比 seL4 更强。最佳方案是：第 0 层内核能力核心采用不弱于 seL4 的硬派生与硬撤销模型；在它之上，Ousia 再提供更面向现代系统的类型化资源、Service Graph、租约、对象 generation、IOBuffer/IOMMU 和 Package Cell 语义。换句话说，Ousia 的强大不来自替代 seL4 的能力核心，而来自把这个硬核心扩展成完整平台语义。
+
+因此，Capability Broker 不能替代内核派生树。Broker 只用于服务级委托、跨服务审计、租约续期和失效通知；凡是内核可见对象，撤销必须能在内核内完成。
+
+---
+
+## 能力撤销：硬核心与语义外层
+
+### 为什么不能只做直接撤销
 
 假设：
 
@@ -127,42 +141,45 @@ PIN 或生物识别只解锁本地 Key Agent，用于批准短期签名、解密
 
 需要追踪的链：`origin → A → {B → D, C}`
 
-完整的级联撤销需要：
+如果只删除 A 手中的原始句柄，B、C、D 手中的派生句柄仍然可能有效。这不是能力系统，而只是引用计数。内核可见能力必须至少支持：
 
-- 追踪每个能力句柄的派生链
-- 跨 Capsule 边界追踪
-- 处理"部分撤销"（如只撤销 WRITE 但保留 READ）
+- 追踪每个能力句柄的派生来源
+- 跨 Capsule 追踪内核可见的 handle passing
+- 处理"部分撤销"（如只撤销 WRITE 派生链，但保留 READ-only 派生链）
+- 让缓存描述符、共享队列 descriptor 和映射在 generation 变化后明确失败
 
-### Ousia OS 的分阶段策略
+### 最佳方案：两层撤销模型
 
-**第一阶段（MVP）**：
+Ousia OS 采用两层模型：
 
-- 内核维护每个能力句柄的直接创建链（谁从谁派生的）
-- 撤销操作：沿内核可见链路失效所有派生句柄
-- 不支持完整级联撤销和任意跨 Capsule 转发追踪；如果能力允许自由转发但没有通过 Broker 或租约协议登记，系统只承诺内核可见句柄失效，不承诺已经发生的服务端状态、缓存描述符或业务委托自动回滚
+1. **硬能力层**：Portal、Continuation、EventPort、MemoryObject、IOBuffer、IOQueue、Device Resource、IOMMU mapping 等内核可见对象，必须维护 capability derivation tree。内核提供 `delete(handle)`、`revoke_descendants(handle)`、`destroy_object(object)` 和 `invalidate_generation(object)` 等语义。撤销后，后代句柄、映射、等待者和 fast-path descriptor 必须进入明确错误状态。
+2. **语义授权层**：ObjectHandle lease、Service Graph session、Package Cell activation、业务委托和用户态服务内部状态，不承诺被内核自动回滚。它们通过 lease、generation、watch、Broker 通知、服务重启或应用级补偿来失效。
 
-为什么第一阶段接受这个限制：
+这条边界让 Ousia 同时获得两种能力：底层像 seL4 一样硬，平台层又能表达现代 OS 需要的服务、数据和生命周期语义。
 
-- 大部分 MVP 场景中，敏感能力可以设计为不可转发或短租约
-- 跨 Capsule 追踪需要用户态服务配合，复杂度不适合内核
-- 预留元数据字段，后期可扩展
+### 第一阶段必须冻结的能力合同
 
-**待决疑点：可转发能力的安全语义**。第一阶段不能把“可撤销”描述成无条件保证。正式 ABI 前需要决定：哪些能力默认不可转发，哪些能力允许租约续期，哪些能力必须通过 Capability Broker 转发后才承诺级联撤销。硬件资源、身份声明、持久数据写权限等敏感能力应默认走更保守模型。
+第一阶段不需要实现所有服务语义撤销，但第 0 层内核能力合同必须先冻结：
 
-**第二阶段（完整）**：
+- `GRANT` 或等价权限控制派生和转发；没有该权限时只能使用，不能复制或降权派生
+- 派生 capability 的 rights 必须是父 capability rights 的子集
+- `delete(handle)` 只删除当前 slot 中的句柄
+- `revoke_descendants(handle)` 删除所有内核可见后代句柄，但不删除当前句柄
+- `destroy_object(object)` 销毁底层对象，并使所有指向它的 capability、映射和等待者失败
+- `invalidate_generation(object)` 让已经发出的 fast-path descriptor、缓存映射或 ObjectHandle lease 失效
+- 撤销不会追回已经复制到用户态的数据，也不会撤销已经完成的外部 side effect
 
-- Capability Broker 服务注册所有跨 Capsule 的能力转发
-- 撤销请求发给 Broker → Broker 通知所有持有者失效
-- 这是 best-effort（恶意 Capsule 可能不配合），但结合内核级 IOMMU 撤销做硬保证
+Capability Broker 是第二阶段的语义层增强，不是第一阶段硬撤销的替代品。正式 ABI 前需要决定哪些能力默认不可转发，哪些能力允许租约续期，哪些能力必须通过 Broker 转发后才承诺跨服务撤销通知。硬件资源、身份声明、持久数据写权限等敏感能力应默认走不可转发、短租约或 Broker 强制路径。
 
 ### IOMMU 路径的特殊性
 
 硬件资源能力（DMA 映射）的撤销不能依赖用户态协商——它必须在硬件层面生效：
 
 1. 内核收到 DMA 能力撤销请求
-2. 内核立即修改 IOMMU 页表，移除该设备的 DMA 映射
-3. 设备后续的任何 DMA 访问 → IOMMU fault → 设备隔离
-4. 这是原子操作，不依赖用户态配合
+2. 内核立即停止相关 queue 或标记 completion poison
+3. 内核修改 IOMMU 页表，移除该设备的 DMA 映射并完成必要的 TLB flush
+4. 设备后续的任何 DMA 访问 → IOMMU fault → 设备隔离
+5. 这是硬撤销路径，不依赖用户态配合
 
 ---
 
@@ -184,7 +201,7 @@ PIN 或生物识别只解锁本地 Key Agent，用于批准短期签名、解密
 1. **Capsule 之间共享内存的权限模型？** 如果两个 Capsule 需要共享一个内存区域，能力句柄如何表达"你可以读写这个区域"？
 2. **定时器能力的粒度？** "每 10ms 一次的高精度定时器"是一个能力吗？如何防止恶意 Capsule 消耗所有定时器资源？
 3. **开发模式的权限边界？** 开发模式授予了网络访问，但开发中的代码可能包含恶意依赖——如何平衡？
-4. **Capability Broker 的可信性？** 如果 Broker 本身被攻破，能力追踪就不可靠。Broker 需要多大程度的特权？
+4. **Capability Broker 的可信性？** Broker 不能替代内核派生树，但它仍会影响语义级授权通知。它需要多大程度的特权和隔离？
 
 ---
 
