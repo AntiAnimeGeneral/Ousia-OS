@@ -183,7 +183,7 @@ Pager 可以主动：
 
 - 请求内核回收特定页面（`evict(mo, offset)`）
 - 标记页面为低优先级（`deprioritize(mo, [offsets])`）
-- 请求内核锁定页面（`pin(mo, offset)` —— 用于 DMA 或关键元数据）
+- 请求短期锁定关键元数据页；需要设备 DMA 可达的长期 pin 必须显式注册为 IOBuffer，并进入全局 pin 预算、IOMMU 授权和撤销协议
 
 ---
 

@@ -63,21 +63,22 @@ Unix 的全局文件树作为"系统命名空间"有几个根本缺陷：
 内核启动
   │
   ├─ 创建初始地址空间
-  ├─ 创建启动句柄集合 (Bootstrapping Handles)
-  │   ├─ handle_naming_service   → (capability to naming service)
-  │   ├─ handle_memory_object    → (capability to initial memory object)
-  │   └─ handle_kernel_channel   → (capability to kernel IPC channel)
+    ├─ 创建启动句柄集合 (Bootstrapping Handles)
+    │   ├─ handle_bootstrap_namespace → (注册初始服务名的权威能力)
+    │   ├─ handle_initial_memory      → (capability to initial memory object)
+    │   └─ handle_kernel_channel      → (capability to kernel IPC channel)
   │
   └─ 启动第一个用户态进程 (init / sys-bootstrap)
        │
-       ├─ 通过 handle_naming_service 注册自己为 "naming"
+             ├─ 创建或托管 naming 服务 Portal
+             ├─ 通过 handle_bootstrap_namespace 注册 "naming"
        ├─ 通过 handle_kernel_channel 创建更多 Capsule
        └─ 启动 Capsule Manager
             │
             └─ 启动其余基础服务（通过名字服务发现）
 ```
 
-名字服务是第一个用户态服务，但它不需要"发现自己"——它的身份就是内核注入的那个句柄本身。这解决了 bootstrap 的循环依赖。
+名字服务可以是第一个用户态服务，也可以由 `sys-bootstrap` 先创建再托管。它不需要通过全局路径发现自己；它通过内核注入的 bootstrap namespace 权威能力完成第一次注册。这解决了 bootstrap 的循环依赖，又避免假设内核在用户态服务启动前已经持有一个完整的名字服务对象。
 
 ### 为什么不像 Unix 那样用固定的路径？
 
@@ -155,6 +156,8 @@ NameService.register({
 2. 新的 resolve 请求不会被路由到此实例
 3. 已有连接收到 `SERVICE_DEGRADED` 通知
 4. 如果服务有 standby 实例，自动切换
+
+名字服务自身的第一阶段故障模型应更保守：已发出的 Capability 在内核对象仍存活时继续有效；新的 resolve / register 暂时失败；名字服务重启后从 bootstrap 声明、Package Cell 激活状态和持久化注册日志中重建可发现集合。高可用副本可以后续加入，但不应作为第一阶段正确性的前提。
 
 ---
 
