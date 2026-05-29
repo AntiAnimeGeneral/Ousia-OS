@@ -1,4 +1,4 @@
-# 04 — epoll 与 kqueue 事件等待参考
+# 01 — epoll 与 kqueue 事件等待参考
 
 > 状态：参考材料。本文用于理解 Linux `epoll` 与 BSD/macOS `kqueue` 的事件等待模型，并提炼 Ousia EventPort / WaitSet 的设计约束。规范性设计见 [02-communication-fabric.md](../../core/02-communication-fabric.md)，同步/异步边界见 [00-async-and-mmap.md](../../topics/00-async-and-mmap.md)。
 
