@@ -6,6 +6,8 @@ require "pathname"
 ROOT = Pathname.new(__dir__).parent.expand_path
 DESIGN_DIR = ROOT / "design"
 CORE_DIR = DESIGN_DIR / "core"
+TOPICS_DIR = DESIGN_DIR / "topics"
+TARGET_FILE = DESIGN_DIR / "target.md"
 
 errors = []
 warnings = []
@@ -16,6 +18,16 @@ unless DESIGN_DIR.directory?
 end
 
 markdown_files = Dir.glob((DESIGN_DIR / "**/*.md").to_s).map { |path| Pathname.new(path) }.sort
+markdown_basenames = markdown_files.map { |file| file.basename.to_s }.uniq
+
+target_sections = []
+if TARGET_FILE.file?
+  target_sections = TARGET_FILE.each_line.map do |line|
+    line[/\A\#{2,6}\s+(\d+(?:\.\d+)*)(?:[\.．])?\s+/, 1]
+  end.compact
+else
+  errors << "missing target document: #{TARGET_FILE.relative_path_from(ROOT)}"
+end
 
 markdown_files.each do |file|
   text = file.read
@@ -30,8 +42,12 @@ markdown_files.each do |file|
     full_path = (file.dirname / path).expand_path
     if full_path.file?
       target_basename = Pathname.new(path).basename.to_s
-      if link_text.match?(/\A\d{2}-.+\.md\z/) && link_text != target_basename
-        errors << "markdown link text does not match target filename: #{file.relative_path_from(ROOT)} has [#{link_text}] -> #{target_basename}"
+      displayed_target = link_text.strip.delete_prefix("`").delete_suffix("`")
+      if displayed_target.match?(%r{\A(?:\.\.?/)?(?:[^/\]]+/)*[^/\]]+\.md\z})
+        displayed_basename = Pathname.new(displayed_target).basename.to_s
+        if displayed_basename != target_basename
+          errors << "markdown link text does not match target filename: #{file.relative_path_from(ROOT)} has [#{link_text}] -> #{target_basename}"
+        end
       end
 
       next
@@ -59,43 +75,38 @@ numbered_markdown_files.each do |file|
   end
 end
 
-core_files = Dir.glob((CORE_DIR / "*.md").to_s).map { |path| Pathname.new(path) }.sort
-numbered_core_files = core_files.select { |file| file.basename.to_s.match?(/\A\d{2}-/) }
-actual_numbers = numbered_core_files.map { |file| file.basename.to_s[/\A\d{2}/].to_i }
-expected_numbers = (0...numbered_core_files.length).to_a
+sequential_chapter_dirs = [CORE_DIR, TOPICS_DIR]
+sequential_chapter_dirs.each do |dir|
+  next unless dir.directory?
 
-if actual_numbers != expected_numbers
-  errors << "core chapter numbers are not continuous: expected #{expected_numbers.map { |n| format('%02d', n) }.join(', ')}, got #{actual_numbers.map { |n| format('%02d', n) }.join(', ')}"
+  files = Dir.glob((dir / "*.md").to_s).map { |path| Pathname.new(path) }.sort
+  numbered_files = files.select { |file| file.basename.to_s.match?(/\A\d{2}-/) }
+  actual_numbers = numbered_files.map { |file| file.basename.to_s[/\A\d{2}/].to_i }
+  expected_numbers = (0...numbered_files.length).to_a
+  next if actual_numbers == expected_numbers
+
+  errors << "#{dir.relative_path_from(ROOT)} chapter numbers are not continuous: expected #{expected_numbers.map { |n| format('%02d', n) }.join(', ')}, got #{actual_numbers.map { |n| format('%02d', n) }.join(', ')}"
 end
-
-stale_core_refs = {
-  "01-package-cell.md" => "08-package-cell.md",
-  "02-capsule-and-capability.md" => "01-capsule-and-capability.md",
-  "03-service-graph.md" => "06-service-graph.md",
-  "04-data-and-filesystem.md" => "07-data-and-filesystem.md",
-  "05-pager-and-memory.md" => "03-pager-and-memory.md",
-  "06-compute-and-scheduling.md" => "05-compute-and-scheduling.md",
-  "07-driver-and-kernel.md" => "04-driver-and-kernel.md",
-  "08-communication-fabric.md" => "02-communication-fabric.md"
-}
-
-stale_topic_refs = {
-  "10-compatibility.md" => "01-compatibility.md",
-  "15-environment-and-deps.md" => "04-environment-and-config.md"
-}
-
-stale_refs = stale_core_refs.merge(stale_topic_refs)
 
 markdown_files.each do |file|
   text = file.read
-  stale_refs.each do |old_name, new_name|
-    next unless text.include?(old_name)
 
-    errors << "stale reference in #{file.relative_path_from(ROOT)}: #{old_name} should usually be #{new_name}"
+  text.scan(/(?<![[:alnum:]_\/.-])(\d{2}-[[:alnum:]_.-]+\.md)(?![[:alnum:]_.-])/) do |match|
+    filename = match.first
+    next if markdown_basenames.include?(filename)
+
+    errors << "unknown numbered markdown filename reference in #{file.relative_path_from(ROOT)}: #{filename}"
   end
 
-  if text.match?(/target\.md[^\n]*§\d/)
-    errors << "stale target.md section reference in #{file.relative_path_from(ROOT)}"
+  text.each_line.with_index(1) do |line, line_number|
+    next unless line.include?("target.md") && line.include?("§")
+
+    line.scan(/§\s*(\d+(?:\.\d+)*)/) do |match|
+      section = match.first
+      next if target_sections.include?(section)
+
+      errors << "stale target.md section reference in #{file.relative_path_from(ROOT)}:#{line_number}: §#{section}"
+    end
   end
 end
 
