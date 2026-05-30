@@ -1,4 +1,4 @@
-# 03 — FS / GPU / NIC / NVMe 路径矩阵
+# 04 — FS / GPU / NIC / NVMe 路径矩阵
 
 ## 讨论范围
 
@@ -204,6 +204,6 @@ NVMe 是最适合吸收 SPDK 风格模型的子系统之一，但默认拥有者
 
 ## 相关文件
 
-- [00-bypass-first-class.md](./00-bypass-first-class.md)
-- [01-modern-driver-patterns.md](./01-modern-driver-patterns.md)
-- [02-driver-sdk-draft.md](./02-driver-sdk-draft.md)
+- [01-bypass-first-class.md](./01-bypass-first-class.md)
+- [02-modern-driver-patterns.md](./02-modern-driver-patterns.md)
+- [03-driver-sdk-draft.md](./03-driver-sdk-draft.md)

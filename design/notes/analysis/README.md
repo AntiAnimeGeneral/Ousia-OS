@@ -7,16 +7,16 @@
 1. [00-fs-vm.md](./00-fs-vm.md)
    保存 FS/VM 候选方案、调研、裁决标准和开放问题。
 
-2. [00-bypass-first-class.md](./00-bypass-first-class.md)
+2. [01-bypass-first-class.md](./01-bypass-first-class.md)
    解释 Ousia 为什么要把 kernel bypass 作为受治理的第一公民数据面模式。
 
-3. [01-modern-driver-patterns.md](./01-modern-driver-patterns.md)
+3. [02-modern-driver-patterns.md](./02-modern-driver-patterns.md)
    比较现代驱动架构模式，提炼对 Ousia 的启示和不应照搬点。
 
-4. [02-driver-sdk-draft.md](./02-driver-sdk-draft.md)
+4. [03-driver-sdk-draft.md](./03-driver-sdk-draft.md)
    保存 Ousia Driver SDK 的对象模型、分层、运行时和恢复模型草案。
 
-5. [03-subsystem-path-matrix.md](./03-subsystem-path-matrix.md)
+5. [04-subsystem-path-matrix.md](./04-subsystem-path-matrix.md)
    比较 FS/GPU/NIC/NVMe 的 control path、data path 和 bypass 边界，以及默认拥有者和恢复契约。
 
 ## 当前最重要的判断

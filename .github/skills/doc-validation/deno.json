@@ -1,0 +1,24 @@
+{
+  "imports": {
+    "@std/cli/parse-args": "jsr:@std/cli@1/parse-args",
+    "@std/fs/walk": "jsr:@std/fs@1/walk",
+    "@std/path": "jsr:@std/path@1"
+  },
+  "tasks": {
+    "check:docs": "deno run --allow-read scripts/check-docs.ts",
+    "check:types": "deno check scripts/check-docs.ts scripts/check-docs_test.ts",
+    "test:docs": "deno test --allow-read --allow-write scripts/check-docs_test.ts",
+    "fmt:docs-checker": "deno fmt deno.json tsconfig.json scripts/*.ts",
+    "lint:docs-checker": "deno lint scripts/*.ts"
+  },
+  "fmt": {
+    "include": [
+      "deno.json",
+      "tsconfig.json",
+      "scripts"
+    ]
+  },
+  "lint": {
+    "include": ["scripts"]
+  }
+}

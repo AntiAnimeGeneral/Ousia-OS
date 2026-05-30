@@ -152,5 +152,5 @@ edge-triggered 的核心约束是：通知表示“状态变化发生过”，�
 
 - [02-communication-fabric.md](../../core/02-communication-fabric.md)
 - [00-async-and-mmap.md](../../topics/00-async-and-mmap.md)
-- [00-bypass-first-class.md](../analysis/00-bypass-first-class.md)
-- [03-subsystem-path-matrix.md](../analysis/03-subsystem-path-matrix.md)
+- [01-bypass-first-class.md](../analysis/01-bypass-first-class.md)
+- [04-subsystem-path-matrix.md](../analysis/04-subsystem-path-matrix.md)

@@ -1,4 +1,4 @@
-# 02 — Ousia Driver SDK 轮廓
+# 03 — Ousia Driver SDK 轮廓
 
 ## 讨论范围
 
@@ -313,6 +313,6 @@ Ousia 不应一开始就承诺一个巨型稳定 ABI，而应分三层稳定：
 
 ## 相关文件
 
-- [00-bypass-first-class.md](./00-bypass-first-class.md)
-- [01-modern-driver-patterns.md](./01-modern-driver-patterns.md)
-- [03-subsystem-path-matrix.md](./03-subsystem-path-matrix.md)
+- [01-bypass-first-class.md](./01-bypass-first-class.md)
+- [02-modern-driver-patterns.md](./02-modern-driver-patterns.md)
+- [04-subsystem-path-matrix.md](./04-subsystem-path-matrix.md)

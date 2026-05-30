@@ -1,0 +1,27 @@
+{
+  "projectRoot": ".",
+  "documents": {
+    "root": ".",
+    "extensions": [".md"]
+  },
+  "links": {
+    "externalPrefixes": ["http://", "https://", "mailto:", "#"],
+    "checkDisplayedMarkdownFilename": true,
+    "displayedMarkdownPathPattern": "^(?:\\.\\.?/)?(?:[^/\\]]+/)*[^/\\]]+\\.md$"
+  },
+  "numberedDocuments": {
+    "filenamePattern": "^(?<number>\\d{2})-.+\\.md$",
+    "headingPattern": "^#\\s+(?<number>\\d{2})\\b",
+    "referencePattern": "(?<![A-Za-z0-9_/.-])(?<filename>\\d{2}-[A-Za-z0-9_.-]+\\.md)(?![A-Za-z0-9_.-])"
+  },
+  "directorySequences": [{ "startAt": 0 }],
+  "sectionReferences": [
+    {
+      "label": "target.md",
+      "targetFile": "target.md",
+      "lineIncludes": ["target.md", "§"],
+      "sectionHeadingPattern": "^#{2,6}\\s+(?<section>\\d+(?:\\.\\d+)*)(?:[.．])?\\s+",
+      "sectionRefPattern": "§\\s*(?<section>\\d+(?:\\.\\d+)*)"
+    }
+  ]
+}

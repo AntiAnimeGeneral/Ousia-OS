@@ -1,4 +1,4 @@
-# 01 — 现代驱动架构参考模式
+# 02 — 现代驱动架构参考模式
 
 ## 讨论方式
 
@@ -193,6 +193,6 @@
 
 ## 相关文件
 
-- [00-bypass-first-class.md](./00-bypass-first-class.md)
-- [02-driver-sdk-draft.md](./02-driver-sdk-draft.md)
-- [03-subsystem-path-matrix.md](./03-subsystem-path-matrix.md)
+- [01-bypass-first-class.md](./01-bypass-first-class.md)
+- [03-driver-sdk-draft.md](./03-driver-sdk-draft.md)
+- [04-subsystem-path-matrix.md](./04-subsystem-path-matrix.md)

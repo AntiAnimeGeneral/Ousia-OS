@@ -1,4 +1,4 @@
-# 00 — 内核旁路作为第一公民
+# 01 — 内核旁路作为第一公民
 
 ## 讨论范围
 
@@ -126,6 +126,6 @@ Ousia 必须同时写清楚旁路**不是什么**：
 
 ## 6. 接下来要看的文档
 
-- [01-modern-driver-patterns.md](./01-modern-driver-patterns.md)
-- [02-driver-sdk-draft.md](./02-driver-sdk-draft.md)
-- [03-subsystem-path-matrix.md](./03-subsystem-path-matrix.md)
+- [02-modern-driver-patterns.md](./02-modern-driver-patterns.md)
+- [03-driver-sdk-draft.md](./03-driver-sdk-draft.md)
+- [04-subsystem-path-matrix.md](./04-subsystem-path-matrix.md)
