@@ -119,13 +119,13 @@ Ousia 也应该坚持这条边界。比如：
 
 ## 7. 适合 Ousia 的映射
 
-| seL4 概念 | Ousia 候选物 | 说明 |
-| --- | --- | --- |
-| Capability | Capability / Capsule 权能 | 权限边界的唯一权威来源 |
-| Endpoint | 请求-响应对象 | 同步控制面 IPC |
-| Notification | 异步事件对象 | 唤醒、完成、interrupt |
-| Frame | Shared memory / mapped region | 数据面，不承担协议语义 |
-| Reply | 调用上下文 | 生命周期受控的返回权 |
+| seL4 概念    | Ousia 候选物                  | 说明                   |
+| ------------ | ----------------------------- | ---------------------- |
+| Capability   | Capability / Capsule 权能     | 权限边界的唯一权威来源 |
+| Endpoint     | 请求-响应对象                 | 同步控制面 IPC         |
+| Notification | 异步事件对象                  | 唤醒、完成、interrupt  |
+| Frame        | Shared memory / mapped region | 数据面，不承担协议语义 |
+| Reply        | 调用上下文                    | 生命周期受控的返回权   |
 
 ## 8. 不应照搬的地方
 

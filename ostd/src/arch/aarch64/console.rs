@@ -1,19 +1,55 @@
+use core::ops::Deref;
 use core::sync::atomic::{AtomicBool, Ordering};
 
-const QEMU_VIRT_PL011_UART0: usize = 0x0900_0000;
-const UART_DR: usize = 0x00;
-const UART_IBRD: usize = 0x24;
-const UART_FBRD: usize = 0x28;
-const UART_LCRH: usize = 0x2c;
-const UART_CR: usize = 0x30;
-const UART_IMSC: usize = 0x38;
-const UART_ICR: usize = 0x44;
+use tock_registers::interfaces::{Readable, Writeable};
+use tock_registers::registers::{ReadOnly, ReadWrite, WriteOnly};
+use tock_registers::{register_bitfields, register_structs};
 
-const UART_CR_UARTEN: u32 = 1 << 0;
-const UART_CR_TXE: u32 = 1 << 8;
-const UART_CR_RXE: u32 = 1 << 9;
-const UART_LCRH_WLEN_8: u32 = 0b11 << 5;
-const UART_LCRH_FEN: u32 = 1 << 4;
+const QEMU_VIRT_PL011_UART0: *mut RegisterBlock = 0x0900_0000 as *mut RegisterBlock;
+
+register_structs! {
+    #[allow(non_snake_case)]
+    RegisterBlock {
+        (0x000 => DR: ReadWrite<u8>),
+        (0x001 => _reserved0),
+        (0x018 => FR: ReadOnly<u32, FR::Register>),
+        (0x01c => _reserved1),
+        (0x024 => IBRD: ReadWrite<u32>),
+        (0x028 => FBRD: ReadWrite<u32>),
+        (0x02c => LCRH: ReadWrite<u32, LCRH::Register>),
+        (0x030 => CR: ReadWrite<u32, CR::Register>),
+        (0x034 => _reserved2),
+        (0x038 => IMSC: ReadWrite<u32>),
+        (0x03c => _reserved3),
+        (0x044 => ICR: WriteOnly<u32, ICR::Register>),
+        (0x048 => @END),
+    }
+}
+
+register_bitfields! {
+    u32,
+
+    FR [
+        TXFF OFFSET(5) NUMBITS(1) [],
+    ],
+
+    LCRH [
+        WLEN OFFSET(5) NUMBITS(2) [
+            EightBit = 0b11,
+        ],
+        FEN OFFSET(4) NUMBITS(1) [],
+    ],
+
+    CR [
+        RXE OFFSET(9) NUMBITS(1) [],
+        TXE OFFSET(8) NUMBITS(1) [],
+        UARTEN OFFSET(0) NUMBITS(1) [],
+    ],
+
+    ICR [
+        ALL OFFSET(0) NUMBITS(11) [],
+    ],
+}
 
 static INITIALIZED: AtomicBool = AtomicBool::new(false);
 
@@ -31,20 +67,48 @@ fn init_once() {
         return;
     }
 
-    write_u32(UART_CR, 0);
-    write_u32(UART_ICR, u32::MAX);
-    write_u32(UART_IBRD, 1);
-    write_u32(UART_FBRD, 40);
-    write_u32(UART_LCRH, UART_LCRH_WLEN_8 | UART_LCRH_FEN);
-    write_u32(UART_IMSC, 0);
-    write_u32(UART_CR, UART_CR_UARTEN | UART_CR_TXE | UART_CR_RXE);
+    uart().init();
 }
 
 fn write_byte(byte: u8) {
-    write_u32(UART_DR, byte as u32);
+    uart().put_char(byte);
 }
 
-fn write_u32(offset: usize, value: u32) {
-    let ptr = (QEMU_VIRT_PL011_UART0 + offset) as *mut u32;
-    unsafe { ptr.write_volatile(value) }
+fn uart() -> Pl011 {
+    unsafe { Pl011::new(QEMU_VIRT_PL011_UART0) }
+}
+
+struct Pl011 {
+    registers: *mut RegisterBlock,
+}
+
+impl Pl011 {
+    unsafe fn new(registers: *mut RegisterBlock) -> Self {
+        Self { registers }
+    }
+
+    fn init(&self) {
+        self.CR.set(0);
+        self.ICR.write(ICR::ALL::SET);
+        self.IBRD.set(1);
+        self.FBRD.set(40);
+        self.LCRH.write(LCRH::WLEN::EightBit + LCRH::FEN::SET);
+        self.IMSC.set(0);
+        self.CR.write(CR::UARTEN::SET + CR::TXE::SET + CR::RXE::SET);
+    }
+
+    fn put_char(&self, byte: u8) {
+        while self.FR.matches_all(FR::TXFF::SET) {
+            core::hint::spin_loop();
+        }
+        self.DR.set(byte);
+    }
+}
+
+impl Deref for Pl011 {
+    type Target = RegisterBlock;
+
+    fn deref(&self) -> &Self::Target {
+        unsafe { &*self.registers }
+    }
 }

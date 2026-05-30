@@ -72,8 +72,10 @@ fn run_smoke(workspace_root: &Path, kernel_path: &Path) -> ExitCode {
 
     let mut command = qemu_command(kernel_path);
     command
+        .arg("-chardev")
+        .arg(format!("file,id=serial0,path={}", log_path.display()))
         .arg("-serial")
-        .arg(format!("file:{}", log_path.display()));
+        .arg("chardev:serial0");
 
     let mut child = match command.spawn() {
         Ok(child) => child,
@@ -123,7 +125,6 @@ fn qemu_command(kernel_path: &Path) -> Command {
         .arg(kernel_path)
         .arg("-monitor")
         .arg("none")
-        .arg("-nographic")
         .arg("-display")
         .arg("none")
         .arg("-no-reboot")

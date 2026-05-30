@@ -53,6 +53,7 @@ dependencies = [
  "aarch64-cpu",
  "bitflags",
  "spin",
+ "tock-registers",
  "x86_64",
 ]
 

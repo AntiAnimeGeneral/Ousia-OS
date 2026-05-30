@@ -72,3 +72,5 @@ cargo test -p kernel
 - The current QEMU runner tests AArch64 first; amd64 is validated through bare-metal compilation checks for now.
 - Host-side `build-std` is intentionally not enabled globally; it only belongs to the bare-metal kernel build.
 - `tools/qemu-runner` is the preferred launch path for local development.
+- The AArch64 direct-boot path follows the same boundary as seL4/rust-sel4 and Asterinas-style tooling: the runner owns QEMU machine and serial wiring, `ostd` owns early CPU state and device MMIO, and `kernel` stays architecture-neutral.
+- Before entering Rust on AArch64, `ostd` enables FP/SIMD access for the current exception level. This is required because Rust debug code can legally emit FP/SIMD instructions under the target ABI; later kernel FPU ownership and lazy context-switch policy must evolve toward the seL4-style model.
