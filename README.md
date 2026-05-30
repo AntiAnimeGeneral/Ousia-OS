@@ -40,6 +40,7 @@ That command will:
 3. boot the kernel on the QEMU `virt` machine
 
 The current kernel prints a short boot message through the AArch64 PL011 serial path and then waits forever.
+This means `cargo run -p qemu-runner` does not return by itself after a successful boot. QEMU owns the terminal until you quit it. In `-nographic` mode, press `Ctrl-A` and then `X` to exit QEMU.
 
 AArch64 and amd64 are both first-class targets. The current runner only exercises AArch64. The amd64 path currently covers the bare-metal entry, early COM1 serial output, and halt loop so that architecture-specific kernel code can compile and evolve behind the same `ostd` boundary.
 

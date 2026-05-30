@@ -12,6 +12,7 @@ fn main() -> ExitCode {
         .expect("qemu-runner lives under tools/ in the workspace root")
         .to_path_buf();
 
+    eprintln!("building aarch64 kernel...");
     if !run_command(Command::new("cargo").current_dir(&workspace_root).args([
         "build",
         "-p",
@@ -30,6 +31,10 @@ fn main() -> ExitCode {
         .join("debug")
         .join("kernel");
 
+    eprintln!(
+        "launching qemu-system-aarch64 with kernel {}",
+        kernel_path.display()
+    );
     let mut command = Command::new("qemu-system-aarch64");
     command
         .arg("-machine")
@@ -42,6 +47,10 @@ fn main() -> ExitCode {
         .arg("1")
         .arg("-kernel")
         .arg(&kernel_path)
+        .arg("-serial")
+        .arg("stdio")
+        .arg("-monitor")
+        .arg("none")
         .arg("-nographic")
         .arg("-display")
         .arg("none")
