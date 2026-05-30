@@ -37,6 +37,12 @@ When editing `design/**/*.md`, keep the documentation structure consistent:
 
 The doc checker implementation is generic. Keep Ousia-specific document topology and regex data in `design/check-docs.config.json`, not in `.github/skills/doc-validation/scripts/**/*.ts`. Change TypeScript only for a new class of validation logic, not to encode this repository's current directory names.
 
+## Formatting Boundaries
+
+Commit-time automation may write-format before the commit is created. If a formatter runs from a hook, make it a pre-commit hook that formats only the relevant staged files or project scope, then re-stages those formatter edits before Git creates the commit.
+
+Do not use a post-commit formatter that mutates the worktree after the commit exists. For manual validation outside the commit path, prefer check-only commands such as `deno fmt --check` and `cargo fmt --check`; for commit hooks, format first, re-stage, then continue to checks.
+
 ## Reporting
 
 In the final response, summarize the changed files and list the checks that were run with their result.

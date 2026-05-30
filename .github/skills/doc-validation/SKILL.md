@@ -35,12 +35,12 @@ deno task --cwd .github/skills/doc-validation check:docs --config ../../../desig
 
 ## Checks
 
-| Changed files | Required checks |
-| --- | --- |
-| `design/**/*.md` | `deno task --cwd .github/skills/doc-validation check:docs --config ../../../design/check-docs.config.json` |
+| Changed files                                                                      | Required checks                                                                                                                                                                                                                                                                                                                                                                 |
+| ---------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `design/**/*.md`                                                                   | `deno task --cwd .github/skills/doc-validation check:docs --config ../../../design/check-docs.config.json`                                                                                                                                                                                                                                                                      |
 | `.github/skills/doc-validation/scripts/**/*.ts` or `design/check-docs.config.json` | `deno task --cwd .github/skills/doc-validation fmt:docs-checker --check`, `deno task --cwd .github/skills/doc-validation check:types`, `deno task --cwd .github/skills/doc-validation lint:docs-checker`, `deno task --cwd .github/skills/doc-validation test:docs`, `deno task --cwd .github/skills/doc-validation check:docs --config ../../../design/check-docs.config.json` |
-| `.github/instructions/**/*.instructions.md`, `.github/skills/**/SKILL.md` | Check YAML frontmatter, ensure `description` is meaningful, then run `deno task --cwd .github/skills/doc-validation check:docs --config ../../../design/check-docs.config.json` if design links or docs changed |
-| Rust source or Cargo metadata | `cargo fmt --check`, `cargo check`, and targeted tests when behavior changed or tests exist |
+| `.github/instructions/**/*.instructions.md`, `.github/skills/**/SKILL.md`          | Check YAML frontmatter, ensure `description` is meaningful, then run `deno task --cwd .github/skills/doc-validation check:docs --config ../../../design/check-docs.config.json` if design links or docs changed                                                                                                                                                                 |
+| Rust source or Cargo metadata                                                      | `cargo fmt --check`, `cargo check`, and targeted tests when behavior changed or tests exist                                                                                                                                                                                                                                                                                     |
 
 ## Documentation Hygiene
 

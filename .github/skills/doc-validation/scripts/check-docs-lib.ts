@@ -92,9 +92,9 @@ const DEFAULT_DISPLAYED_MARKDOWN_PATH_PATTERN =
   /^(?:\.\.?\/)?(?:[^/\]]+\/)*[^/\]]+\.md$/;
 
 export async function loadConfig(configPath: string): Promise<CheckConfig> {
-  const raw = JSON.parse(await deno.readTextFile(configPath)) as Partial<
-    CheckConfig
-  >;
+  const raw = JSON.parse(
+    await deno.readTextFile(configPath),
+  ) as Partial<CheckConfig>;
   return normalizeConfig(raw, configPath);
 }
 
@@ -108,8 +108,8 @@ export async function checkDocs(
   const warnings: Diagnostic[] = [];
   const documentRoot = resolveAgainst(root, normalizedConfig.documents.root);
   const documentLabel = toSlash(normalizedConfig.documents.root);
-  const extensions = normalizedConfig.documents.extensions ??
-    DEFAULT_DOCUMENT_EXTENSIONS;
+  const extensions =
+    normalizedConfig.documents.extensions ?? DEFAULT_DOCUMENT_EXTENSIONS;
 
   if (!(await isDirectory(documentRoot))) {
     errors.push(error(`document root not found: ${documentLabel}`));
@@ -131,11 +131,7 @@ export async function checkDocs(
   }
   const numberedRule = normalizedConfig.numberedDocuments;
   if (isEnabled(numberedRule)) {
-    checkNumberedHeadings(
-      markdownFiles,
-      numberedRule,
-      errors,
-    );
+    checkNumberedHeadings(markdownFiles, numberedRule, errors);
     checkBareNumberedReferences(
       markdownFiles,
       markdownBasenames,
@@ -241,9 +237,9 @@ function checkNumberedHeadings(
     const filenameNumber = extractGroup(filenameMatch, "number");
     if (!filenameNumber) continue;
 
-    const firstHeading = file.text.split("\n").find((line) =>
-      line.startsWith("# ")
-    );
+    const firstHeading = file.text
+      .split("\n")
+      .find((line) => line.startsWith("# "));
     if (!firstHeading) {
       errors.push(error(`missing H1 heading: ${file.relativePath}`));
       continue;
@@ -275,8 +271,8 @@ function checkDirectorySequences(
   config: CheckConfig,
   errors: Diagnostic[],
 ): void {
-  const filenamePatternSource = rule.filenamePattern ??
-    config.numberedDocuments?.filenamePattern;
+  const filenamePatternSource =
+    rule.filenamePattern ?? config.numberedDocuments?.filenamePattern;
   if (!filenamePatternSource) {
     errors.push(
       error(
@@ -321,13 +317,11 @@ function checkDirectorySequences(
     );
     errors.push(
       error(
-        `numbered markdown files are not continuous in ${dir}: expected ${
-          expectedNumbers.map((number) => formatSequenceNumber(number, width))
-            .join(", ")
-        }, got ${
-          actualNumbers.map((number) => formatSequenceNumber(number, width))
-            .join(", ")
-        }`,
+        `numbered markdown files are not continuous in ${dir}: expected ${expectedNumbers
+          .map((number) => formatSequenceNumber(number, width))
+          .join(", ")}, got ${actualNumbers
+          .map((number) => formatSequenceNumber(number, width))
+          .join(", ")}`,
       ),
     );
   }
@@ -342,9 +336,11 @@ function isIncludedDirectory(
   includeDirs: RegExp[],
   excludeDirs: RegExp[],
 ): boolean {
-  return (includeDirs.length === 0 ||
-    includeDirs.some((pattern) => pattern.test(dir))) &&
-    !excludeDirs.some((pattern) => pattern.test(dir));
+  return (
+    (includeDirs.length === 0 ||
+      includeDirs.some((pattern) => pattern.test(dir))) &&
+    !excludeDirs.some((pattern) => pattern.test(dir))
+  );
 }
 
 function formatSequenceNumber(value: number, width: number): string {
@@ -409,13 +405,11 @@ async function readMarkdownFiles(
   extensions: string[],
 ): Promise<MarkdownFile[]> {
   const files: MarkdownFile[] = [];
-  for await (
-    const entry of walk(dir, {
-      exts: extensions,
-      includeDirs: false,
-      includeFiles: true,
-    })
-  ) {
+  for await (const entry of walk(dir, {
+    exts: extensions,
+    includeDirs: false,
+    includeFiles: true,
+  })) {
     files.push({
       path: normalizePath(entry.path),
       relativePath: relativePath(root, entry.path),
@@ -436,9 +430,10 @@ async function readSections(
   if (!(await isFile(targetFile))) {
     errors.push(
       error(
-        `missing ${rule.label} section target: ${
-          relativePath(projectRoot, targetFile)
-        }`,
+        `missing ${rule.label} section target: ${relativePath(
+          projectRoot,
+          targetFile,
+        )}`,
       ),
     );
     return new Set();
@@ -484,10 +479,7 @@ function normalizeConfig(
   };
 }
 
-function compileRegExp(
-  pattern: string | undefined,
-  fallback: RegExp,
-): RegExp {
+function compileRegExp(pattern: string | undefined, fallback: RegExp): RegExp {
   return pattern ? new RegExp(pattern) : fallback;
 }
 
@@ -559,8 +551,10 @@ function stripBackticks(text: string): string {
 }
 
 function sameNumberList(left: number[], right: number[]): boolean {
-  return left.length === right.length &&
-    left.every((value, index) => value === right[index]);
+  return (
+    left.length === right.length &&
+    left.every((value, index) => value === right[index])
+  );
 }
 
 function error(message: string): Diagnostic {
