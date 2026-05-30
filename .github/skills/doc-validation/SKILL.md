@@ -56,3 +56,14 @@ The Deno checker lives in [scripts/check-docs.ts](./scripts/check-docs.ts) and u
 Do not replace checker failures with one-off allowlists unless the allowlist encodes a real documented exception.
 
 Prefer configuration changes over checker code changes when document roots, numbered patterns, directory filters, target documents, or section-reference patterns move. Change TypeScript only when the checker needs a new class of rule.
+
+## Implementation Boundaries
+
+- [scripts/check-docs.ts](./scripts/check-docs.ts) is only the CLI boundary: parse arguments, load config, print diagnostics, and choose the exit code.
+- [scripts/check-docs-lib.ts](./scripts/check-docs-lib.ts) is the public library boundary: normalize config, read the document tree, run configured rules, and return a result.
+- [scripts/config.ts](./scripts/config.ts) owns config types, defaults, loading, and normalization.
+- [scripts/document-tree.ts](./scripts/document-tree.ts) owns filesystem traversal and path normalization.
+- [scripts/rules.ts](./scripts/rules.ts) owns validation rules. Rules consume the scanned document tree and normalized config; they should not perform broad filesystem traversal.
+- [scripts/diagnostics.ts](./scripts/diagnostics.ts) owns diagnostic collection and output formatting.
+
+Keep project data out of the TypeScript implementation. Repository-specific paths, filename patterns, directory filters, and section-reference patterns belong in the documentation project's config file.
