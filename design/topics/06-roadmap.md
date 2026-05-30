@@ -4,6 +4,10 @@
 
 本章当前用于指导第一段阶段实现，建议从 `0.5: 能力核心合同` 开始切入，再推进 `1a: 微内核原语` 与 `1a.5: 异步通信原语`。这些 phase 的拆分、先后顺序和边界都仍是草案，后续应根据验证结果继续重构，不要被现有实现反向约束。
 
+第一阶段实现遵循 [工程化复用策略](./02-engineering.md)：积极复用成熟库和现有内核 SDK 经验来降低工程风险，但所有复用都必须服从 Ousia 自己的 capability、通信、pager、驱动和 Package Cell 语义边界。
+
+近期阶段性目标是先做一个 [seL4-like Rust baseline](../implementation/00-sel4-like-rust-baseline.md)。它不追求形式化验证，但必须用类型边界、不变量、测试和 review 纪律保证足够的工程正确性；Ousia 的浏览器权限、服务授权、lease、session、Package Cell 和 Device Service 语义应建立在用户态系统服务层。
+
 ## 非目标（第一阶段绝对不做）
 
 - **不兼容 POSIX 作为原生接口**——需要 POSIX 的应用通过 Linux 兼容域运行

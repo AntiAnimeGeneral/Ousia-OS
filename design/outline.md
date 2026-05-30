@@ -48,6 +48,7 @@
 | IPC 参考     | [notes/reference/00-ipc-sel4-fuchsia.md](./notes/reference/00-ipc-sel4-fuchsia.md) | 保存 seL4 / Fuchsia IPC 背景、机制和比较材料。             |
 | 事件等待参考 | [notes/reference/01-epoll-and-kqueue.md](./notes/reference/01-epoll-and-kqueue.md) | 比较 epoll / kqueue 的 wait set、ready notification 语义。 |
 | 设计分析     | [notes/analysis/README.md](./notes/analysis/README.md)                             | 保存 Ousia 设计判断、候选方案、SDK 草案和子系统路径矩阵。  |
+| 实现草案     | [implementation/README.md](./implementation/README.md)                             | 保存临时实现路线、代码演进草案和短期 reviewer 入口。        |
 | FS/VM 分析   | [notes/analysis/00-fs-vm.md](./notes/analysis/00-fs-vm.md)                         | 保存 FS/VM 候选方案、调研、裁决标准和开放问题。            |
 
 ## 2. 文档层级
@@ -63,6 +64,7 @@
 | 专题层   | [topics/](./topics/)                   | 处理跨主线的边界问题、工程路线、兼容性和路线图。               |
 | 笔记层   | [notes/reference/](./notes/reference/) | 保存外部系统、外部机制和现有技术模式，不作为 Ousia 规范。      |
 | 分析层   | [notes/analysis/](./notes/analysis/)   | 保存 Ousia 设计推导、候选方案、草案和深挖，不作为最终规范。    |
+| 实现层   | [implementation/](./implementation/)   | 保存短期实现草案、代码演进说明和临时路线，不作为最终规范。    |
 
 ## 3. 语义归属表
 

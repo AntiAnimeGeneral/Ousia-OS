@@ -25,6 +25,14 @@
 
 **形式化目标**：第一阶段对能力传递、缺页处理、IOMMU 映射做机器可检查规约，不追求全系统验证。
 
+## 复用与自有 SDK 策略
+
+早期实现应主动复用成熟库、现有内核 SDK 经验和上游项目设计，以加速进度并降低隐蔽工程坑。优先复用的对象包括 `no_std` 基础设施、bitflags/位集、allocator、页表、同步原语、任务队列、测试 harness、驱动队列 helper 和设备模拟工具。复用可以直接引入库、参考接口、复制改造小型组件，或把成熟项目的边界设计转写成 Ousia 的本地抽象。
+
+复用不得反向冻结 Ousia 的核心语义。凡是会决定 Capability、Communication Fabric、Service Graph、Pager、Driver SDK 或 Package Cell 生命周期语义的库，都只能经过 Ousia owning 文档定义的边界进入实现；如果库的抽象与 Ousia 目标冲突，应优先保留 Ousia 语义，选择适配、局部复制、fork 或替换，而不是让外部 API 成为系统架构。
+
+第一阶段可把 Asterinas、seL4、Fuchsia、Redox、Theseus、Tock 等项目作为工程素材库：工程底座型组件可以大胆吸收，架构语义型组件只在明确边界后局部采用。长期方向是在核心抽象稳定后沉淀 Ousia 自有 kernel SDK，把早期复用层中已经验证的 allocator、capability helper、IPC helper、driver queue/runtime、测试与仿真工具收敛成项目维护的 SDK。
+
 ## 构建系统
 
 LLVM 工具链（rustc + clang + lld）。用 Bazel/Buck2 做多语言内容寻址构建。交叉编译目标：`aarch64-unknown-Ousia OS`、`x86_64-unknown-Ousia OS`。QEMU 作为第一阶段运行平台。

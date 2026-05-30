@@ -1,0 +1,4 @@
+[unstable]
+
+[target.aarch64-unknown-none]
+rustflags = ["-C", "panic=abort"]

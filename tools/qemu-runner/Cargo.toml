@@ -1,9 +1,8 @@
 [package]
-name = "kernel"
+name = "qemu-runner"
 version.workspace = true
 authors.workspace = true
 edition.workspace = true
+publish = false
 
 [dependencies]
-bitflags = { version = "2", default-features = false }
-ostd = { path = "../ostd" }

@@ -137,11 +137,14 @@ Physical Device
 例子：
 
 - GPU：display、compute、video encode、memory management
+- Camera：capture stream、control、frame buffer、privacy indicator
 - NIC：rx queue、tx queue、timestamp、offload
 - NVMe：admin queue、io queue、namespace
 - Audio：control、playback stream、capture stream
 
 应用或系统服务拿到的是具体 Resource 的 Handle，而不是 `/dev/gpu0` 这类全局节点。这样能力边界绑定的是对象和操作，不是路径习惯和隐式共享。
+
+Camera 这类隐私敏感设备尤其不能把策略塞进内核。内核只应暴露 capture stream、frame buffer、interrupt/event、DMA mapping 和 reset/revoke 等资源能力；用户是否允许某个网页、某个 Capsule 或某次会话使用摄像头，属于系统权限服务、桌面环境和 Device Service 的协作范围。
 
 ## 5. 统一 IO 原语
 
