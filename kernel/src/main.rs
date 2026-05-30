@@ -2,7 +2,7 @@
 #![cfg_attr(target_os = "none", no_main)]
 
 #[cfg(target_os = "none")]
-mod boot;
+mod entry;
 
 #[cfg(not(target_os = "none"))]
 fn main() {}

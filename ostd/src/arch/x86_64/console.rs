@@ -1,18 +1,60 @@
-const COM1: u16 = 0x3f8;
-const LINE_STATUS_OFFSET: u16 = 5;
-const TRANSMIT_EMPTY: u8 = 1 << 5;
+// SPDX-License-Identifier: MPL-2.0
 
+//! Console output for x86_64.
+
+use core::fmt::Write;
+
+use spin::{Mutex, Once};
+
+use crate::console::uart_ns16650a::{Ns16550aAccess, Ns16550aRegister, Ns16550aUart};
+
+/// The primary serial port, which serves as an early console.
+static SERIAL_PORT: Once<Mutex<Ns16550aUart<SerialAccess>>> = Once::new();
+
+/// Prints a line to the early console.
 pub fn early_println(message: &str) {
-    for byte in message.bytes() {
-        write_byte(byte);
-    }
-    write_byte(b'\n');
+    let serial = SERIAL_PORT.call_once(|| {
+        Mutex::new(Ns16550aUart::new(
+            // SAFETY:
+            // 1. QEMU `q35` exposes the legacy 16550-compatible port at `0x3F8`.
+            // 2. The port is only used by the boot console in this single-threaded stage.
+            unsafe { SerialAccess::new(0x3F8) },
+        ))
+    });
+
+    let mut serial = serial.lock();
+    serial.init();
+    let _ = serial.write_str(message);
+    let _ = serial.write_str("\n");
 }
 
-fn write_byte(byte: u8) {
-    while unsafe { inb(COM1 + LINE_STATUS_OFFSET) } & TRANSMIT_EMPTY == 0 {}
-    unsafe {
-        outb(COM1, byte);
+/// Access to serial registers via I/O ports in x86.
+#[derive(Debug)]
+pub struct SerialAccess {
+    base: u16,
+}
+
+impl SerialAccess {
+    /// # Safety
+    ///
+    /// The caller must ensure that the base port is a valid serial base port and that it has
+    /// exclusive ownership of the serial registers.
+    const unsafe fn new(port: u16) -> Self {
+        Self { base: port }
+    }
+
+    fn port(&self, reg: Ns16550aRegister) -> u16 {
+        self.base + reg as u16
+    }
+}
+
+impl Ns16550aAccess for SerialAccess {
+    fn read(&self, reg: Ns16550aRegister) -> u8 {
+        unsafe { inb(self.port(reg)) }
+    }
+
+    fn write(&mut self, reg: Ns16550aRegister, val: u8) {
+        unsafe { outb(self.port(reg), val) }
     }
 }
 

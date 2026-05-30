@@ -1,2 +1,6 @@
 /target
 /third_party/asterinas/
+/third_party/microkit/
+/third_party/rust-sel4/
+/third_party/sddf/
+/third_party/sel4/

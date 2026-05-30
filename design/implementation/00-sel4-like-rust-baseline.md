@@ -137,11 +137,11 @@ Ousia 可以在 seL4-like baseline 上增加：
 
 当前仓库参考 Asterinas 的分层方式，但不直接复制其 x86/RISC-V 启动实现：
 
-- `ostd/` 是 Ousia 的 framekernel / kernel SDK 雏形，先承载架构相关 unsafe、early console、CPU halt、后续 boot memory、页表、异常和中断封装。它对应 Asterinas 的 OSTD 角色：把低层 unsafe 和架构差异收束在框架层。
-- `kernel/` 保持为核心内核 crate，承担 `no_std` 裸机入口和 seL4-like capability / IPC / scheduler 等内核语义。它不直接散落 MMIO 寄存器或架构汇编。
+- `ostd/` 是 Ousia 的 framekernel / kernel SDK 雏形，先承载架构相关 unsafe、boot `_start`、boot stack、early console、CPU halt、后续 boot memory、页表、异常和中断封装。它对应 Asterinas 的 OSTD 角色：把低层 unsafe 和架构差异收束在框架层。
+- `kernel/` 保持为核心内核 crate，承担架构无关的 `kernel_main`、panic 策略和 seL4-like capability / IPC / scheduler 等内核语义。它不直接散落 MMIO 寄存器、boot stack 或架构启动汇编。
 - `tools/qemu-runner/` 是宿主工作流工具，对应 Asterinas OSDK/tooling 的方向。它负责显式调用 `cargo build -p kernel --target aarch64-unknown-none -Zbuild-std=core,alloc -Zbuild-std-features=compiler-builtins-mem`，再用 `qemu-system-aarch64 -machine virt -cpu cortex-a53 -kernel ... -nographic` 启动。
 - `.cargo/config.toml` 只保留 bare-metal targets 的 `panic=abort` rustflag，不全局启用 `build-std`。`build-std` 只属于裸机 kernel 构建；如果泄漏到 host tools，会让普通 `std` 依赖和重建的 `core/alloc` 发生 duplicate lang item 冲突。
-- AArch64 和 amd64 都是一等支持目标。当前本地 runner 先测试 AArch64；amd64 先保持 boot stack、early COM1 console、halt loop 和裸机编译检查可用。
+- AArch64 和 amd64 都是一等支持目标。当前本地 runner 先测试 AArch64；amd64 先保持 OSTD-owned boot stack、early COM1 console、halt loop 和裸机编译检查可用。
 - 本地运行需要 `qemu-system-aarch64` 在 `PATH` 中。没有 QEMU 时，runner 仍可完成 AArch64 kernel 构建，但最后启动会失败并报告缺少命令。
 
 这个路径的目标只是先让 AArch64 内核跑起来，不是冻结最终启动协议。等内核能稳定进入 QEMU，再决定是否引入 UEFI/ELF loader、设备树解析、initramfs、签名验证、amd64 runner 和更完整的 Ousia boot 流程。

@@ -1,7 +1,12 @@
 [unstable]
 
 [target.aarch64-unknown-none]
-rustflags = ["-C", "panic=abort", "-C", "link-arg=-Tkernel/linker/aarch64-qemu-virt.ld"]
+rustflags = [
+    "-C",
+    "panic=abort",
+    "-C",
+    "link-arg=-Tkernel/linker/aarch64-qemu-virt.ld",
+]
 
 [target.x86_64-unknown-none]
 rustflags = ["-C", "panic=abort"]

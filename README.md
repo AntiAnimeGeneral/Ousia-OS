@@ -4,8 +4,9 @@ Ousia OS is a Rust microkernel prototype. AArch64 and amd64 are both first-class
 
 ## Repository layout
 
-- `kernel/`: the kernel crate. It holds the bare-metal entry and core kernel logic. Architecture bootstrap code lives under `kernel/src/boot/`.
-- `ostd/`: the OS framework / kernel SDK layer. It contains architecture-specific early console and CPU helpers behind a common boot API.
+- `kernel/`: the kernel crate. It owns core kernel logic and the architecture-neutral `kernel_main` entry in `kernel/src/entry.rs`.
+- `ostd/`: the OS framework / kernel SDK layer. It owns architecture bootstrap code, boot stacks, early console, and CPU helpers behind a common boot API.
+- Some of the reusable console plumbing under `ostd/src/console/` is adapted from Asterinas MPL-2.0 code; the file headers carry the license notice.
 - `tools/qemu-runner/`: the host-side runner that builds the kernel and starts QEMU.
 - `design/`: design notes and implementation drafts.
 
@@ -41,8 +42,17 @@ That command will:
 
 The current kernel prints a short boot message through the AArch64 PL011 serial path and then waits forever.
 This means `cargo run -p qemu-runner` does not return by itself after a successful boot. QEMU owns the terminal until you quit it. In `-nographic` mode, press `Ctrl-A` and then `X` to exit QEMU.
+If you stop QEMU with `Ctrl-C`, QEMU reports `terminating on signal 2`; that only means the host interrupted QEMU, not that the guest kernel failed.
 
-AArch64 and amd64 are both first-class targets. The current runner only exercises AArch64. The amd64 path currently covers the bare-metal entry, early COM1 serial output, and halt loop so that architecture-specific kernel code can compile and evolve behind the same `ostd` boundary.
+For automated boot checks, use:
+
+```bash
+cargo run -p qemu-runner -- --smoke
+```
+
+Smoke mode writes the guest serial stream to `target/qemu-aarch64.log`, waits for the boot marker, and then exits QEMU automatically. This is the path we will use for boot validation as the early console matures.
+
+AArch64 and amd64 are both first-class targets. The current runner only exercises AArch64. The amd64 path currently covers the OSTD-owned bare-metal bootstrap, early COM1 serial output, and halt loop so that architecture-specific code can compile and evolve behind the same `ostd` boundary without leaking into `kernel`.
 
 ## Lower-level checks
 

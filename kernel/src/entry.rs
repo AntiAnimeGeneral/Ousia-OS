@@ -1,9 +1,5 @@
-#[cfg(target_arch = "aarch64")]
-mod aarch64;
-#[cfg(target_arch = "x86_64")]
-mod x86_64;
-
 use core::panic::PanicInfo;
+
 use ostd::boot::{early_println, wait_forever};
 
 #[unsafe(no_mangle)]
