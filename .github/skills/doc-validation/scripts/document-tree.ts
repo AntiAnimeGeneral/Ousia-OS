@@ -92,13 +92,11 @@ async function readMarkdownFiles(
   extensions: string[],
 ): Promise<MarkdownFile[]> {
   const files: MarkdownFile[] = [];
-  for await (
-    const entry of walk(dir, {
-      exts: extensions,
-      includeDirs: false,
-      includeFiles: true,
-    })
-  ) {
+  for await (const entry of walk(dir, {
+    exts: extensions,
+    includeDirs: false,
+    includeFiles: true,
+  })) {
     const relativeFilePath = relativePath(root, entry.path);
     files.push({
       path: normalizePath(entry.path),
@@ -110,7 +108,7 @@ async function readMarkdownFiles(
     });
   }
   files.sort((left, right) =>
-    left.relativePath.localeCompare(right.relativePath)
+    left.relativePath.localeCompare(right.relativePath),
   );
   return files;
 }

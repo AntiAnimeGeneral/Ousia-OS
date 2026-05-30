@@ -172,8 +172,8 @@ function checkDirectorySequences(
   { config, tree, diagnostics }: RuleContext,
   rule: DirectorySequenceConfig,
 ): void {
-  const filenamePatternSource = rule.filenamePattern ??
-    config.numberedDocuments?.filenamePattern;
+  const filenamePatternSource =
+    rule.filenamePattern ?? config.numberedDocuments?.filenamePattern;
   if (!filenamePatternSource) {
     diagnostics.error(
       "directory sequence rule requires filenamePattern or numberedDocuments.filenamePattern",
@@ -218,9 +218,10 @@ function checkDirectorySequences(
       ...entries.map((entry) => entry.numberText.length),
     );
     diagnostics.error(
-      `numbered markdown files are not continuous in ${directory}: expected ${
-        formatNumberList(expectedNumbers, width)
-      }, got ${formatNumberList(actualNumbers, width)}`,
+      `numbered markdown files are not continuous in ${directory}: expected ${formatNumberList(
+        expectedNumbers,
+        width,
+      )}, got ${formatNumberList(actualNumbers, width)}`,
     );
   }
 }
@@ -263,9 +264,10 @@ async function readSections(
 ): Promise<Set<string>> {
   if (!(await isFile(targetFile))) {
     diagnostics.error(
-      `missing ${rule.label} section target: ${
-        relativePath(projectRoot, targetFile)
-      }`,
+      `missing ${rule.label} section target: ${relativePath(
+        projectRoot,
+        targetFile,
+      )}`,
     );
     return new Set();
   }
@@ -343,12 +345,14 @@ function isIncludedDirectory(
 }
 
 function sameNumberList(left: number[], right: number[]): boolean {
-  return left.length === right.length &&
-    left.every((value, index) => value === right[index]);
+  return (
+    left.length === right.length &&
+    left.every((value, index) => value === right[index])
+  );
 }
 
 function formatNumberList(numbers: number[], width: number): string {
-  return numbers.map((number) => number.toString().padStart(width, "0")).join(
-    ", ",
-  );
+  return numbers
+    .map((number) => number.toString().padStart(width, "0"))
+    .join(", ");
 }

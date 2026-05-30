@@ -108,9 +108,10 @@ deno.test("loads the design project config", async () => {
 deno.test("rejects a missing documentation root", async () => {
   await withTempDocs({}, async (root) => {
     const result = await checkDocs(root, DEFAULT_TEST_CONFIG);
-    assertEquals(result.errors.map((diagnostic) => diagnostic.message), [
-      "document root not found: design",
-    ]);
+    assertEquals(
+      result.errors.map((diagnostic) => diagnostic.message),
+      ["document root not found: design"],
+    );
   });
 });
 
@@ -133,7 +134,10 @@ deno.test("respects disabled rules", async () => {
         directorySequences: [{ enabled: false }],
         sectionReferences: [],
       });
-      assertEquals(result.errors.map((diagnostic) => diagnostic.message), []);
+      assertEquals(
+        result.errors.map((diagnostic) => diagnostic.message),
+        [],
+      );
     },
   );
 });
@@ -261,29 +265,35 @@ deno.test(
   },
 );
 
-deno.test("filters directory sequence checks by directory patterns", async () => {
-  await withTempDocs(
-    {
-      "design/target.md": "# Ousia OS 总纲\n\n## 1. 痛点\n",
-      "design/core/00-alpha.md": "# 00 — Alpha\n",
-      "design/core/02-gamma.md": "# 02 — Gamma\n",
-      "design/topics/00-topic.md": "# 00 — Topic\n",
-      "design/topics/02-gap.md": "# 02 — Gap\n",
-    },
-    async (root) => {
-      const result = await checkDocs(root, {
-        ...DEFAULT_TEST_CONFIG,
-        directorySequences: [
-          { startAt: 0, includeDirs: ["^design/topics$"] },
-        ],
-        sectionReferences: [],
-      });
-      assertEquals(result.errors.map((diagnostic) => diagnostic.message), [
-        "numbered markdown files are not continuous in design/topics: expected 00, 01, got 00, 02",
-      ]);
-    },
-  );
-});
+deno.test(
+  "filters directory sequence checks by directory patterns",
+  async () => {
+    await withTempDocs(
+      {
+        "design/target.md": "# Ousia OS 总纲\n\n## 1. 痛点\n",
+        "design/core/00-alpha.md": "# 00 — Alpha\n",
+        "design/core/02-gamma.md": "# 02 — Gamma\n",
+        "design/topics/00-topic.md": "# 00 — Topic\n",
+        "design/topics/02-gap.md": "# 02 — Gap\n",
+      },
+      async (root) => {
+        const result = await checkDocs(root, {
+          ...DEFAULT_TEST_CONFIG,
+          directorySequences: [
+            { startAt: 0, includeDirs: ["^design/topics$"] },
+          ],
+          sectionReferences: [],
+        });
+        assertEquals(
+          result.errors.map((diagnostic) => diagnostic.message),
+          [
+            "numbered markdown files are not continuous in design/topics: expected 00, 01, got 00, 02",
+          ],
+        );
+      },
+    );
+  },
+);
 
 async function withTempDocs(
   files: Record<string, string>,
