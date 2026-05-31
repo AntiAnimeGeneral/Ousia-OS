@@ -76,7 +76,7 @@ OSDK 的价值在工作流：`cargo osdk new/build/run/test/debug/doc` 把裸机
 - `TcbCap`
 - `copy` / `mint` / `move` / `delete` / `revoke`
 
-rights 的解释应跟随 capability 类型，而不是长期共享一套全局 `READ | WRITE | EXEC | MANAGE` 语义。
+rights 的解释应跟随 capability 类型，而不是长期共享一套全局 `READ | WRITE | EXEC | MANAGE` 语义。Endpoint cap 当前用 `READ` 表达 receive、`WRITE` 表达 send，并显式保留 `GRANT` 和 `GRANT_REPLY`；调用边界必须把它们转换为 `can_send`、`can_receive`、`can_grant`、`can_grant_reply` 语义，不允许把 Endpoint 当普通文件式读写对象处理。Frame map 当前按 frame cap 裁剪请求的 VM rights，而不是要求 frame cap 同时具备 read/write。
 
 ### 2. Memory and retype
 
@@ -141,9 +141,9 @@ Ousia 可以在 seL4-like baseline 上增加：
 - `kernel/` 保持为核心内核 crate，承担架构无关的 `kernel_main`、panic 策略和 seL4-like capability / IPC / scheduler 等内核语义。它不直接散落 MMIO 寄存器、boot stack 或架构启动汇编。
 - Ousia 按多核 only 内核设计，不提供单核长期主路径。基础组件先按广度建立最小正确骨架，但 scheduler、per-CPU state、IRQ/timer routing、TLB shootdown、FPU/SIMD ownership、锁和 allocator 边界都必须能自然扩展到多核语义；早期实现不能把“只有一个 CPU 会运行内核”当作核心不变量。
 - 当前内核基础组件按 Rust 风味 seL4 baseline 推进：先让 capability、CSpace/CNode、Untyped/retype、Endpoint、Notification、TCB、IPC、syscall/invocation 和调度语义对齐 seL4，再基于可运行 baseline 评估 Ousia 是否需要修改语义或接口。Rust 风味只用于类型化状态、错误和权限表达，不改变 seL4 baseline 的对象关系和调用含义。
-- `kernel::invocation` 是 capability 调用边界的最小骨架：它先把 Endpoint、Frame、Untyped 和 TCB 的 invocation 做成类型化请求和授权结果，负责对象类型检查、权限检查和 retype 大小检查；Endpoint 调用结果只表示 seL4-like IPC 授权通过，真正的 endpoint queue、address-space mapping、Untyped 派生和 scheduler 副作用由后续对象子系统接入，不能绕过 invocation 边界直接操作 capability internals。
-- `kernel::ipc` 承载 Endpoint 的最小状态机：Endpoint 显式使用 seL4-like `Idle / Send / Recv` 三态，send/recv 使用对应方向的 FIFO queue，并显式传入 `ThreadId` 和 `CpuId`，返回 delivered 或 blocked action。它当前只表达 IPC 队列语义，不拥有 scheduler；后续 scheduler 接入时根据 action 阻塞、唤醒或跨 CPU 投递线程。
-- `kernel::tcb` 承载 seL4-like thread identity 和 thread state baseline：`Inactive`、`Running`、`Restart`、`BlockedOnReceive`、`BlockedOnSend`、`BlockedOnReply`、`BlockedOnNotification` 和 `IdleThreadState` 显式建模，并提供 blocked/stopped 判定。`CpuId`/`ThreadId` 属于 TCB/调度边界，不属于 IPC 私有类型；TCB affinity 从一开始显式存在，后续 scheduler 按多核语义使用它。
+- `kernel::invocation` 是 capability 调用边界的最小骨架：它先把 Endpoint、Frame、Untyped 和 TCB 的 invocation 做成类型化请求和授权结果，负责对象类型检查、权限检查和 retype 大小检查；Endpoint send/recv 的授权结果显式带出 blocking、call、badge、grant 和 grant-reply 信息，真正的 endpoint queue、address-space mapping、Untyped 派生和 scheduler 副作用由后续对象子系统接入，不能绕过 invocation 边界直接操作 capability internals。
+- `kernel::ipc` 承载 Endpoint 的最小状态机：Endpoint 显式使用 seL4-like `Idle / Send / Recv` 三态，send/recv 使用对应方向的 FIFO queue，并显式传入 `ThreadId` 和 `CpuId`。blocking send/receive 会入队并返回 blocked action；nonblocking send 在没有 receiver 时不入队，nonblocking receive 在没有 sender 时失败返回。IPC action 保留 sender badge、grant、grant-reply、call 和 receiver grant 信息，但不拥有 scheduler；后续 scheduler 接入时根据 action 阻塞、唤醒或跨 CPU 投递线程。
+- `kernel::tcb` 承载 seL4-like thread identity 和 thread state baseline：`Inactive`、`Running`、`Restart`、`BlockedOnReceive`、`BlockedOnSend`、`BlockedOnReply`、`BlockedOnNotification` 和 `IdleThreadState` 显式建模，并提供 blocked/stopped 判定。`BlockedOnSend` 保存 endpoint、badge、grant、grant-reply 和 call 信息；`BlockedOnReceive` 保存 endpoint 和 receive grant 信息。`CpuId`/`ThreadId` 属于 TCB/调度边界，不属于 IPC 私有类型；TCB affinity 从一开始显式存在，后续 scheduler 按多核语义使用它。
 - `tools/qemu-runner/` 是根 workspace 外的宿主控制项目，对应 Asterinas OSDK/tooling 的方向。它负责在仓库根目录显式调用 `cargo build -p kernel --target aarch64-unknown-none -Zbuild-std=core,alloc -Zbuild-std-features=compiler-builtins-mem`，再用 `qemu-system-aarch64 -machine virt -cpu cortex-a53 -kernel ...` 启动。手动运行时串口接 `stdio`；smoke 模式使用显式 `-chardev file,... -serial chardev:...`，避免依赖 QEMU `-nographic` 的隐式串口重定向。runner 支持普通 boot smoke 和 feature-gated exception smoke，分别验证串口启动路径和 AArch64 exception vector 诊断路径。
 - `.cargo/config.toml` 只保留 bare-metal targets 的 `panic=abort` rustflag，不全局启用 `build-std`。`build-std` 只属于裸机 kernel 构建；如果泄漏到 host tools，会让普通 `std` 依赖和重建的 `core/alloc` 发生 duplicate lang item 冲突。
 - 裸机 `alloc` 由 `ostd::mm::heap` 提供 early heap：底层使用 `linked_list_allocator`，内存来自 OSTD 私有静态区域，初始化发生在 `kernel_main` 的最早阶段。它只支撑早期 Rust 数据结构和 capability smoke，不承担最终物理页框管理、boot memory map 解析或 seL4-style Untyped retype；后续 frame allocator 应在 OSTD 的 boot memory / page-frame 边界内演进。

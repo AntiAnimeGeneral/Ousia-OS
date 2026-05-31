@@ -12,6 +12,7 @@ pub struct IpcPayload {
 pub struct EndpointWaiter {
     thread: ThreadId,
     cpu: CpuId,
+    can_grant: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -26,7 +27,24 @@ pub struct IpcMessage {
     sender: ThreadId,
     sender_cpu: CpuId,
     badge: u64,
+    can_grant: bool,
+    can_grant_reply: bool,
+    is_call: bool,
     payload: IpcPayload,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct IpcSendOptions {
+    pub blocking: bool,
+    pub is_call: bool,
+    pub can_grant: bool,
+    pub can_grant_reply: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct IpcReceiveOptions {
+    pub blocking: bool,
+    pub can_grant: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -34,14 +52,28 @@ pub enum IpcAction {
     SenderBlocked {
         thread: ThreadId,
         cpu: CpuId,
+        badge: u64,
+        can_grant: bool,
+        can_grant_reply: bool,
+        is_call: bool,
     },
     ReceiverBlocked {
+        thread: ThreadId,
+        cpu: CpuId,
+        can_grant: bool,
+    },
+    SendIgnored {
+        thread: ThreadId,
+        cpu: CpuId,
+    },
+    NonblockingReceiveFailed {
         thread: ThreadId,
         cpu: CpuId,
     },
     Delivered {
         receiver: ThreadId,
         receiver_cpu: CpuId,
+        receiver_can_grant: bool,
         message: IpcMessage,
     },
 }
@@ -103,6 +135,10 @@ impl EndpointWaiter {
     pub const fn cpu(self) -> CpuId {
         self.cpu
     }
+
+    pub const fn can_grant(self) -> bool {
+        self.can_grant
+    }
 }
 
 impl IpcMessage {
@@ -116,6 +152,18 @@ impl IpcMessage {
 
     pub const fn badge(self) -> u64 {
         self.badge
+    }
+
+    pub const fn can_grant(self) -> bool {
+        self.can_grant
+    }
+
+    pub const fn can_grant_reply(self) -> bool {
+        self.can_grant_reply
+    }
+
+    pub const fn is_call(self) -> bool {
+        self.is_call
     }
 
     pub const fn payload(self) -> IpcPayload {
@@ -137,22 +185,37 @@ impl Endpoint {
         sender: ThreadId,
         sender_cpu: CpuId,
         badge: u64,
+        options: IpcSendOptions,
         payload: IpcPayload,
     ) -> IpcAction {
         let message = IpcMessage {
             sender,
             sender_cpu,
             badge,
+            can_grant: options.can_grant,
+            can_grant_reply: options.can_grant_reply,
+            is_call: options.is_call,
             payload,
         };
 
         match self.state {
             EndpointState::Idle | EndpointState::Send => {
+                if !options.blocking {
+                    return IpcAction::SendIgnored {
+                        thread: sender,
+                        cpu: sender_cpu,
+                    };
+                }
+
                 self.senders.push_back(message);
                 self.state = EndpointState::Send;
                 IpcAction::SenderBlocked {
                     thread: sender,
                     cpu: sender_cpu,
+                    badge,
+                    can_grant: options.can_grant,
+                    can_grant_reply: options.can_grant_reply,
+                    is_call: options.is_call,
                 }
             }
             EndpointState::Recv => {
@@ -166,23 +229,38 @@ impl Endpoint {
                 IpcAction::Delivered {
                     receiver: receiver.thread,
                     receiver_cpu: receiver.cpu,
+                    receiver_can_grant: receiver.can_grant,
                     message,
                 }
             }
         }
     }
 
-    pub fn recv(&mut self, receiver: ThreadId, receiver_cpu: CpuId) -> IpcAction {
+    pub fn recv(
+        &mut self,
+        receiver: ThreadId,
+        receiver_cpu: CpuId,
+        options: IpcReceiveOptions,
+    ) -> IpcAction {
         match self.state {
             EndpointState::Idle | EndpointState::Recv => {
+                if !options.blocking {
+                    return IpcAction::NonblockingReceiveFailed {
+                        thread: receiver,
+                        cpu: receiver_cpu,
+                    };
+                }
+
                 self.receivers.push_back(EndpointWaiter {
                     thread: receiver,
                     cpu: receiver_cpu,
+                    can_grant: options.can_grant,
                 });
                 self.state = EndpointState::Recv;
                 IpcAction::ReceiverBlocked {
                     thread: receiver,
                     cpu: receiver_cpu,
+                    can_grant: options.can_grant,
                 }
             }
             EndpointState::Send => {
@@ -196,6 +274,7 @@ impl Endpoint {
                 IpcAction::Delivered {
                     receiver,
                     receiver_cpu,
+                    receiver_can_grant: options.can_grant,
                     message,
                 }
             }
@@ -227,6 +306,47 @@ mod tests {
         ThreadId::new(raw)
     }
 
+    fn blocking_send() -> IpcSendOptions {
+        IpcSendOptions {
+            blocking: true,
+            is_call: false,
+            can_grant: true,
+            can_grant_reply: false,
+        }
+    }
+
+    fn blocking_call() -> IpcSendOptions {
+        IpcSendOptions {
+            blocking: true,
+            is_call: true,
+            can_grant: true,
+            can_grant_reply: true,
+        }
+    }
+
+    fn nonblocking_send() -> IpcSendOptions {
+        IpcSendOptions {
+            blocking: false,
+            is_call: false,
+            can_grant: false,
+            can_grant_reply: false,
+        }
+    }
+
+    fn blocking_recv() -> IpcReceiveOptions {
+        IpcReceiveOptions {
+            blocking: true,
+            can_grant: true,
+        }
+    }
+
+    fn nonblocking_recv() -> IpcReceiveOptions {
+        IpcReceiveOptions {
+            blocking: false,
+            can_grant: false,
+        }
+    }
+
     #[test]
     fn payload_rejects_too_many_words() {
         assert_eq!(
@@ -241,13 +361,23 @@ mod tests {
     #[test]
     fn send_blocks_when_no_receiver_waits() {
         let mut endpoint = Endpoint::new();
-        let action = endpoint.send(thread(1), cpu(0), 7, IpcPayload::new(&[10]).unwrap());
+        let action = endpoint.send(
+            thread(1),
+            cpu(0),
+            7,
+            blocking_call(),
+            IpcPayload::new(&[10]).unwrap(),
+        );
 
         assert_eq!(
             action,
             IpcAction::SenderBlocked {
                 thread: thread(1),
                 cpu: cpu(0),
+                badge: 7,
+                can_grant: true,
+                can_grant_reply: true,
+                is_call: true,
             }
         );
         assert_eq!(endpoint.state(), EndpointState::Send);
@@ -258,18 +388,34 @@ mod tests {
     #[test]
     fn recv_delivers_oldest_waiting_sender() {
         let mut endpoint = Endpoint::new();
-        endpoint.send(thread(1), cpu(0), 7, IpcPayload::new(&[10]).unwrap());
-        endpoint.send(thread(2), cpu(1), 8, IpcPayload::new(&[20]).unwrap());
+        endpoint.send(
+            thread(1),
+            cpu(0),
+            7,
+            blocking_call(),
+            IpcPayload::new(&[10]).unwrap(),
+        );
+        endpoint.send(
+            thread(2),
+            cpu(1),
+            8,
+            blocking_send(),
+            IpcPayload::new(&[20]).unwrap(),
+        );
 
         assert_eq!(
-            endpoint.recv(thread(3), cpu(2)),
+            endpoint.recv(thread(3), cpu(2), blocking_recv()),
             IpcAction::Delivered {
                 receiver: thread(3),
                 receiver_cpu: cpu(2),
+                receiver_can_grant: true,
                 message: IpcMessage {
                     sender: thread(1),
                     sender_cpu: cpu(0),
                     badge: 7,
+                    can_grant: true,
+                    can_grant_reply: true,
+                    is_call: true,
                     payload: IpcPayload::new(&[10]).unwrap(),
                 },
             }
@@ -282,13 +428,14 @@ mod tests {
     #[test]
     fn recv_blocks_when_no_sender_waits() {
         let mut endpoint = Endpoint::new();
-        let action = endpoint.recv(thread(3), cpu(2));
+        let action = endpoint.recv(thread(3), cpu(2), blocking_recv());
 
         assert_eq!(
             action,
             IpcAction::ReceiverBlocked {
                 thread: thread(3),
                 cpu: cpu(2),
+                can_grant: true,
             }
         );
         assert_eq!(endpoint.state(), EndpointState::Recv);
@@ -299,18 +446,28 @@ mod tests {
     #[test]
     fn send_delivers_to_oldest_waiting_receiver() {
         let mut endpoint = Endpoint::new();
-        endpoint.recv(thread(3), cpu(2));
-        endpoint.recv(thread(4), cpu(3));
+        endpoint.recv(thread(3), cpu(2), blocking_recv());
+        endpoint.recv(thread(4), cpu(3), blocking_recv());
 
         assert_eq!(
-            endpoint.send(thread(1), cpu(0), 7, IpcPayload::new(&[10]).unwrap()),
+            endpoint.send(
+                thread(1),
+                cpu(0),
+                7,
+                blocking_call(),
+                IpcPayload::new(&[10]).unwrap(),
+            ),
             IpcAction::Delivered {
                 receiver: thread(3),
                 receiver_cpu: cpu(2),
+                receiver_can_grant: true,
                 message: IpcMessage {
                     sender: thread(1),
                     sender_cpu: cpu(0),
                     badge: 7,
+                    can_grant: true,
+                    can_grant_reply: true,
+                    is_call: true,
                     payload: IpcPayload::new(&[10]).unwrap(),
                 },
             }
@@ -323,19 +480,67 @@ mod tests {
     #[test]
     fn endpoint_returns_to_idle_after_last_waiter_is_matched() {
         let mut endpoint = Endpoint::new();
-        endpoint.send(thread(1), cpu(0), 7, IpcPayload::new(&[10]).unwrap());
+        endpoint.send(
+            thread(1),
+            cpu(0),
+            7,
+            blocking_send(),
+            IpcPayload::new(&[10]).unwrap(),
+        );
 
-        let _ = endpoint.recv(thread(2), cpu(1));
+        let _ = endpoint.recv(thread(2), cpu(1), blocking_recv());
 
         assert_eq!(endpoint.state(), EndpointState::Idle);
         assert_eq!(endpoint.queued_senders(), 0);
         assert_eq!(endpoint.queued_receivers(), 0);
 
-        endpoint.recv(thread(3), cpu(2));
-        let _ = endpoint.send(thread(4), cpu(3), 8, IpcPayload::new(&[20]).unwrap());
+        endpoint.recv(thread(3), cpu(2), blocking_recv());
+        let _ = endpoint.send(
+            thread(4),
+            cpu(3),
+            8,
+            blocking_send(),
+            IpcPayload::new(&[20]).unwrap(),
+        );
 
         assert_eq!(endpoint.state(), EndpointState::Idle);
         assert_eq!(endpoint.queued_senders(), 0);
+        assert_eq!(endpoint.queued_receivers(), 0);
+    }
+
+    #[test]
+    fn nonblocking_send_does_not_queue_when_endpoint_is_not_receiving() {
+        let mut endpoint = Endpoint::new();
+
+        assert_eq!(
+            endpoint.send(
+                thread(1),
+                cpu(0),
+                7,
+                nonblocking_send(),
+                IpcPayload::new(&[10]).unwrap(),
+            ),
+            IpcAction::SendIgnored {
+                thread: thread(1),
+                cpu: cpu(0),
+            }
+        );
+        assert_eq!(endpoint.state(), EndpointState::Idle);
+        assert_eq!(endpoint.queued_senders(), 0);
+    }
+
+    #[test]
+    fn nonblocking_receive_fails_without_waiting_sender() {
+        let mut endpoint = Endpoint::new();
+
+        assert_eq!(
+            endpoint.recv(thread(1), cpu(0), nonblocking_recv()),
+            IpcAction::NonblockingReceiveFailed {
+                thread: thread(1),
+                cpu: cpu(0),
+            }
+        );
+        assert_eq!(endpoint.state(), EndpointState::Idle);
         assert_eq!(endpoint.queued_receivers(), 0);
     }
 }

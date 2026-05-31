@@ -31,10 +31,21 @@ pub enum ThreadState {
     Inactive,
     Running,
     Restart,
-    BlockedOnReceive { endpoint: ObjectId },
-    BlockedOnSend { endpoint: ObjectId },
+    BlockedOnReceive {
+        endpoint: ObjectId,
+        can_grant: bool,
+    },
+    BlockedOnSend {
+        endpoint: ObjectId,
+        badge: u64,
+        can_grant: bool,
+        can_grant_reply: bool,
+        is_call: bool,
+    },
     BlockedOnReply,
-    BlockedOnNotification { notification: ObjectId },
+    BlockedOnNotification {
+        notification: ObjectId,
+    },
     IdleThreadState,
 }
 
@@ -113,13 +124,18 @@ mod tests {
     fn blocked_states_match_sel4_blocked_semantics() {
         assert!(
             ThreadState::BlockedOnReceive {
-                endpoint: object(1)
+                endpoint: object(1),
+                can_grant: true,
             }
             .is_blocked()
         );
         assert!(
             ThreadState::BlockedOnSend {
-                endpoint: object(1)
+                endpoint: object(1),
+                badge: 1,
+                can_grant: true,
+                can_grant_reply: false,
+                is_call: true,
             }
             .is_blocked()
         );
@@ -140,13 +156,18 @@ mod tests {
         assert!(ThreadState::Inactive.is_stopped());
         assert!(
             ThreadState::BlockedOnReceive {
-                endpoint: object(1)
+                endpoint: object(1),
+                can_grant: true,
             }
             .is_stopped()
         );
         assert!(
             ThreadState::BlockedOnSend {
-                endpoint: object(1)
+                endpoint: object(1),
+                badge: 1,
+                can_grant: true,
+                can_grant_reply: false,
+                is_call: true,
             }
             .is_stopped()
         );

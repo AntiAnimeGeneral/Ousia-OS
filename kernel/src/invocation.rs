@@ -2,10 +2,21 @@ use crate::cap::{CapError, Capability, CapabilityDescriptor, CapabilitySpace, Ob
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Invocation {
-    EndpointSend { message_words: usize },
-    EndpointRecv,
-    FrameMap { address_space: ObjectId },
-    UntypedRetype { size_bits: u8 },
+    EndpointSend {
+        message_words: usize,
+        blocking: bool,
+        is_call: bool,
+    },
+    EndpointRecv {
+        blocking: bool,
+    },
+    FrameMap {
+        address_space: ObjectId,
+        vm_rights: Rights,
+    },
+    UntypedRetype {
+        size_bits: u8,
+    },
     TcbResume,
 }
 
@@ -15,13 +26,20 @@ pub enum InvocationOutcome {
         endpoint: ObjectId,
         badge: u64,
         message_words: usize,
+        blocking: bool,
+        is_call: bool,
+        can_grant: bool,
+        can_grant_reply: bool,
     },
     ReceiveIpcAuthorized {
         endpoint: ObjectId,
+        blocking: bool,
+        can_grant: bool,
     },
     FrameMapAuthorized {
         frame: ObjectId,
         address_space: ObjectId,
+        vm_rights: Rights,
     },
     UntypedRetypeAuthorized {
         untyped: ObjectId,
@@ -71,32 +89,57 @@ pub fn invoke(
     let view = cspace.lookup(descriptor)?;
 
     match invocation {
-        Invocation::EndpointSend { message_words } => match view.capability {
+        Invocation::EndpointSend {
+            message_words,
+            blocking,
+            is_call,
+        } => match view.capability {
             Capability::Endpoint(cap) => {
-                require_rights(view.rights, Rights::WRITE)?;
+                if !cap.can_send() {
+                    return Err(InvocationError::MissingRights {
+                        required: Rights::WRITE,
+                        actual: view.rights,
+                    });
+                }
                 Ok(InvocationOutcome::SendIpcAuthorized {
                     endpoint: view.object,
                     badge: cap.badge,
                     message_words,
+                    blocking,
+                    is_call,
+                    can_grant: cap.can_grant(),
+                    can_grant_reply: cap.can_grant_reply(),
                 })
             }
             actual => Err(wrong_capability(InvocationTarget::Endpoint, actual)),
         },
-        Invocation::EndpointRecv => match view.capability {
-            Capability::Endpoint(_) => {
-                require_rights(view.rights, Rights::READ)?;
+        Invocation::EndpointRecv { blocking } => match view.capability {
+            Capability::Endpoint(cap) => {
+                if !cap.can_receive() {
+                    return Err(InvocationError::MissingRights {
+                        required: Rights::READ,
+                        actual: view.rights,
+                    });
+                }
                 Ok(InvocationOutcome::ReceiveIpcAuthorized {
                     endpoint: view.object,
+                    blocking,
+                    can_grant: cap.can_grant(),
                 })
             }
             actual => Err(wrong_capability(InvocationTarget::Endpoint, actual)),
         },
-        Invocation::FrameMap { address_space } => match view.capability {
+        Invocation::FrameMap {
+            address_space,
+            vm_rights,
+        } => match view.capability {
             Capability::Frame(_) => {
-                require_rights(view.rights, Rights::READ | Rights::WRITE)?;
+                let vm_rights =
+                    vm_rights & view.rights & (Rights::READ | Rights::WRITE | Rights::EXECUTE);
                 Ok(InvocationOutcome::FrameMapAuthorized {
                     frame: view.object,
                     address_space,
+                    vm_rights,
                 })
             }
             actual => Err(wrong_capability(InvocationTarget::Frame, actual)),
@@ -166,11 +209,23 @@ mod tests {
         let endpoint = cspace.object_of(cap).unwrap();
 
         assert_eq!(
-            invoke(&cspace, cap, Invocation::EndpointSend { message_words: 3 },),
+            invoke(
+                &cspace,
+                cap,
+                Invocation::EndpointSend {
+                    message_words: 3,
+                    blocking: true,
+                    is_call: true,
+                },
+            ),
             Ok(InvocationOutcome::SendIpcAuthorized {
                 endpoint,
                 badge: 0x2a,
                 message_words: 3,
+                blocking: true,
+                is_call: true,
+                can_grant: false,
+                can_grant_reply: false,
             })
         );
     }
@@ -181,10 +236,50 @@ mod tests {
         let cap = cspace.create_object(endpoint(Rights::WRITE, 0));
 
         assert_eq!(
-            invoke(&cspace, cap, Invocation::EndpointRecv),
+            invoke(&cspace, cap, Invocation::EndpointRecv { blocking: true }),
             Err(InvocationError::MissingRights {
                 required: Rights::READ,
                 actual: Rights::WRITE,
+            })
+        );
+    }
+
+    #[test]
+    fn endpoint_invocation_exports_grant_flags() {
+        let mut cspace = CapabilitySpace::new();
+        let cap = cspace.create_object(endpoint(
+            Rights::READ | Rights::WRITE | Rights::GRANT | Rights::GRANT_REPLY,
+            0x2a,
+        ));
+        let endpoint = cspace.object_of(cap).unwrap();
+
+        assert_eq!(
+            invoke(
+                &cspace,
+                cap,
+                Invocation::EndpointSend {
+                    message_words: 1,
+                    blocking: false,
+                    is_call: false,
+                },
+            ),
+            Ok(InvocationOutcome::SendIpcAuthorized {
+                endpoint,
+                badge: 0x2a,
+                message_words: 1,
+                blocking: false,
+                is_call: false,
+                can_grant: true,
+                can_grant_reply: true,
+            })
+        );
+
+        assert_eq!(
+            invoke(&cspace, cap, Invocation::EndpointRecv { blocking: true }),
+            Ok(InvocationOutcome::ReceiveIpcAuthorized {
+                endpoint,
+                blocking: true,
+                can_grant: true,
             })
         );
     }
@@ -195,7 +290,15 @@ mod tests {
         let cap = cspace.create_object(frame(Rights::READ | Rights::WRITE));
 
         assert_eq!(
-            invoke(&cspace, cap, Invocation::EndpointSend { message_words: 1 },),
+            invoke(
+                &cspace,
+                cap,
+                Invocation::EndpointSend {
+                    message_words: 1,
+                    blocking: true,
+                    is_call: false,
+                },
+            ),
             Err(InvocationError::WrongCapability {
                 expected: InvocationTarget::Endpoint,
                 actual: frame(Rights::READ | Rights::WRITE),
@@ -204,18 +307,26 @@ mod tests {
     }
 
     #[test]
-    fn frame_map_requires_read_and_write_rights() {
+    fn frame_map_masks_requested_vm_rights_by_cap_rights() {
         let mut cspace = CapabilitySpace::new();
-        let frame = cspace.create_object(frame(Rights::READ | Rights::WRITE));
+        let frame = cspace.create_object(frame(Rights::READ));
         let address_space_cap = cspace.create_object(tcb(Rights::MANAGE));
         let address_space = cspace.object_of(address_space_cap).unwrap();
         let frame_object = cspace.object_of(frame).unwrap();
 
         assert_eq!(
-            invoke(&cspace, frame, Invocation::FrameMap { address_space }),
+            invoke(
+                &cspace,
+                frame,
+                Invocation::FrameMap {
+                    address_space,
+                    vm_rights: Rights::READ | Rights::WRITE,
+                },
+            ),
             Ok(InvocationOutcome::FrameMapAuthorized {
                 frame: frame_object,
                 address_space,
+                vm_rights: Rights::READ,
             })
         );
     }

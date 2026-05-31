@@ -59,11 +59,13 @@ bitflags! {
         const EXECUTE = 1 << 2;
         const GRANT = 1 << 3;
         const MANAGE = 1 << 4;
+        const GRANT_REPLY = 1 << 5;
         const ALL = Self::READ.bits()
             | Self::WRITE.bits()
             | Self::EXECUTE.bits()
             | Self::GRANT.bits()
-            | Self::MANAGE.bits();
+            | Self::MANAGE.bits()
+            | Self::GRANT_REPLY.bits();
     }
 }
 
@@ -86,6 +88,24 @@ pub enum Capability {
 pub struct EndpointCap {
     pub badge: u64,
     pub rights: Rights,
+}
+
+impl EndpointCap {
+    pub const fn can_send(&self) -> bool {
+        self.rights.contains(Rights::WRITE)
+    }
+
+    pub const fn can_receive(&self) -> bool {
+        self.rights.contains(Rights::READ)
+    }
+
+    pub const fn can_grant(&self) -> bool {
+        self.rights.contains(Rights::GRANT)
+    }
+
+    pub const fn can_grant_reply(&self) -> bool {
+        self.rights.contains(Rights::GRANT_REPLY)
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
