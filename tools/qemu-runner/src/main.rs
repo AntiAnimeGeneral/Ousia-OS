@@ -8,10 +8,12 @@ use std::{
 
 const TARGET: &str = "aarch64-unknown-none";
 const BOOT_MARKER: &str = "Ousia kernel booted on aarch64";
+const EXCEPTION_MARKER: &str = "Ousia AArch64 exception";
 const SMOKE_TIMEOUT: Duration = Duration::from_secs(5);
 
 fn main() -> ExitCode {
     let smoke = env::args().any(|arg| arg == "--smoke");
+    let exception_smoke = env::args().any(|arg| arg == "--exception-smoke");
     let workspace_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .and_then(|path| path.parent())
@@ -19,15 +21,19 @@ fn main() -> ExitCode {
         .to_path_buf();
 
     eprintln!("building aarch64 kernel...");
-    if !run_command(Command::new("cargo").current_dir(&workspace_root).args([
-        "build",
-        "-p",
-        "kernel",
-        "--target",
-        TARGET,
+    let mut build_command = Command::new("cargo");
+    build_command
+        .current_dir(&workspace_root)
+        .args(["build", "-p", "kernel", "--target", TARGET]);
+    if exception_smoke {
+        build_command.args(["--features", "exception-smoke"]);
+    }
+    build_command.args([
         "-Zbuild-std=core,alloc",
         "-Zbuild-std-features=compiler-builtins-mem",
-    ])) {
+    ]);
+
+    if !run_command(&mut build_command) {
         return ExitCode::FAILURE;
     }
 
@@ -37,8 +43,13 @@ fn main() -> ExitCode {
         .join("debug")
         .join("kernel");
 
-    if smoke {
-        return run_smoke(&workspace_root, &kernel_path);
+    if smoke || exception_smoke {
+        let marker = if exception_smoke {
+            EXCEPTION_MARKER
+        } else {
+            BOOT_MARKER
+        };
+        return run_smoke(&workspace_root, &kernel_path, marker);
     }
 
     eprintln!(
@@ -58,7 +69,7 @@ fn main() -> ExitCode {
     }
 }
 
-fn run_smoke(workspace_root: &Path, kernel_path: &Path) -> ExitCode {
+fn run_smoke(workspace_root: &Path, kernel_path: &Path, marker: &str) -> ExitCode {
     let log_path = workspace_root.join("target").join("qemu-aarch64.log");
     if let Err(error) = fs::write(&log_path, "") {
         eprintln!("failed to clear {}: {error}", log_path.display());
@@ -92,9 +103,9 @@ fn run_smoke(workspace_root: &Path, kernel_path: &Path) -> ExitCode {
             return ExitCode::FAILURE;
         }
 
-        if log_contains(&log_path, BOOT_MARKER) {
+        if log_contains(&log_path, marker) {
             stop_qemu(&mut child);
-            eprintln!("smoke test passed: found `{BOOT_MARKER}`");
+            eprintln!("smoke test passed: found `{marker}`");
             return ExitCode::SUCCESS;
         }
 
@@ -103,7 +114,7 @@ fn run_smoke(workspace_root: &Path, kernel_path: &Path) -> ExitCode {
 
     stop_qemu(&mut child);
     eprintln!(
-        "smoke test timed out after {}s; expected `{BOOT_MARKER}` in {}",
+        "smoke test timed out after {}s; expected `{marker}` in {}",
         SMOKE_TIMEOUT.as_secs(),
         log_path.display()
     );

@@ -8,6 +8,7 @@ _start:
     bl __ousia_enable_fp_simd
     ldr x1, =__ousia_boot_stack_end
     mov sp, x1
+    bl __ousia_aarch64_install_exception_vector
     bl kernel_main
 
 1:

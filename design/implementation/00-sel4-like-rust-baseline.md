@@ -131,7 +131,7 @@ Ousia 可以在 seL4-like baseline 上增加：
 4. 引入 `CNodeCap` 和 slot guard 的雏形。
 5. 为 Endpoint / Frame / Untyped 增加类型化 rights 校验。
 6. 再考虑是否拆分 `cap/` 子模块。
-7. 用 AArch64 QEMU `virt` direct boot + `tools/qemu-runner` 建立最小 QEMU 闭环：先让内核在 PL011 串口打印启动日志，再逐步接入 device tree、frame allocator、页表、异常向量、GIC 和 timer。amd64 同样是一等支持目标，但当前先通过裸机编译检查覆盖，QEMU runner 暂时只跑 AArch64。
+7. 用 AArch64 QEMU `virt` direct boot + `tools/qemu-runner` 建立最小 QEMU 闭环：早期启动路径应具备 PL011 串口、异常向量和可自动验证的 smoke test，再逐步接入 device tree、frame allocator、页表、GIC 和 timer。amd64 同样是一等支持目标，但当前先通过裸机编译检查覆盖，QEMU runner 暂时只跑 AArch64。
 
 ## 当前运行路径
 
@@ -139,11 +139,12 @@ Ousia 可以在 seL4-like baseline 上增加：
 
 - `ostd/` 是 Ousia 的 framekernel / kernel SDK 雏形，先承载架构相关 unsafe、boot `_start`、boot stack、early CPU state、early console、CPU halt、后续 boot memory、页表、异常和中断封装。它对应 Asterinas 的 OSTD 角色：把低层 unsafe 和架构差异收束在框架层。
 - `kernel/` 保持为核心内核 crate，承担架构无关的 `kernel_main`、panic 策略和 seL4-like capability / IPC / scheduler 等内核语义。它不直接散落 MMIO 寄存器、boot stack 或架构启动汇编。
-- `tools/qemu-runner/` 是宿主工作流工具，对应 Asterinas OSDK/tooling 的方向。它负责显式调用 `cargo build -p kernel --target aarch64-unknown-none -Zbuild-std=core,alloc -Zbuild-std-features=compiler-builtins-mem`，再用 `qemu-system-aarch64 -machine virt -cpu cortex-a53 -kernel ...` 启动。手动运行时串口接 `stdio`；smoke 模式使用显式 `-chardev file,... -serial chardev:...`，避免依赖 QEMU `-nographic` 的隐式串口重定向。
+- `tools/qemu-runner/` 是宿主工作流工具，对应 Asterinas OSDK/tooling 的方向。它负责显式调用 `cargo build -p kernel --target aarch64-unknown-none -Zbuild-std=core,alloc -Zbuild-std-features=compiler-builtins-mem`，再用 `qemu-system-aarch64 -machine virt -cpu cortex-a53 -kernel ...` 启动。手动运行时串口接 `stdio`；smoke 模式使用显式 `-chardev file,... -serial chardev:...`，避免依赖 QEMU `-nographic` 的隐式串口重定向。runner 支持普通 boot smoke 和 feature-gated exception smoke，分别验证串口启动路径和 AArch64 exception vector 诊断路径。
 - `.cargo/config.toml` 只保留 bare-metal targets 的 `panic=abort` rustflag，不全局启用 `build-std`。`build-std` 只属于裸机 kernel 构建；如果泄漏到 host tools，会让普通 `std` 依赖和重建的 `core/alloc` 发生 duplicate lang item 冲突。
 - AArch64 和 amd64 都是一等支持目标。当前本地 runner 先测试 AArch64；amd64 先保持 OSTD-owned boot stack、early COM1 console、halt loop 和裸机编译检查可用。
 - AArch64 direct boot 在进入 Rust 前建立 FP/SIMD 访问不变量。seL4 的 AArch64 FPU 代码明确把 FP/SIMD 作为内核需要初始化、关闭、保存和恢复的 CPU 状态；当前 Ousia 还没有完整线程/FPU ownership，因此先由 `ostd` boot code 在当前 exception level 允许内核早期 Rust 代码使用 FP/SIMD，避免 debug 构建中 Rust 生成的 FP/SIMD 指令直接异常。后续进入线程调度和用户态后，应演进为 seL4-style lazy FPU ownership，而不是长期全局开放。
 - AArch64 PL011 early console 不再手写裸 offset，而是参考 `rust-sel4/crates/drivers/pl011` 的方式使用 `tock-registers` 建模 register block 和 bitfield，并在写 `DR` 前等待 `FR.TXFF` 清空。
+- AArch64 exception vector 由 `ostd` 安装到当前 exception level 的 VBAR。当前策略只用于早期诊断：同步异常、IRQ、FIQ 和 SError 统一保存通用寄存器，打印 vector、ELR、ESR、FAR、SPSR 后停机。真正的 syscall、IRQ dispatch、timer tick 和用户态 fault 处理应在后续内核对象和调度边界明确后再接入。
 - 本地运行需要 `qemu-system-aarch64` 在 `PATH` 中。没有 QEMU 时，runner 仍可完成 AArch64 kernel 构建，但最后启动会失败并报告缺少命令。
 
 这个路径的目标只是先让 AArch64 内核跑起来，不是冻结最终启动协议。等内核能稳定进入 QEMU，再决定是否引入 UEFI/ELF loader、设备树解析、initramfs、签名验证、amd64 runner 和更完整的 Ousia boot 流程。

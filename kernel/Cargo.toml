@@ -7,3 +7,6 @@ edition.workspace = true
 [dependencies]
 bitflags = { version = "2", default-features = false }
 ostd = { path = "../ostd" }
+
+[features]
+exception-smoke = ["ostd/exception-smoke"]

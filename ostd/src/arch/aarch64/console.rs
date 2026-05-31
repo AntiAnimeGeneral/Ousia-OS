@@ -1,3 +1,4 @@
+use core::fmt::{self, Write};
 use core::ops::Deref;
 use core::sync::atomic::{AtomicBool, Ordering};
 
@@ -62,6 +63,13 @@ pub fn early_println(message: &str) {
     write_byte(b'\n');
 }
 
+pub fn early_print(args: fmt::Arguments<'_>) {
+    init_once();
+
+    let mut console = EarlyConsole;
+    let _ = console.write_fmt(args);
+}
+
 fn init_once() {
     if INITIALIZED.swap(true, Ordering::Relaxed) {
         return;
@@ -72,6 +80,17 @@ fn init_once() {
 
 fn write_byte(byte: u8) {
     uart().put_char(byte);
+}
+
+struct EarlyConsole;
+
+impl Write for EarlyConsole {
+    fn write_str(&mut self, message: &str) -> fmt::Result {
+        for byte in message.bytes() {
+            write_byte(byte);
+        }
+        Ok(())
+    }
 }
 
 fn uart() -> Pl011 {
