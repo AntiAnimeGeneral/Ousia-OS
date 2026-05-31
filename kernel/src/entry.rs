@@ -1,6 +1,7 @@
 use core::panic::PanicInfo;
 
 use kernel::cap::{Capability, CapabilitySpace, EndpointCap, Rights};
+use kernel::invocation::{Invocation, InvocationOutcome, invoke};
 use ostd::boot::{early_println, wait_forever};
 
 #[unsafe(no_mangle)]
@@ -33,7 +34,7 @@ fn run_alloc_smoke() {
     let mut cspace = CapabilitySpace::new();
     let root = cspace.create_object(Capability::Endpoint(EndpointCap {
         badge: 1,
-        rights: Rights::READ | Rights::GRANT,
+        rights: Rights::READ | Rights::WRITE | Rights::GRANT,
     }));
     let child = match cspace.derive(root, Rights::READ) {
         Ok(child) => child,
@@ -42,6 +43,11 @@ fn run_alloc_smoke() {
 
     if cspace.lookup(child).is_err() {
         panic!("capability lookup failed during alloc smoke");
+    }
+
+    match invoke(&cspace, root, Invocation::EndpointSend { message_words: 1 }) {
+        Ok(InvocationOutcome::EndpointSendQueued { badge: 1, .. }) => {}
+        Ok(_) | Err(_) => panic!("capability invocation failed during alloc smoke"),
     }
 }
 

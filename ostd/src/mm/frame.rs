@@ -1,8 +1,14 @@
 use core::alloc::Layout;
 use core::ops::Range;
 
+use spin::Mutex;
+
 pub const PAGE_SIZE: usize = 4096;
 pub type Paddr = usize;
+pub const EARLY_FRAME_REGIONS: usize = 32;
+
+static EARLY_FRAME_ALLOCATOR: Mutex<EarlyFrameAllocatorState<EARLY_FRAME_REGIONS>> =
+    Mutex::new(EarlyFrameAllocatorState::uninitialized());
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum FrameAllocError {
@@ -10,6 +16,8 @@ pub enum FrameAllocError {
     UnalignedRegion,
     InvalidLayout,
     TooManyRegions,
+    AlreadyInitialized,
+    Uninitialized,
     Exhausted,
 }
 
@@ -160,6 +168,19 @@ pub fn normalize_memory_regions_with_reserved<const N: usize>(
     Ok(map)
 }
 
+pub fn init_early_frame_allocator_from_regions(
+    regions: &[MemoryRegion],
+    reserved: &[FrameRange],
+) -> Result<(), FrameAllocError> {
+    EARLY_FRAME_ALLOCATOR
+        .lock()
+        .init_from_regions(regions, reserved)
+}
+
+pub fn try_allocate_early_frame(layout: Layout) -> Result<FrameRange, FrameAllocError> {
+    EARLY_FRAME_ALLOCATOR.lock().allocate(layout)
+}
+
 fn push_available_range<const N: usize>(
     map: &mut NormalizedMemoryMap<N>,
     range: FrameRange,
@@ -214,6 +235,11 @@ pub struct EarlyMemoryMapAllocator<const N: usize> {
     ranges: [FrameRange; N],
     next: [Paddr; N],
     active: usize,
+}
+
+#[derive(Debug)]
+pub struct EarlyFrameAllocatorState<const N: usize> {
+    allocator: Option<EarlyMemoryMapAllocator<N>>,
 }
 
 impl EarlyFrameAllocator {
@@ -298,6 +324,37 @@ impl<const N: usize> EarlyMemoryMapAllocator<N> {
 
     pub const fn active_ranges(&self) -> usize {
         self.active
+    }
+}
+
+impl<const N: usize> EarlyFrameAllocatorState<N> {
+    pub const fn uninitialized() -> Self {
+        Self { allocator: None }
+    }
+
+    pub fn init_from_regions(
+        &mut self,
+        regions: &[MemoryRegion],
+        reserved: &[FrameRange],
+    ) -> Result<(), FrameAllocError> {
+        if self.allocator.is_some() {
+            return Err(FrameAllocError::AlreadyInitialized);
+        }
+
+        let map = normalize_memory_regions_with_reserved(regions, reserved)?;
+        self.allocator = Some(map.try_into_allocator()?);
+        Ok(())
+    }
+
+    pub fn allocate(&mut self, layout: Layout) -> Result<FrameRange, FrameAllocError> {
+        self.allocator
+            .as_mut()
+            .ok_or(FrameAllocError::Uninitialized)?
+            .allocate(layout)
+    }
+
+    pub const fn is_initialized(&self) -> bool {
+        self.allocator.is_some()
     }
 }
 
@@ -598,5 +655,66 @@ mod tests {
             map.try_into_allocator().unwrap_err(),
             FrameAllocError::Exhausted
         );
+    }
+
+    #[test]
+    fn early_frame_state_rejects_allocation_before_init() {
+        let mut state = EarlyFrameAllocatorState::<2>::uninitialized();
+
+        assert!(!state.is_initialized());
+        assert_eq!(
+            state.allocate(Layout::new::<u8>()),
+            Err(FrameAllocError::Uninitialized)
+        );
+    }
+
+    #[test]
+    fn early_frame_state_initializes_from_regions_once() {
+        let mut state = EarlyFrameAllocatorState::<4>::uninitialized();
+
+        state
+            .init_from_regions(
+                &[MemoryRegion::new(0x1000, 0x9000, MemoryRegionKind::Usable)],
+                &[FrameRange::new(0x3000, 0x5000).unwrap()],
+            )
+            .unwrap();
+
+        assert!(state.is_initialized());
+        assert_eq!(
+            state.init_from_regions(
+                &[MemoryRegion::new(0x1000, 0x9000, MemoryRegionKind::Usable)],
+                &[],
+            ),
+            Err(FrameAllocError::AlreadyInitialized)
+        );
+    }
+
+    #[test]
+    fn early_frame_state_allocates_only_after_reserved_ranges() {
+        let mut state = EarlyFrameAllocatorState::<4>::uninitialized();
+
+        state
+            .init_from_regions(
+                &[MemoryRegion::new(0x1000, 0x9000, MemoryRegionKind::Usable)],
+                &[FrameRange::new(0x1000, 0x5000).unwrap()],
+            )
+            .unwrap();
+
+        let allocated = state.allocate(Layout::new::<u8>()).unwrap();
+        assert_eq!(allocated.as_range(), 0x5000..0x6000);
+    }
+
+    #[test]
+    fn early_frame_state_reports_no_available_memory() {
+        let mut state = EarlyFrameAllocatorState::<2>::uninitialized();
+
+        assert_eq!(
+            state.init_from_regions(
+                &[MemoryRegion::new(0x1000, 0x3000, MemoryRegionKind::Usable)],
+                &[FrameRange::new(0x1000, 0x3000).unwrap()],
+            ),
+            Err(FrameAllocError::Exhausted)
+        );
+        assert!(!state.is_initialized());
     }
 }
