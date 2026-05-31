@@ -1,14 +1,14 @@
 ---
-name: red-team-review
-description: "Use when: performing black-team/red-team review after implementation, before final reporting, or when asking a subagent to find bugs, semantic drift, missing tests, boundary violations, and hidden risks with fresh context."
+name: implementation-diff-review
+description: "Use when: performing implementation diff review of implemented code or documentation changes, git diffs, test results, behavioral regressions, semantic drift, missing tests, boundary violations, and hidden risks after edits."
 argument-hint: "changed files, implementation summary, validation results, or review focus"
 ---
 
-# 黑队 Review
+# 实现 Diff Review
 
-这个 skill 用于实现完成后的只读黑队审查。目标不是复述实现，而是从新视角寻找 bug、语义偏移、遗漏测试、边界破坏和未来容易踩坑的风险。
+这个 skill 用于实现完成后的只读审查。它审查已经发生的代码、文档、配置或 workflow diff，以及对应验证结果。目标不是复述实现，而是从新视角寻找 bug、语义偏移、遗漏测试、边界破坏和未来容易踩坑的风险。
 
-优先把这个 review 交给 subagent 执行，让主实现上下文和审查上下文分离。subagent 应只做读取、搜索、分析和报告，不修改文件。
+本 skill 的输入必须是真实 diff 或已经落地的文件改动。它不负责生成方案，不负责审查未实施提案，也不修改文件。
 
 ## 调用时机
 
@@ -16,32 +16,34 @@ argument-hint: "changed files, implementation summary, validation results, or re
 
 - 完成非平凡实现、重构、架构边界调整或行为变更后。
 - 改动触及 capability、IPC、scheduler、memory、boot、tooling、doc checker 或 workflow 边界时。
-- 用户要求 review、黑队、red-team、找盲点、检查偏移或确认没有语义误差时。
+- 用户要求 review、找盲点、检查偏移或确认没有语义误差，且当前已经有实现 diff 或文档 diff 时。
 - 最终回复前，如果改动风险高、跨多个文件，或刚刚修过一个隐藏 bug。
 
 纯文案小改、机械改名、格式修正或已经由用户明确跳过 review 时，可以不运行。
 
 ## Subagent 提示词模板
 
+调用 review subagent 时，必须遵守 `.github/instructions/ousia-workflow.instructions.md` 中的 Review Subagent 启动协议。
+
 把下面信息交给 subagent，并要求它读取本 skill 后执行 review：
 
 - 用户原始目标。
 - 本轮实现摘要。
 - 改动文件列表。
+- 关键 diff 或需要重点阅读的实现区域。
 - 已运行的验证命令和结果。
 - 需要特别关注的语义边界或参考基线。
-
-调用 subagent 时必须显式指定与当前主上下文同型号、且带 provider 后缀的完整模型名，例如 `gpt-5.5::fxh (oaicopilot)`。不要使用裸型号名、`Auto`、Copilot 默认模型或任何隐式 fallback。若指定失败或环境无法显式指定模型，停止本次 subagent review，并在最终报告中说明没有运行黑队 subagent；不要自动改用默认模型。
 
 建议提示词：
 
 ```text
-你是本仓库的只读黑队 reviewer。请读取 .github/skills/red-team-review/SKILL.md，并按其中流程 review 当前改动。
+你是本仓库的只读 implementation diff reviewer。请读取 .github/skills/implementation-diff-review/SKILL.md，并按其中流程 review 当前改动。
 
 上下文：
 - 用户目标：<填入用户目标>
 - 实现摘要：<填入实现摘要>
 - 改动文件：<填入 git diff --name-only 结果>
+- 关键 diff：<填入需要重点 review 的文件/函数/行为>
 - 已运行检查：<填入命令和结果>
 - 特别关注：<填入 seL4/OSTD/doc/workflow 等边界>
 
@@ -64,8 +66,9 @@ argument-hint: "changed files, implementation summary, validation results, or re
 7. 如果改动涉及文档或技能，重点检查归属、触发 description、frontmatter、链接、命令和是否把项目数据写进通用工具。
 8. 检查测试是否覆盖新语义、失败路径和边界状态；不要只看 happy path。
 9. 检查验证命令是否与实际改动匹配；不要要求无关检查。
+10. 如果输入缺少真实 diff 或已落地文件改动，应停止 review 并把输入不匹配作为 finding 报告。
 
-## 黑队检查清单
+## 检查清单
 
 优先找这些问题：
 
@@ -96,9 +99,3 @@ argument-hint: "changed files, implementation summary, validation results, or re
 - `Recommended follow-ups`：后续建议，不要混入当前必须修的 finding。
 
 保持高信号，不要为了显得严格而制造低价值噪音。
-
-## 模型选择说明
-
-黑队 review subagent 必须使用与当前主上下文同型号的模型。主 agent 调用 subagent 时，如果工具提供 `model` 参数，必须传入带 provider 后缀的完整模型名，例如 `gpt-5.5::fxh (oaicopilot)`。
-
-如果当前环境不支持显式指定模型，或指定的同型号模型不可用，不能 fallback 到 `Auto`、Copilot 默认模型或其他模型。主 agent 应跳过 subagent review，在最终报告中说明原因，并把“未运行同型号黑队 subagent review”标记为剩余风险。

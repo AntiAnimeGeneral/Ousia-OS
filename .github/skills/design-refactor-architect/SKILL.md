@@ -1,12 +1,14 @@
 ---
 name: design-refactor-architect
-description: "Use when: producing Ousia OS design refactoring proposals, resolving unsettled architecture questions, comparing seL4/Asterinas/rust-sel4/Microkit/sDDF/CortenMM references, or updating design docs with recommended boundaries and tradeoffs."
+description: "Use when: producing Ousia OS design refactoring proposals, resolving unsettled architecture questions, comparing seL4/Asterinas/rust-sel4/Microkit/sDDF/CortenMM references, or planning design doc updates with recommended boundaries and tradeoffs."
 argument-hint: "design area, open question, reference baseline, target docs, or proposal scope"
 ---
 
 # 设计重构架构师
 
 这个 skill 用于 Ousia OS 尚未敲定的系统设计、模块边界和演进路线。目标是查阅资料、比较方案、识别真实约束，并给出可以被 review、实施和回滚的设计提案。
+
+它不直接把稳定结论写入 owning docs。提案通过 `architecture-proposal-review` 后，才进入文档或代码落地流程；落地完成后再由 `implementation-diff-review` 审查真实 diff。
 
 使用这个 skill 时，先读取 `.github/instructions/development-standards.instructions.md`、`.github/instructions/documentation-standards.instructions.md` 和 `.github/instructions/ousia-kernel-boundaries.instructions.md`。如果提案会进入实施或影响完成检查，还应读取 `.github/instructions/ousia-workflow.instructions.md`。
 
@@ -57,7 +59,7 @@ argument-hint: "design area, open question, reference baseline, target docs, or 
 - 校验与归一化：哪个边界建立不变量，错误如何保留上下文。
 - 迁移路径：如何从当前设计过渡，如何保持兼容，如何回滚。
 - 验证策略：文档检查、代码测试、QEMU smoke、模型测试、review 或外部 reference 对照。
-- Review focus：明确希望黑队 review 重点攻击的假设和薄弱点。
+- Review focus：明确希望 architecture proposal review 重点攻击的假设和薄弱点。
 
 ## 外部参考规则
 
@@ -83,7 +85,7 @@ argument-hint: "design area, open question, reference baseline, target docs, or 
 
 ## 提案 Review 闭环
 
-设计架构师提案不能直接当最终结论。以下情况必须调用 `.github/skills/red-team-review/SKILL.md` 做只读复查：
+设计架构师提案不能直接当最终结论。以下情况必须调用 `.github/skills/architecture-proposal-review/SKILL.md` 做只读提案审查：
 
 - 提案会修改 owning design docs。
 - 提案会影响 kernel/OSTD/tooling 边界。
@@ -100,7 +102,9 @@ argument-hint: "design area, open question, reference baseline, target docs, or 
 - 已知 assumptions、open questions 和 residual risks。
 - 特别关注：参考误读、候选方案不足、目标/非目标不清、owning doc 归属错误、迁移路径缺失、Ousia-specific 语义过早发明。
 
-review 通过后，才能把稳定结论写入 owning docs 或交给实现流程。review 发现问题时，先修提案，不要靠措辞掩盖设计缺口。
+proposal review 通过后，才能把稳定结论写入 owning docs 或交给实现流程。review 发现问题时，先修提案，不要靠措辞掩盖设计缺口。
+
+如果 proposal 落地后产生真实文档、代码、配置或 workflow diff，再调用 `.github/skills/implementation-diff-review/SKILL.md` 审查实现结果。不要用 implementation-diff-review 代替提案审查，也不要让设计架构师自己给自己的提案盖章。
 
 ## 输出要求
 

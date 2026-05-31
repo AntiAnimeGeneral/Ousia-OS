@@ -1,12 +1,14 @@
 ---
 name: code-refactor-architect
-description: "Use when: planning or implementing code refactoring, architecture cleanup, module boundary repair, Rust kernel/OSTD/tooling redesign, industrial engineering review, dependency reuse decisions, or applying development-standards to concrete code changes."
+description: "Use when: producing code refactor architecture proposals, implementation plans, architecture cleanup plans, module boundary repair proposals, Rust kernel/OSTD/tooling redesign plans, industrial engineering review proposals, dependency reuse decisions, or applying development-standards before concrete code changes."
 argument-hint: "target files, subsystem, refactor goal, constraints, or validation expectations"
 ---
 
 # 代码重构架构师
 
-这个 skill 用于把通用开发规范落到具体代码重构。目标不是把代码写得更复杂，而是让代码的职责、边界、状态所有权和演进路径更清楚。
+这个 skill 用于把通用开发规范落到代码重构提案和实施计划。目标不是把代码写得更复杂，而是让代码的职责、边界、状态所有权和演进路径更清楚。
+
+它不直接实施代码改动，也不审查已经实施的 diff。提案通过 `architecture-proposal-review` 后，才进入普通实现流程；实现完成后再由 `implementation-diff-review` 审查真实改动。
 
 使用这个 skill 时，先读取 `.github/instructions/development-standards.instructions.md`。如果改动涉及 Ousia kernel、OSTD、QEMU runner、Cargo target 或 implementation design，还必须读取 `.github/instructions/ousia-kernel-boundaries.instructions.md`。凡涉及实施、验证、最终报告或按改动文件选择完成检查时，都必须读取 `.github/instructions/ousia-workflow.instructions.md`。
 
@@ -42,8 +44,8 @@ argument-hint: "target files, subsystem, refactor goal, constraints, or validati
 4. 找出真正的变化轴：经常变化的策略、稳定的不变量、外部副作用、传输模型、领域模型和持久化模型。
 5. 至少比较两个方案：保守局部演进、边界修正、抽象提取、成熟库/现有模块复用，或暂不改动。
 6. 推荐最小可验证方案，说明为什么它改善边界而不是只增加层数。
-7. 实施时保持改动范围贴近目标行为；不要顺手重排无关代码。
-8. 完成后运行与改动匹配的验证，并按 workflow 触发 review。
+7. 形成 proposal packet，交给 `architecture-proposal-review` 审查。
+8. review 通过后，把实施步骤、验证命令和 implementation diff review focus 交给后续实现流程。
 
 ## 重构原则
 
@@ -79,20 +81,23 @@ argument-hint: "target files, subsystem, refactor goal, constraints, or validati
 - 兼容性、迁移成本、回滚方式和剩余风险。
 - 需要交给 review 阶段重点检查的问题。
 
-如果已经实施，最终报告还应列出改动文件、验证结果和未覆盖风险。
+如果调用者提供的是已经实施的 diff，本 skill 不应继续审查；应使用 `.github/skills/implementation-diff-review/SKILL.md`。
 
-## 提案 Review 闭环
+## Review 闭环
 
-架构师提案不能自证正确。非平凡重构、边界调整、行为变化或跨文件设计进入实施前，应优先调用 `.github/skills/red-team-review/SKILL.md` 做只读复查；如果风险只在实现后才暴露，完成后也要复查。
+架构师提案不能自证正确。非平凡重构、边界调整、行为变化或跨文件设计进入实施前，应优先调用 `.github/skills/architecture-proposal-review/SKILL.md` 做只读提案审查。提案通过或修正后，才能进入实现。
 
-review 必须继承 red-team-review 的约束：优先交给独立只读 subagent，显式指定同型号且带 provider 后缀的模型；不能显式指定时不要 fallback 到默认模型，并把未运行同型号 review 记录为剩余风险。
+实现完成后，如果产生真实代码、文档、配置或 workflow diff，再调用 `.github/skills/implementation-diff-review/SKILL.md` 审查实现结果。不要用 implementation-diff-review 代替提案审查，也不要让架构师自己给自己的提案盖章。
 
-交给 review 时至少提供：
+proposal review 和 implementation diff review 都必须遵守 `.github/instructions/ousia-workflow.instructions.md` 中的 Review Subagent 启动协议。
+
+交给 proposal review 时至少提供：
 
 - 用户目标。
-- 重构提案或实现摘要。
-- 改动文件或计划改动文件。
-- 已运行或计划运行的验证。
+- 重构提案和候选方案。
+- 计划改动文件、模块或 API。
+- 状态所有权、依赖方向、数据流和副作用边界。
+- 计划运行的验证。
 - 特别关注的边界：状态所有权、薄抽象、错误映射、测试缺口、seL4 baseline、kernel/OSTD/tooling 污染。
 
-review 必须优先找真实 bug、边界错位、语义漂移和缺失测试。没有阻塞问题时，也要列出 residual risks 和 recommended follow-ups。
+交给 implementation diff review 时至少提供真实改动文件、实现摘要、关键 diff、已运行检查和剩余风险。
