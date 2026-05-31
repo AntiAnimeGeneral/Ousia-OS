@@ -176,6 +176,12 @@ pub struct CapabilityDescriptor {
     pub slot_generation: u64,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MintParams {
+    None,
+    Badge(u64),
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CapabilityView {
     pub object: ObjectId,
@@ -204,6 +210,11 @@ pub enum CapError {
     CapabilityNotDerivable {
         parent: SlotId,
         capability: Capability,
+    },
+    CapabilityNotMintable {
+        parent: SlotId,
+        capability: Capability,
+        params: MintParams,
     },
 }
 
@@ -257,47 +268,70 @@ impl CapabilitySpace {
         parent: CapabilityDescriptor,
         requested_rights: Rights,
     ) -> Result<CapabilityDescriptor, CapError> {
-        self.validate_descriptor(parent)?;
+        self.copy(parent, requested_rights)
+    }
 
-        let parent_slot = self.live_slot(parent.slot)?;
-        if !requested_rights.is_subset_of(parent_slot.rights) {
-            return Err(CapError::RightsEscalation {
-                parent: parent.slot,
-                parent_rights: parent_slot.rights,
-                requested_rights,
-            });
+    pub fn copy(
+        &mut self,
+        source: CapabilityDescriptor,
+        requested_rights: Rights,
+    ) -> Result<CapabilityDescriptor, CapError> {
+        self.insert_derived_capability(source, requested_rights, MintParams::None)
+    }
+
+    pub fn mint(
+        &mut self,
+        source: CapabilityDescriptor,
+        requested_rights: Rights,
+        params: MintParams,
+    ) -> Result<CapabilityDescriptor, CapError> {
+        self.insert_derived_capability(source, requested_rights, params)
+    }
+
+    pub fn move_capability(
+        &mut self,
+        source: CapabilityDescriptor,
+    ) -> Result<CapabilityDescriptor, CapError> {
+        self.validate_descriptor(source)?;
+
+        let destination = self.alloc_slot_id();
+        let destination_generation = self.slot_generation_for_insert(destination);
+        self.detach_reused_slot(destination);
+
+        let moved_from = self
+            .slots
+            .get_mut(&source.slot)
+            .ok_or(CapError::SlotNotFound(source.slot))?;
+        let mut moved = moved_from.clone();
+        moved_from.alive = false;
+        moved_from.slot_generation += 1;
+        moved_from.parent = None;
+        moved_from.children.clear();
+        moved.slot_generation = destination_generation;
+
+        if let Some(parent) = moved.parent {
+            let parent_slot = self
+                .slots
+                .get_mut(&parent)
+                .ok_or(CapError::SlotNotFound(parent))?;
+            parent_slot.children.remove(&source.slot);
+            parent_slot.children.insert(destination);
         }
 
-        let object = parent_slot.object;
-        let object_generation_snapshot = parent_slot.object_generation_snapshot;
-        let parent_capability = parent_slot.capability.clone();
-        let parent_slot_id = parent.slot;
-        let slot = self.alloc_slot_id();
-        let slot_generation = self.slot_generation_for_insert(slot);
-        self.detach_reused_slot(slot);
-        let capability = derive_capability(parent_slot_id, &parent_capability, requested_rights)?;
-        self.slots.insert(
-            slot,
-            CapabilitySlot {
-                object,
-                capability: capability.clone(),
-                rights: capability_rights(&capability),
-                slot_generation,
-                object_generation_snapshot,
-                parent: Some(parent_slot_id),
-                children: BTreeSet::new(),
-                alive: true,
-            },
-        );
-        self.slots
-            .get_mut(&parent_slot_id)
-            .ok_or(CapError::SlotNotFound(parent_slot_id))?
-            .children
-            .insert(slot);
+        let children = moved.children.clone();
+        for child in children {
+            self.slots
+                .get_mut(&child)
+                .ok_or(CapError::SlotNotFound(child))?
+                .parent = Some(destination);
+        }
+
+        self.slots.insert(destination, moved);
+        self.free_slots.push(source.slot);
 
         Ok(CapabilityDescriptor {
-            slot,
-            slot_generation,
+            slot: destination,
+            slot_generation: destination_generation,
         })
     }
 
@@ -365,6 +399,57 @@ impl CapabilitySpace {
 
     pub fn slot_exists(&self, slot: SlotId) -> bool {
         self.slots.get(&slot).is_some_and(|slot| slot.alive)
+    }
+
+    fn insert_derived_capability(
+        &mut self,
+        parent: CapabilityDescriptor,
+        requested_rights: Rights,
+        params: MintParams,
+    ) -> Result<CapabilityDescriptor, CapError> {
+        self.validate_descriptor(parent)?;
+
+        let parent_slot = self.live_slot(parent.slot)?;
+        if !requested_rights.is_subset_of(parent_slot.rights) {
+            return Err(CapError::RightsEscalation {
+                parent: parent.slot,
+                parent_rights: parent_slot.rights,
+                requested_rights,
+            });
+        }
+
+        let object = parent_slot.object;
+        let object_generation_snapshot = parent_slot.object_generation_snapshot;
+        let parent_capability = parent_slot.capability.clone();
+        let parent_slot_id = parent.slot;
+        let slot = self.alloc_slot_id();
+        let slot_generation = self.slot_generation_for_insert(slot);
+        self.detach_reused_slot(slot);
+        let capability =
+            mint_capability(parent_slot_id, &parent_capability, requested_rights, params)?;
+        self.slots.insert(
+            slot,
+            CapabilitySlot {
+                object,
+                capability: capability.clone(),
+                rights: capability_rights(&capability),
+                slot_generation,
+                object_generation_snapshot,
+                parent: Some(parent_slot_id),
+                children: BTreeSet::new(),
+                alive: true,
+            },
+        );
+        self.slots
+            .get_mut(&parent_slot_id)
+            .ok_or(CapError::SlotNotFound(parent_slot_id))?
+            .children
+            .insert(slot);
+
+        Ok(CapabilityDescriptor {
+            slot,
+            slot_generation,
+        })
     }
 
     fn alloc_object(&mut self, kind: ObjectKind) -> (ObjectId, u64) {
@@ -538,10 +623,11 @@ fn capability_rights(capability: &Capability) -> Rights {
     }
 }
 
-fn derive_capability(
+fn mint_capability(
     parent_slot: SlotId,
     parent: &Capability,
     requested_rights: Rights,
+    params: MintParams,
 ) -> Result<Capability, CapError> {
     match parent {
         Capability::Endpoint(cap) => {
@@ -552,8 +638,12 @@ fn derive_capability(
                     requested_rights,
                 });
             }
+            let badge = match params {
+                MintParams::None => cap.badge,
+                MintParams::Badge(badge) => badge,
+            };
             Ok(Capability::Endpoint(EndpointCap {
-                badge: cap.badge,
+                badge,
                 rights: requested_rights,
             }))
         }
@@ -565,9 +655,16 @@ fn derive_capability(
                     requested_rights,
                 });
             }
-            Ok(Capability::Frame(FrameCap {
-                rights: requested_rights,
-            }))
+            match params {
+                MintParams::None => Ok(Capability::Frame(FrameCap {
+                    rights: requested_rights,
+                })),
+                MintParams::Badge(_) => Err(CapError::CapabilityNotMintable {
+                    parent: parent_slot,
+                    capability: Capability::Frame(cap.clone()),
+                    params,
+                }),
+            }
         }
         Capability::CNode(cap) => {
             if !requested_rights.is_subset_of(cap.rights) {
@@ -577,13 +674,27 @@ fn derive_capability(
                     requested_rights,
                 });
             }
-            Ok(Capability::CNode(CNodeCap {
-                rights: requested_rights,
-            }))
+            match params {
+                MintParams::None => Ok(Capability::CNode(CNodeCap {
+                    rights: requested_rights,
+                })),
+                MintParams::Badge(_) => Err(CapError::CapabilityNotMintable {
+                    parent: parent_slot,
+                    capability: Capability::CNode(cap.clone()),
+                    params,
+                }),
+            }
         }
-        Capability::Untyped(cap) => Ok(Capability::Untyped(UntypedCap {
-            size_bits: cap.size_bits,
-        })),
+        Capability::Untyped(cap) => match params {
+            MintParams::None => Ok(Capability::Untyped(UntypedCap {
+                size_bits: cap.size_bits,
+            })),
+            MintParams::Badge(_) => Err(CapError::CapabilityNotMintable {
+                parent: parent_slot,
+                capability: Capability::Untyped(cap.clone()),
+                params,
+            }),
+        },
         Capability::Tcb(cap) => {
             if !requested_rights.is_subset_of(cap.rights) {
                 return Err(CapError::RightsEscalation {
@@ -592,9 +703,16 @@ fn derive_capability(
                     requested_rights,
                 });
             }
-            Ok(Capability::Tcb(TcbCap {
-                rights: requested_rights,
-            }))
+            match params {
+                MintParams::None => Ok(Capability::Tcb(TcbCap {
+                    rights: requested_rights,
+                })),
+                MintParams::Badge(_) => Err(CapError::CapabilityNotMintable {
+                    parent: parent_slot,
+                    capability: Capability::Tcb(cap.clone()),
+                    params,
+                }),
+            }
         }
         Capability::Notification(cap) => {
             if !requested_rights.is_subset_of(cap.rights) {
@@ -604,8 +722,12 @@ fn derive_capability(
                     requested_rights,
                 });
             }
+            let badge = match params {
+                MintParams::None => cap.badge,
+                MintParams::Badge(badge) => badge,
+            };
             Ok(Capability::Notification(NotificationCap {
-                badge: cap.badge,
+                badge,
                 rights: requested_rights,
             }))
         }
@@ -624,6 +746,10 @@ mod tests {
         Capability::Endpoint(EndpointCap { badge: 0, rights })
     }
 
+    fn badged_endpoint(rights: Rights, badge: u64) -> Capability {
+        Capability::Endpoint(EndpointCap { badge, rights })
+    }
+
     fn frame(rights: Rights) -> Capability {
         Capability::Frame(FrameCap { rights })
     }
@@ -634,6 +760,10 @@ mod tests {
 
     fn notification(rights: Rights) -> Capability {
         Capability::Notification(NotificationCap { badge: 1, rights })
+    }
+
+    fn badged_notification(rights: Rights, badge: u64) -> Capability {
+        Capability::Notification(NotificationCap { badge, rights })
     }
 
     fn reply(caller: ObjectId, target: ObjectId, can_grant: bool) -> Capability {
@@ -669,6 +799,90 @@ mod tests {
         assert_eq!(view.capability, endpoint(Rights::READ));
         assert_eq!(view.rights, Rights::READ);
         assert_eq!(view.parent, Some(root.slot));
+    }
+
+    #[test]
+    fn copy_preserves_endpoint_badge_and_reduces_rights() {
+        let mut cspace = CapabilitySpace::new();
+        let root = cspace.create_object(badged_endpoint(Rights::READ | Rights::WRITE, 0x44));
+
+        let copy = cspace.copy(root, Rights::READ).unwrap();
+        let view = cspace.lookup(copy).unwrap();
+
+        assert_eq!(view.capability, badged_endpoint(Rights::READ, 0x44));
+        assert_eq!(view.parent, Some(root.slot));
+    }
+
+    #[test]
+    fn mint_can_set_endpoint_badge_without_escalating_rights() {
+        let mut cspace = CapabilitySpace::new();
+        let root = cspace.create_object(endpoint(Rights::READ | Rights::WRITE));
+
+        let minted = cspace
+            .mint(root, Rights::READ, MintParams::Badge(0x55))
+            .unwrap();
+        let view = cspace.lookup(minted).unwrap();
+
+        assert_eq!(view.capability, badged_endpoint(Rights::READ, 0x55));
+        assert_eq!(view.parent, Some(root.slot));
+    }
+
+    #[test]
+    fn mint_can_set_notification_badge() {
+        let mut cspace = CapabilitySpace::new();
+        let root = cspace.create_object(notification(Rights::READ | Rights::WRITE));
+
+        let minted = cspace
+            .mint(root, Rights::WRITE, MintParams::Badge(0x77))
+            .unwrap();
+        let view = cspace.lookup(minted).unwrap();
+
+        assert_eq!(view.capability, badged_notification(Rights::WRITE, 0x77));
+        assert_eq!(view.parent, Some(root.slot));
+    }
+
+    #[test]
+    fn badge_mint_is_rejected_for_unbadged_capabilities() {
+        let mut cspace = CapabilitySpace::new();
+        let root = cspace.create_object(frame(Rights::READ | Rights::WRITE));
+
+        assert_eq!(
+            cspace.mint(root, Rights::READ, MintParams::Badge(0x66)),
+            Err(CapError::CapabilityNotMintable {
+                parent: root.slot,
+                capability: frame(Rights::READ | Rights::WRITE),
+                params: MintParams::Badge(0x66),
+            })
+        );
+    }
+
+    #[test]
+    fn move_transfers_slot_without_creating_derivation() {
+        let mut cspace = CapabilitySpace::new();
+        let root = cspace.create_object(endpoint(Rights::ALL));
+        let child = cspace.copy(root, Rights::READ | Rights::WRITE).unwrap();
+        let grandchild = cspace.copy(child, Rights::READ).unwrap();
+
+        let moved = cspace.move_capability(child).unwrap();
+
+        assert_ne!(child.slot, moved.slot);
+        assert_eq!(
+            cspace.lookup(child),
+            Err(CapError::SlotNotFound(child.slot))
+        );
+        assert_eq!(cspace.lookup(moved).unwrap().parent, Some(root.slot));
+        assert_eq!(cspace.lookup(grandchild).unwrap().parent, Some(moved.slot));
+
+        cspace.revoke_descendants(root).unwrap();
+
+        assert_eq!(
+            cspace.lookup(moved),
+            Err(CapError::SlotNotFound(moved.slot))
+        );
+        assert_eq!(
+            cspace.lookup(grandchild),
+            Err(CapError::SlotNotFound(grandchild.slot))
+        );
     }
 
     #[test]
