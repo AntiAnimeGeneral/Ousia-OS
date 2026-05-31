@@ -83,6 +83,7 @@ pub enum Capability {
     Untyped(UntypedCap),
     Tcb(TcbCap),
     Notification(NotificationCap),
+    Reply(ReplyCap),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -146,6 +147,19 @@ impl NotificationCap {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ReplyCap {
+    pub caller: ObjectId,
+    pub target: ObjectId,
+    pub can_grant: bool,
+}
+
+impl ReplyCap {
+    pub fn can_reply(&self, target: ObjectId) -> bool {
+        self.target == target
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ObjectKind {
     Endpoint,
     Frame,
@@ -153,6 +167,7 @@ pub enum ObjectKind {
     Untyped,
     Tcb,
     Notification,
+    Reply,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -185,6 +200,10 @@ pub enum CapError {
         parent: SlotId,
         parent_rights: Rights,
         requested_rights: Rights,
+    },
+    CapabilityNotDerivable {
+        parent: SlotId,
+        capability: Capability,
     },
 }
 
@@ -503,6 +522,7 @@ fn capability_kind(capability: &Capability) -> ObjectKind {
         Capability::Untyped(_) => ObjectKind::Untyped,
         Capability::Tcb(_) => ObjectKind::Tcb,
         Capability::Notification(_) => ObjectKind::Notification,
+        Capability::Reply(_) => ObjectKind::Reply,
     }
 }
 
@@ -514,6 +534,7 @@ fn capability_rights(capability: &Capability) -> Rights {
         Capability::Untyped(_) => Rights::NONE,
         Capability::Tcb(cap) => cap.rights,
         Capability::Notification(cap) => cap.rights,
+        Capability::Reply(_) => Rights::NONE,
     }
 }
 
@@ -588,6 +609,10 @@ fn derive_capability(
                 rights: requested_rights,
             }))
         }
+        Capability::Reply(cap) => Err(CapError::CapabilityNotDerivable {
+            parent: parent_slot,
+            capability: Capability::Reply(cap.clone()),
+        }),
     }
 }
 
@@ -609,6 +634,14 @@ mod tests {
 
     fn notification(rights: Rights) -> Capability {
         Capability::Notification(NotificationCap { badge: 1, rights })
+    }
+
+    fn reply(caller: ObjectId, target: ObjectId, can_grant: bool) -> Capability {
+        Capability::Reply(ReplyCap {
+            caller,
+            target,
+            can_grant,
+        })
     }
 
     #[test]
@@ -817,5 +850,21 @@ mod tests {
         assert_eq!(view.object_kind, ObjectKind::Notification);
         assert_eq!(view.capability, notification(Rights::READ));
         assert_eq!(view.rights, Rights::READ);
+    }
+
+    #[test]
+    fn reply_capability_is_not_derivable() {
+        let mut cspace = CapabilitySpace::new();
+        let caller = ObjectId::new(100);
+        let target = ObjectId::new(200);
+        let root = cspace.create_object(reply(caller, target, true));
+
+        assert_eq!(
+            cspace.derive(root, Rights::NONE),
+            Err(CapError::CapabilityNotDerivable {
+                parent: root.slot,
+                capability: reply(caller, target, true),
+            })
+        );
     }
 }

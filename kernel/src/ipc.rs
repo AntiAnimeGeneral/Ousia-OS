@@ -75,7 +75,15 @@ pub enum IpcAction {
         receiver_cpu: CpuId,
         receiver_can_grant: bool,
         message: IpcMessage,
+        reply_setup: Option<ReplySetup>,
     },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ReplySetup {
+    pub caller: ThreadId,
+    pub caller_cpu: CpuId,
+    pub can_grant: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -230,6 +238,7 @@ impl Endpoint {
                     receiver: receiver.thread,
                     receiver_cpu: receiver.cpu,
                     receiver_can_grant: receiver.can_grant,
+                    reply_setup: reply_setup_for(message),
                     message,
                 }
             }
@@ -275,6 +284,7 @@ impl Endpoint {
                     receiver,
                     receiver_cpu,
                     receiver_can_grant: options.can_grant,
+                    reply_setup: reply_setup_for(message),
                     message,
                 }
             }
@@ -292,6 +302,14 @@ impl Endpoint {
     pub fn queued_receivers(&self) -> usize {
         self.receivers.len()
     }
+}
+
+fn reply_setup_for(message: IpcMessage) -> Option<ReplySetup> {
+    message.is_call.then_some(ReplySetup {
+        caller: message.sender,
+        caller_cpu: message.sender_cpu,
+        can_grant: message.can_grant || message.can_grant_reply,
+    })
 }
 
 #[cfg(test)]
@@ -409,6 +427,11 @@ mod tests {
                 receiver: thread(3),
                 receiver_cpu: cpu(2),
                 receiver_can_grant: true,
+                reply_setup: Some(ReplySetup {
+                    caller: thread(1),
+                    caller_cpu: cpu(0),
+                    can_grant: true,
+                }),
                 message: IpcMessage {
                     sender: thread(1),
                     sender_cpu: cpu(0),
@@ -461,6 +484,11 @@ mod tests {
                 receiver: thread(3),
                 receiver_cpu: cpu(2),
                 receiver_can_grant: true,
+                reply_setup: Some(ReplySetup {
+                    caller: thread(1),
+                    caller_cpu: cpu(0),
+                    can_grant: true,
+                }),
                 message: IpcMessage {
                     sender: thread(1),
                     sender_cpu: cpu(0),
@@ -506,6 +534,38 @@ mod tests {
         assert_eq!(endpoint.state(), EndpointState::Idle);
         assert_eq!(endpoint.queued_senders(), 0);
         assert_eq!(endpoint.queued_receivers(), 0);
+    }
+
+    #[test]
+    fn one_way_send_delivery_does_not_request_reply_setup() {
+        let mut endpoint = Endpoint::new();
+
+        endpoint.recv(thread(3), cpu(2), blocking_recv());
+
+        assert_eq!(
+            endpoint.send(
+                thread(1),
+                cpu(0),
+                7,
+                blocking_send(),
+                IpcPayload::new(&[10]).unwrap(),
+            ),
+            IpcAction::Delivered {
+                receiver: thread(3),
+                receiver_cpu: cpu(2),
+                receiver_can_grant: true,
+                reply_setup: None,
+                message: IpcMessage {
+                    sender: thread(1),
+                    sender_cpu: cpu(0),
+                    badge: 7,
+                    can_grant: true,
+                    can_grant_reply: false,
+                    is_call: false,
+                    payload: IpcPayload::new(&[10]).unwrap(),
+                },
+            }
+        );
     }
 
     #[test]

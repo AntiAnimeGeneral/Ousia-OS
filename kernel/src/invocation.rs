@@ -22,6 +22,9 @@ pub enum Invocation {
     NotificationWait {
         blocking: bool,
     },
+    Reply {
+        target: ObjectId,
+    },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -60,6 +63,12 @@ pub enum InvocationOutcome {
         notification: ObjectId,
         blocking: bool,
     },
+    ReplyAuthorized {
+        reply: ObjectId,
+        caller: ObjectId,
+        target: ObjectId,
+        can_grant: bool,
+    },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -86,6 +95,7 @@ pub enum InvocationTarget {
     Untyped,
     Tcb,
     Notification,
+    Reply,
 }
 
 impl From<CapError> for InvocationError {
@@ -209,6 +219,23 @@ pub fn invoke(
             }
             actual => Err(wrong_capability(InvocationTarget::Notification, actual)),
         },
+        Invocation::Reply { target } => match view.capability {
+            Capability::Reply(cap) => {
+                if !cap.can_reply(target) {
+                    return Err(InvocationError::MissingRights {
+                        required: Rights::MANAGE,
+                        actual: view.rights,
+                    });
+                }
+                Ok(InvocationOutcome::ReplyAuthorized {
+                    reply: view.object,
+                    caller: cap.caller,
+                    target: cap.target,
+                    can_grant: cap.can_grant,
+                })
+            }
+            actual => Err(wrong_capability(InvocationTarget::Reply, actual)),
+        },
     }
 }
 
@@ -227,7 +254,7 @@ fn wrong_capability(expected: InvocationTarget, actual: Capability) -> Invocatio
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cap::{EndpointCap, FrameCap, NotificationCap, TcbCap, UntypedCap};
+    use crate::cap::{EndpointCap, FrameCap, NotificationCap, ReplyCap, TcbCap, UntypedCap};
 
     fn endpoint(rights: Rights, badge: u64) -> Capability {
         Capability::Endpoint(EndpointCap { badge, rights })
@@ -247,6 +274,14 @@ mod tests {
 
     fn notification(rights: Rights, badge: u64) -> Capability {
         Capability::Notification(NotificationCap { badge, rights })
+    }
+
+    fn reply(caller: ObjectId, target: ObjectId, can_grant: bool) -> Capability {
+        Capability::Reply(ReplyCap {
+            caller,
+            target,
+            can_grant,
+        })
     }
 
     #[test]
@@ -435,6 +470,47 @@ mod tests {
             Err(InvocationError::MissingRights {
                 required: Rights::READ,
                 actual: Rights::WRITE,
+            })
+        );
+    }
+
+    #[test]
+    fn reply_requires_matching_target() {
+        let mut cspace = CapabilitySpace::new();
+        let caller = ObjectId::new(100);
+        let target = ObjectId::new(200);
+        let cap = cspace.create_object(reply(caller, target, true));
+
+        assert_eq!(
+            invoke(
+                &cspace,
+                cap,
+                Invocation::Reply {
+                    target: ObjectId::new(201),
+                },
+            ),
+            Err(InvocationError::MissingRights {
+                required: Rights::MANAGE,
+                actual: Rights::NONE,
+            })
+        );
+    }
+
+    #[test]
+    fn reply_invocation_authorizes_reply_object() {
+        let mut cspace = CapabilitySpace::new();
+        let caller = ObjectId::new(100);
+        let target = ObjectId::new(200);
+        let cap = cspace.create_object(reply(caller, target, true));
+        let object = cspace.object_of(cap).unwrap();
+
+        assert_eq!(
+            invoke(&cspace, cap, Invocation::Reply { target }),
+            Ok(InvocationOutcome::ReplyAuthorized {
+                reply: object,
+                caller,
+                target,
+                can_grant: true,
             })
         );
     }
