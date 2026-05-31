@@ -46,7 +46,7 @@ fn run_alloc_smoke() {
     }
 
     match invoke(&cspace, root, Invocation::EndpointSend { message_words: 1 }) {
-        Ok(InvocationOutcome::EndpointSendQueued { badge: 1, .. }) => {}
+        Ok(InvocationOutcome::SendIpcAuthorized { badge: 1, .. }) => {}
         Ok(_) | Err(_) => panic!("capability invocation failed during alloc smoke"),
     }
 }

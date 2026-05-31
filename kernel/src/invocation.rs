@@ -11,12 +11,12 @@ pub enum Invocation {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum InvocationOutcome {
-    EndpointSendQueued {
+    SendIpcAuthorized {
         endpoint: ObjectId,
         badge: u64,
         message_words: usize,
     },
-    EndpointReceiveBlocked {
+    ReceiveIpcAuthorized {
         endpoint: ObjectId,
     },
     FrameMapAuthorized {
@@ -74,7 +74,7 @@ pub fn invoke(
         Invocation::EndpointSend { message_words } => match view.capability {
             Capability::Endpoint(cap) => {
                 require_rights(view.rights, Rights::WRITE)?;
-                Ok(InvocationOutcome::EndpointSendQueued {
+                Ok(InvocationOutcome::SendIpcAuthorized {
                     endpoint: view.object,
                     badge: cap.badge,
                     message_words,
@@ -85,7 +85,7 @@ pub fn invoke(
         Invocation::EndpointRecv => match view.capability {
             Capability::Endpoint(_) => {
                 require_rights(view.rights, Rights::READ)?;
-                Ok(InvocationOutcome::EndpointReceiveBlocked {
+                Ok(InvocationOutcome::ReceiveIpcAuthorized {
                     endpoint: view.object,
                 })
             }
@@ -167,7 +167,7 @@ mod tests {
 
         assert_eq!(
             invoke(&cspace, cap, Invocation::EndpointSend { message_words: 3 },),
-            Ok(InvocationOutcome::EndpointSendQueued {
+            Ok(InvocationOutcome::SendIpcAuthorized {
                 endpoint,
                 badge: 0x2a,
                 message_words: 3,

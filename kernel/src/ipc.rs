@@ -39,6 +39,13 @@ pub struct EndpointWaiter {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum EndpointState {
+    Idle,
+    Send,
+    Recv,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct IpcMessage {
     sender: ThreadId,
     sender_cpu: CpuId,
@@ -68,8 +75,9 @@ pub enum IpcError {
     TooManyMessageWords { requested: usize, limit: usize },
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct Endpoint {
+    state: EndpointState,
     senders: VecDeque<IpcMessage>,
     receivers: VecDeque<EndpointWaiter>,
 }
@@ -141,7 +149,11 @@ impl IpcMessage {
 
 impl Endpoint {
     pub fn new() -> Self {
-        Self::default()
+        Self {
+            state: EndpointState::Idle,
+            senders: VecDeque::new(),
+            receivers: VecDeque::new(),
+        }
     }
 
     pub fn send(
@@ -158,38 +170,64 @@ impl Endpoint {
             payload,
         };
 
-        if let Some(receiver) = self.receivers.pop_front() {
-            return IpcAction::Delivered {
-                receiver: receiver.thread,
-                receiver_cpu: receiver.cpu,
-                message,
-            };
-        }
-
-        self.senders.push_back(message);
-        IpcAction::SenderBlocked {
-            thread: sender,
-            cpu: sender_cpu,
+        match self.state {
+            EndpointState::Idle | EndpointState::Send => {
+                self.senders.push_back(message);
+                self.state = EndpointState::Send;
+                IpcAction::SenderBlocked {
+                    thread: sender,
+                    cpu: sender_cpu,
+                }
+            }
+            EndpointState::Recv => {
+                let receiver = self
+                    .receivers
+                    .pop_front()
+                    .expect("Recv endpoint state must have a waiting receiver");
+                if self.receivers.is_empty() {
+                    self.state = EndpointState::Idle;
+                }
+                IpcAction::Delivered {
+                    receiver: receiver.thread,
+                    receiver_cpu: receiver.cpu,
+                    message,
+                }
+            }
         }
     }
 
     pub fn recv(&mut self, receiver: ThreadId, receiver_cpu: CpuId) -> IpcAction {
-        if let Some(message) = self.senders.pop_front() {
-            return IpcAction::Delivered {
-                receiver,
-                receiver_cpu,
-                message,
-            };
+        match self.state {
+            EndpointState::Idle | EndpointState::Recv => {
+                self.receivers.push_back(EndpointWaiter {
+                    thread: receiver,
+                    cpu: receiver_cpu,
+                });
+                self.state = EndpointState::Recv;
+                IpcAction::ReceiverBlocked {
+                    thread: receiver,
+                    cpu: receiver_cpu,
+                }
+            }
+            EndpointState::Send => {
+                let message = self
+                    .senders
+                    .pop_front()
+                    .expect("Send endpoint state must have a waiting sender");
+                if self.senders.is_empty() {
+                    self.state = EndpointState::Idle;
+                }
+                IpcAction::Delivered {
+                    receiver,
+                    receiver_cpu,
+                    message,
+                }
+            }
         }
+    }
 
-        self.receivers.push_back(EndpointWaiter {
-            thread: receiver,
-            cpu: receiver_cpu,
-        });
-        IpcAction::ReceiverBlocked {
-            thread: receiver,
-            cpu: receiver_cpu,
-        }
+    pub const fn state(&self) -> EndpointState {
+        self.state
     }
 
     pub fn queued_senders(&self) -> usize {
@@ -236,6 +274,7 @@ mod tests {
                 cpu: cpu(0),
             }
         );
+        assert_eq!(endpoint.state(), EndpointState::Send);
         assert_eq!(endpoint.queued_senders(), 1);
         assert_eq!(endpoint.queued_receivers(), 0);
     }
@@ -259,7 +298,9 @@ mod tests {
                 },
             }
         );
+        assert_eq!(endpoint.state(), EndpointState::Send);
         assert_eq!(endpoint.queued_senders(), 1);
+        assert_eq!(endpoint.queued_receivers(), 0);
     }
 
     #[test]
@@ -274,6 +315,7 @@ mod tests {
                 cpu: cpu(2),
             }
         );
+        assert_eq!(endpoint.state(), EndpointState::Recv);
         assert_eq!(endpoint.queued_senders(), 0);
         assert_eq!(endpoint.queued_receivers(), 1);
     }
@@ -297,6 +339,27 @@ mod tests {
                 },
             }
         );
+        assert_eq!(endpoint.state(), EndpointState::Recv);
+        assert_eq!(endpoint.queued_senders(), 0);
         assert_eq!(endpoint.queued_receivers(), 1);
+    }
+
+    #[test]
+    fn endpoint_returns_to_idle_after_last_waiter_is_matched() {
+        let mut endpoint = Endpoint::new();
+        endpoint.send(thread(1), cpu(0), 7, IpcPayload::new(&[10]).unwrap());
+
+        let _ = endpoint.recv(thread(2), cpu(1));
+
+        assert_eq!(endpoint.state(), EndpointState::Idle);
+        assert_eq!(endpoint.queued_senders(), 0);
+        assert_eq!(endpoint.queued_receivers(), 0);
+
+        endpoint.recv(thread(3), cpu(2));
+        let _ = endpoint.send(thread(4), cpu(3), 8, IpcPayload::new(&[20]).unwrap());
+
+        assert_eq!(endpoint.state(), EndpointState::Idle);
+        assert_eq!(endpoint.queued_senders(), 0);
+        assert_eq!(endpoint.queued_receivers(), 0);
     }
 }
