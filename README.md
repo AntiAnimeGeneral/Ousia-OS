@@ -7,7 +7,7 @@ Ousia OS is a Rust microkernel prototype. AArch64 and amd64 are both first-class
 - `kernel/`: the kernel crate. It owns core kernel logic and the architecture-neutral `kernel_main` entry in `kernel/src/entry.rs`.
 - `ostd/`: the OS framework / kernel SDK layer. It owns architecture bootstrap code, boot stacks, early console, and CPU helpers behind a common boot API.
 - Some of the reusable console plumbing under `ostd/src/console/` is adapted from Asterinas MPL-2.0 code; the file headers carry the license notice.
-- `tools/qemu-runner/`: the host-side runner that builds the kernel and starts QEMU.
+- `tools/qemu-runner/`: an independent host-side control project that builds the kernel and starts QEMU.
 - `design/`: design notes and implementation drafts.
 
 ## Prerequisites
@@ -31,7 +31,7 @@ rustup component add llvm-tools-preview
 From the workspace root:
 
 ```bash
-cargo run -p qemu-runner
+cargo run --manifest-path tools/qemu-runner/Cargo.toml
 ```
 
 That command will:
@@ -41,13 +41,13 @@ That command will:
 3. boot the kernel on the QEMU `virt` machine
 
 The current kernel prints a short boot message through the AArch64 PL011 serial path and then waits forever.
-This means `cargo run -p qemu-runner` does not return by itself after a successful boot. QEMU owns the terminal until you quit it. In `-nographic` mode, press `Ctrl-A` and then `X` to exit QEMU.
+This means `cargo run --manifest-path tools/qemu-runner/Cargo.toml` does not return by itself after a successful boot. QEMU owns the terminal until you quit it. In `-nographic` mode, press `Ctrl-A` and then `X` to exit QEMU.
 If you stop QEMU with `Ctrl-C`, QEMU reports `terminating on signal 2`; that only means the host interrupted QEMU, not that the guest kernel failed.
 
 For automated boot checks, use:
 
 ```bash
-cargo run -p qemu-runner -- --smoke
+cargo run --manifest-path tools/qemu-runner/Cargo.toml -- --smoke
 ```
 
 Smoke mode writes the guest serial stream to `target/qemu-aarch64.log`, waits for the boot marker, and then exits QEMU automatically. This is the path we will use for boot validation as the early console matures.
@@ -55,7 +55,7 @@ Smoke mode writes the guest serial stream to `target/qemu-aarch64.log`, waits fo
 For the early AArch64 exception-vector diagnostic path, use:
 
 ```bash
-cargo run -p qemu-runner -- --exception-smoke
+cargo run --manifest-path tools/qemu-runner/Cargo.toml -- --exception-smoke
 ```
 
 That mode builds the kernel with the `exception-smoke` feature, waits for the exception diagnostic marker, and then exits QEMU automatically.
@@ -76,15 +76,15 @@ cargo test -p kernel
 
 ## Editor analysis
 
-The workspace VS Code settings make rust-analyzer analyze the project through the `aarch64-unknown-none` bare-metal target with `core` and `alloc` built from source. The check command is explicitly pointed at the kernel bare-metal build, following the same pattern used by Asterinas for mixed host-tool and no-std kernel workspaces. This keeps `#[cfg(target_os = "none")]` modules visible to LSP while editing kernel and `ostd` code.
+The root workspace only contains bare-metal crates. The workspace VS Code settings make rust-analyzer analyze it through the `aarch64-unknown-none` target with `core` and `alloc` built from source. This keeps `#[cfg(target_os = "none")]` modules visible to LSP while editing kernel and `ostd` code.
 
-`tools/qemu-runner` remains a host-side tool. Validate it with `cargo check -p qemu-runner` when changing runner code rather than making bare-metal modules carry host-only fallback implementations for editor analysis.
+`tools/qemu-runner` is intentionally outside the root workspace. Validate it with `cargo check --manifest-path tools/qemu-runner/Cargo.toml` when changing runner code rather than making bare-metal modules carry host-only fallback implementations for editor analysis.
 
 ## Notes
 
 - AArch64 and amd64 are first-class architecture targets.
 - The current QEMU runner tests AArch64 first; amd64 is validated through bare-metal compilation checks for now.
 - Host-side `build-std` is intentionally not enabled globally; it only belongs to the bare-metal kernel build.
-- `tools/qemu-runner` is the preferred launch path for local development.
+- `tools/qemu-runner` is an independent host control project and the preferred launch path for local development.
 - The AArch64 direct-boot path follows the same boundary as seL4/rust-sel4 and Asterinas-style tooling: the runner owns QEMU machine and serial wiring, `ostd` owns early CPU state and device MMIO, and `kernel` stays architecture-neutral.
 - Before entering Rust on AArch64, `ostd` enables FP/SIMD access for the current exception level. This is required because Rust debug code can legally emit FP/SIMD instructions under the target ABI; later kernel FPU ownership and lazy context-switch policy must evolve toward the seL4-style model.

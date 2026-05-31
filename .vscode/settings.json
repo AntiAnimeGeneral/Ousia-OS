@@ -1,14 +1,13 @@
 {
     "rust-analyzer.cargo.target": "aarch64-unknown-none",
-    "rust-analyzer.check.overrideCommand": [
-        "cargo",
-        "check",
-        "--quiet",
-        "--message-format=json",
-        "-p",
-        "kernel",
-        "--target",
-        "aarch64-unknown-none",
+    "rust-analyzer.cargo.extraArgs": [
+        "-Zbuild-std=core,alloc",
+        "-Zbuild-std-features=compiler-builtins-mem"
+    ],
+    "rust-analyzer.check.targets": [
+        "aarch64-unknown-none"
+    ],
+    "rust-analyzer.check.extraArgs": [
         "-Zbuild-std=core,alloc",
         "-Zbuild-std-features=compiler-builtins-mem"
     ],

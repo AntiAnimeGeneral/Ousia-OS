@@ -1,4 +1,5 @@
 /target
+/tools/qemu-runner/target
 /third_party/asterinas/
 /third_party/microkit/
 /third_party/rust-sel4/

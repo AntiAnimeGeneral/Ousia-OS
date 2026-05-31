@@ -1,9 +1,12 @@
 [package]
 name = "qemu-runner"
-version.workspace = true
-authors.workspace = true
-edition.workspace = true
+version = "0.0.1"
+authors = ["Your Name <you@example.com>"]
+edition = "2024"
+license = "GPL-3.0"
 publish = false
+
+[workspace]
 
 [dependencies]
 clap = { version = "4.5", features = ["derive"] }
