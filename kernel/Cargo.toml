@@ -6,6 +6,8 @@ edition.workspace = true
 
 [dependencies]
 bitflags = { version = "2", default-features = false }
+
+[target.'cfg(target_os = "none")'.dependencies]
 ostd = { path = "../ostd" }
 
 [features]

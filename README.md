@@ -52,6 +52,14 @@ cargo run -p qemu-runner -- --smoke
 
 Smoke mode writes the guest serial stream to `target/qemu-aarch64.log`, waits for the boot marker, and then exits QEMU automatically. This is the path we will use for boot validation as the early console matures.
 
+For the early AArch64 exception-vector diagnostic path, use:
+
+```bash
+cargo run -p qemu-runner -- --exception-smoke
+```
+
+That mode builds the kernel with the `exception-smoke` feature, waits for the exception diagnostic marker, and then exits QEMU automatically.
+
 AArch64 and amd64 are both first-class targets. The current runner only exercises AArch64. The amd64 path currently covers the OSTD-owned bare-metal bootstrap, early COM1 serial output, and halt loop so that architecture-specific code can compile and evolve behind the same `ostd` boundary without leaking into `kernel`.
 
 ## Lower-level checks
@@ -65,6 +73,12 @@ cargo check -p ostd --target x86_64-unknown-none -Zbuild-std=core,alloc -Zbuild-
 cargo check -p kernel --target x86_64-unknown-none -Zbuild-std=core,alloc -Zbuild-std-features=compiler-builtins-mem
 cargo test -p kernel
 ```
+
+## Editor analysis
+
+The workspace VS Code settings make rust-analyzer analyze the project through the `aarch64-unknown-none` bare-metal target with `core` and `alloc` built from source. The check command is explicitly pointed at the kernel bare-metal build, following the same pattern used by Asterinas for mixed host-tool and no-std kernel workspaces. This keeps `#[cfg(target_os = "none")]` modules visible to LSP while editing kernel and `ostd` code.
+
+`tools/qemu-runner` remains a host-side tool. Validate it with `cargo check -p qemu-runner` when changing runner code rather than making bare-metal modules carry host-only fallback implementations for editor analysis.
 
 ## Notes
 

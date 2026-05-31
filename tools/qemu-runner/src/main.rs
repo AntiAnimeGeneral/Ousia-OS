@@ -1,3 +1,4 @@
+use clap::Parser;
 use std::{
     env, fs,
     path::{Path, PathBuf},
@@ -11,9 +12,18 @@ const BOOT_MARKER: &str = "Ousia kernel booted on aarch64";
 const EXCEPTION_MARKER: &str = "Ousia AArch64 exception";
 const SMOKE_TIMEOUT: Duration = Duration::from_secs(5);
 
+#[derive(Debug, Parser)]
+#[command(about = "Build the AArch64 kernel and launch it with QEMU")]
+struct Args {
+    #[arg(long, conflicts_with = "exception_smoke")]
+    smoke: bool,
+
+    #[arg(long, conflicts_with = "smoke")]
+    exception_smoke: bool,
+}
+
 fn main() -> ExitCode {
-    let smoke = env::args().any(|arg| arg == "--smoke");
-    let exception_smoke = env::args().any(|arg| arg == "--exception-smoke");
+    let args = Args::parse();
     let workspace_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .and_then(|path| path.parent())
@@ -25,7 +35,7 @@ fn main() -> ExitCode {
     build_command
         .current_dir(&workspace_root)
         .args(["build", "-p", "kernel", "--target", TARGET]);
-    if exception_smoke {
+    if args.exception_smoke {
         build_command.args(["--features", "exception-smoke"]);
     }
     build_command.args([
@@ -43,8 +53,8 @@ fn main() -> ExitCode {
         .join("debug")
         .join("kernel");
 
-    if smoke || exception_smoke {
-        let marker = if exception_smoke {
+    if args.smoke || args.exception_smoke {
+        let marker = if args.exception_smoke {
             EXCEPTION_MARKER
         } else {
             BOOT_MARKER
