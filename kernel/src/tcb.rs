@@ -54,6 +54,7 @@ pub struct Tcb {
     id: ThreadId,
     affinity: CpuId,
     state: ThreadState,
+    bound_notification: Option<ObjectId>,
 }
 
 impl ThreadState {
@@ -78,6 +79,7 @@ impl Tcb {
             id,
             affinity,
             state: ThreadState::Inactive,
+            bound_notification: None,
         }
     }
 
@@ -93,12 +95,29 @@ impl Tcb {
         self.state
     }
 
+    pub const fn bound_notification(&self) -> Option<ObjectId> {
+        self.bound_notification
+    }
+
     pub fn set_state(&mut self, state: ThreadState) {
         self.state = state;
     }
 
     pub fn set_affinity(&mut self, affinity: CpuId) {
         self.affinity = affinity;
+    }
+
+    pub fn bind_notification(&mut self, notification: ObjectId) {
+        self.bound_notification = Some(notification);
+    }
+
+    pub fn unbind_notification(&mut self) -> Option<ObjectId> {
+        self.bound_notification.take()
+    }
+
+    pub fn waits_on_bound_notification_receive(&self, notification: ObjectId) -> bool {
+        matches!(self.state, ThreadState::BlockedOnReceive { .. })
+            && matches!(self.bound_notification, Some(bound) if bound == notification)
     }
 }
 
@@ -117,6 +136,7 @@ mod tests {
         assert_eq!(tcb.id(), ThreadId::new(1));
         assert_eq!(tcb.affinity(), CpuId::new(2));
         assert_eq!(tcb.state(), ThreadState::Inactive);
+        assert_eq!(tcb.bound_notification(), None);
         assert!(tcb.state().is_stopped());
     }
 
@@ -192,5 +212,27 @@ mod tests {
 
         assert_eq!(tcb.state(), ThreadState::Running);
         assert_eq!(tcb.affinity(), CpuId::new(3));
+    }
+
+    #[test]
+    fn bound_notification_receive_is_derived_from_receive_state() {
+        let mut tcb = Tcb::new(ThreadId::new(1), CpuId::new(0));
+
+        tcb.bind_notification(object(10));
+        tcb.set_state(ThreadState::BlockedOnReceive {
+            endpoint: object(20),
+            can_grant: false,
+        });
+
+        assert!(tcb.waits_on_bound_notification_receive(object(10)));
+        assert!(!tcb.waits_on_bound_notification_receive(object(11)));
+
+        tcb.set_state(ThreadState::BlockedOnNotification {
+            notification: object(10),
+        });
+
+        assert!(!tcb.waits_on_bound_notification_receive(object(10)));
+        assert_eq!(tcb.unbind_notification(), Some(object(10)));
+        assert_eq!(tcb.bound_notification(), None);
     }
 }

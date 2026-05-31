@@ -1,6 +1,9 @@
 use alloc::collections::VecDeque;
 
-use crate::tcb::{CpuId, ThreadId};
+use crate::{
+    cap::ObjectId,
+    tcb::{CpuId, ThreadId},
+};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum NotificationState {
@@ -15,9 +18,22 @@ pub struct NotificationWaiter {
     cpu: CpuId,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct BoundTcb {
+    tcb: ObjectId,
+    thread: ThreadId,
+    cpu: CpuId,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum NotificationAction {
     Delivered {
+        receiver: ThreadId,
+        receiver_cpu: CpuId,
+        badge: u64,
+    },
+    BoundReceiveCompleted {
+        tcb: ObjectId,
         receiver: ThreadId,
         receiver_cpu: CpuId,
         badge: u64,
@@ -45,9 +61,28 @@ pub struct Notification {
     state: NotificationState,
     badge: u64,
     waiters: VecDeque<NotificationWaiter>,
+    bound_tcb: Option<BoundTcb>,
 }
 
 impl NotificationWaiter {
+    pub const fn thread(self) -> ThreadId {
+        self.thread
+    }
+
+    pub const fn cpu(self) -> CpuId {
+        self.cpu
+    }
+}
+
+impl BoundTcb {
+    pub const fn new(tcb: ObjectId, thread: ThreadId, cpu: CpuId) -> Self {
+        Self { tcb, thread, cpu }
+    }
+
+    pub const fn tcb(self) -> ObjectId {
+        self.tcb
+    }
+
     pub const fn thread(self) -> ThreadId {
         self.thread
     }
@@ -63,12 +98,32 @@ impl Notification {
             state: NotificationState::Idle,
             badge: 0,
             waiters: VecDeque::new(),
+            bound_tcb: None,
         }
     }
 
-    pub fn signal(&mut self, badge: u64) -> NotificationAction {
+    pub fn bind_tcb(&mut self, tcb: BoundTcb) {
+        self.bound_tcb = Some(tcb);
+    }
+
+    pub fn unbind_tcb(&mut self) -> Option<BoundTcb> {
+        self.bound_tcb.take()
+    }
+
+    pub fn signal(&mut self, badge: u64, bound_tcb_accepts_receive: bool) -> NotificationAction {
         match self.state {
             NotificationState::Idle | NotificationState::Active => {
+                if let (NotificationState::Idle, Some(bound_tcb), true) =
+                    (self.state, self.bound_tcb, bound_tcb_accepts_receive)
+                {
+                    return NotificationAction::BoundReceiveCompleted {
+                        tcb: bound_tcb.tcb,
+                        receiver: bound_tcb.thread,
+                        receiver_cpu: bound_tcb.cpu,
+                        badge,
+                    };
+                }
+
                 self.badge |= badge;
                 self.state = NotificationState::Active;
                 NotificationAction::BecameActive { badge: self.badge }
@@ -148,6 +203,10 @@ impl Notification {
     pub fn queued_waiters(&self) -> usize {
         self.waiters.len()
     }
+
+    pub const fn bound_tcb(&self) -> Option<BoundTcb> {
+        self.bound_tcb
+    }
 }
 
 #[cfg(test)]
@@ -162,16 +221,20 @@ mod tests {
         ThreadId::new(raw)
     }
 
+    fn object(raw: u64) -> ObjectId {
+        ObjectId::new(raw)
+    }
+
     #[test]
     fn signal_without_waiter_accumulates_badges() {
         let mut notification = Notification::new();
 
         assert_eq!(
-            notification.signal(0b0010),
+            notification.signal(0b0010, false),
             NotificationAction::BecameActive { badge: 0b0010 }
         );
         assert_eq!(
-            notification.signal(0b0100),
+            notification.signal(0b0100, false),
             NotificationAction::BecameActive { badge: 0b0110 }
         );
         assert_eq!(notification.state(), NotificationState::Active);
@@ -182,7 +245,7 @@ mod tests {
     fn wait_consumes_active_badge() {
         let mut notification = Notification::new();
 
-        notification.signal(0b1010);
+        notification.signal(0b1010, false);
 
         assert_eq!(
             notification.wait(thread(1), cpu(0)),
@@ -219,7 +282,7 @@ mod tests {
         notification.wait(thread(2), cpu(1));
 
         assert_eq!(
-            notification.signal(0b1000),
+            notification.signal(0b1000, false),
             NotificationAction::Delivered {
                 receiver: thread(1),
                 receiver_cpu: cpu(0),
@@ -244,5 +307,55 @@ mod tests {
         );
         assert_eq!(notification.state(), NotificationState::Idle);
         assert_eq!(notification.queued_waiters(), 0);
+    }
+
+    #[test]
+    fn idle_bound_notification_completes_bound_receive() {
+        let mut notification = Notification::new();
+        let bound = BoundTcb::new(object(100), thread(1), cpu(0));
+
+        notification.bind_tcb(bound);
+
+        assert_eq!(
+            notification.signal(0b1000, true),
+            NotificationAction::BoundReceiveCompleted {
+                tcb: object(100),
+                receiver: thread(1),
+                receiver_cpu: cpu(0),
+                badge: 0b1000,
+            }
+        );
+        assert_eq!(notification.state(), NotificationState::Idle);
+        assert_eq!(notification.badge(), 0);
+        assert_eq!(notification.bound_tcb(), Some(bound));
+    }
+
+    #[test]
+    fn idle_bound_notification_without_receive_waiter_accumulates_badge() {
+        let mut notification = Notification::new();
+
+        notification.bind_tcb(BoundTcb::new(object(100), thread(1), cpu(0)));
+
+        assert_eq!(
+            notification.signal(0b0100, false),
+            NotificationAction::BecameActive { badge: 0b0100 }
+        );
+        assert_eq!(notification.state(), NotificationState::Active);
+        assert_eq!(notification.badge(), 0b0100);
+    }
+
+    #[test]
+    fn active_bound_notification_accumulates_badge() {
+        let mut notification = Notification::new();
+
+        notification.signal(0b0010, false);
+        notification.bind_tcb(BoundTcb::new(object(100), thread(1), cpu(0)));
+
+        assert_eq!(
+            notification.signal(0b0100, true),
+            NotificationAction::BecameActive { badge: 0b0110 }
+        );
+        assert_eq!(notification.state(), NotificationState::Active);
+        assert_eq!(notification.badge(), 0b0110);
     }
 }
