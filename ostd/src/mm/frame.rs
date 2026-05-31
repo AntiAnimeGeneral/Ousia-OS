@@ -115,10 +115,38 @@ impl<const N: usize> NormalizedMemoryMap<N> {
         self.len += 1;
         Ok(())
     }
+
+    pub const fn try_into_allocator(self) -> Result<EarlyMemoryMapAllocator<N>, FrameAllocError> {
+        if self.len == 0 {
+            return Err(FrameAllocError::Exhausted);
+        }
+
+        let mut ranges = [FrameRange {
+            start: 0,
+            end: PAGE_SIZE,
+        }; N];
+        let mut index = 0;
+        while index < self.len {
+            match self.ranges[index] {
+                Some(range) => ranges[index] = range,
+                None => return Err(FrameAllocError::Exhausted),
+            }
+            index += 1;
+        }
+
+        Ok(EarlyMemoryMapAllocator::new_active(ranges, self.len))
+    }
 }
 
 pub fn normalize_memory_regions<const N: usize>(
     regions: &[MemoryRegion],
+) -> Result<NormalizedMemoryMap<N>, FrameAllocError> {
+    normalize_memory_regions_with_reserved(regions, &[])
+}
+
+pub fn normalize_memory_regions_with_reserved<const N: usize>(
+    regions: &[MemoryRegion],
+    reserved: &[FrameRange],
 ) -> Result<NormalizedMemoryMap<N>, FrameAllocError> {
     let mut map = NormalizedMemoryMap::empty();
     for region in regions {
@@ -126,10 +154,53 @@ pub fn normalize_memory_regions<const N: usize>(
             continue;
         }
         if let Some(range) = normalize_usable_region(*region) {
-            map.push(range)?;
+            push_available_range(&mut map, range, reserved)?;
         }
     }
     Ok(map)
+}
+
+fn push_available_range<const N: usize>(
+    map: &mut NormalizedMemoryMap<N>,
+    range: FrameRange,
+    reserved: &[FrameRange],
+) -> Result<(), FrameAllocError> {
+    let mut cursor = range.start;
+    while cursor < range.end {
+        if let Some(end) = covering_reserved_end(cursor, range.end, reserved) {
+            cursor = end;
+            continue;
+        }
+
+        let end = next_reserved_start(cursor, range.end, reserved).unwrap_or(range.end);
+        map.push(FrameRange { start: cursor, end })?;
+        cursor = end;
+    }
+
+    Ok(())
+}
+
+fn covering_reserved_end(cursor: Paddr, limit: Paddr, reserved: &[FrameRange]) -> Option<Paddr> {
+    let mut end = cursor;
+    for range in reserved {
+        if range.start <= cursor && range.end > end {
+            end = range.end.min(limit);
+        }
+    }
+
+    if end == cursor { None } else { Some(end) }
+}
+
+fn next_reserved_start(cursor: Paddr, limit: Paddr, reserved: &[FrameRange]) -> Option<Paddr> {
+    let mut start = limit;
+    for range in reserved {
+        if range.end <= cursor || range.start <= cursor || range.start >= start {
+            continue;
+        }
+        start = range.start.min(limit);
+    }
+
+    if start == limit { None } else { Some(start) }
 }
 
 #[derive(Debug)]
@@ -142,6 +213,7 @@ pub struct EarlyFrameAllocator {
 pub struct EarlyMemoryMapAllocator<const N: usize> {
     ranges: [FrameRange; N],
     next: [Paddr; N],
+    active: usize,
 }
 
 impl EarlyFrameAllocator {
@@ -179,12 +251,30 @@ impl<const N: usize> EarlyMemoryMapAllocator<N> {
             next[index] = ranges[index].start;
             index += 1;
         }
-        Self { ranges, next }
+        Self {
+            ranges,
+            next,
+            active: N,
+        }
+    }
+
+    const fn new_active(ranges: [FrameRange; N], active: usize) -> Self {
+        let mut next = [0; N];
+        let mut index = 0;
+        while index < N {
+            next[index] = ranges[index].start;
+            index += 1;
+        }
+        Self {
+            ranges,
+            next,
+            active,
+        }
     }
 
     pub fn allocate(&mut self, layout: Layout) -> Result<FrameRange, FrameAllocError> {
         let request = normalize_layout(layout)?;
-        for index in 0..N {
+        for index in 0..self.active {
             if let Some(allocated) = allocate_from_range(
                 self.next[index],
                 self.ranges[index].end,
@@ -204,6 +294,10 @@ impl<const N: usize> EarlyMemoryMapAllocator<N> {
 
     pub const fn range(&self, index: usize) -> FrameRange {
         self.ranges[index]
+    }
+
+    pub const fn active_ranges(&self) -> usize {
+        self.active
     }
 }
 
@@ -404,6 +498,105 @@ mod tests {
                 MemoryRegion::new(0x3000, 0x4000, MemoryRegionKind::Usable),
             ]),
             Err(FrameAllocError::TooManyRegions)
+        );
+    }
+
+    #[test]
+    fn normalizing_subtracts_reserved_ranges() {
+        let map = normalize_memory_regions_with_reserved::<4>(
+            &[MemoryRegion::new(0x1000, 0x9000, MemoryRegionKind::Usable)],
+            &[
+                FrameRange::new(0x3000, 0x5000).unwrap(),
+                FrameRange::new(0x8000, 0x9000).unwrap(),
+            ],
+        )
+        .unwrap();
+
+        assert_eq!(map.len(), 2);
+        assert_eq!(map.range(0).unwrap().as_range(), 0x1000..0x3000);
+        assert_eq!(map.range(1).unwrap().as_range(), 0x5000..0x8000);
+    }
+
+    #[test]
+    fn reserved_ranges_can_cover_usable_range_edges() {
+        let map = normalize_memory_regions_with_reserved::<2>(
+            &[MemoryRegion::new(0x1000, 0x9000, MemoryRegionKind::Usable)],
+            &[
+                FrameRange::new(0x0000, 0x3000).unwrap(),
+                FrameRange::new(0x7000, 0xa000).unwrap(),
+            ],
+        )
+        .unwrap();
+
+        assert_eq!(map.len(), 1);
+        assert_eq!(map.range(0).unwrap().as_range(), 0x3000..0x7000);
+    }
+
+    #[test]
+    fn reserved_ranges_can_remove_all_usable_memory() {
+        let map = normalize_memory_regions_with_reserved::<2>(
+            &[MemoryRegion::new(0x1000, 0x3000, MemoryRegionKind::Usable)],
+            &[FrameRange::new(0x0000, 0x4000).unwrap()],
+        )
+        .unwrap();
+
+        assert!(map.is_empty());
+    }
+
+    #[test]
+    fn reserved_ranges_can_be_unsorted_and_overlapping() {
+        let map = normalize_memory_regions_with_reserved::<4>(
+            &[MemoryRegion::new(0x1000, 0xa000, MemoryRegionKind::Usable)],
+            &[
+                FrameRange::new(0x7000, 0x9000).unwrap(),
+                FrameRange::new(0x3000, 0x5000).unwrap(),
+                FrameRange::new(0x4000, 0x8000).unwrap(),
+            ],
+        )
+        .unwrap();
+
+        assert_eq!(map.len(), 2);
+        assert_eq!(map.range(0).unwrap().as_range(), 0x1000..0x3000);
+        assert_eq!(map.range(1).unwrap().as_range(), 0x9000..0xa000);
+    }
+
+    #[test]
+    fn reports_capacity_exhaustion_after_reserved_subtraction() {
+        assert_eq!(
+            normalize_memory_regions_with_reserved::<1>(
+                &[MemoryRegion::new(0x1000, 0x9000, MemoryRegionKind::Usable,)],
+                &[FrameRange::new(0x3000, 0x5000).unwrap()],
+            ),
+            Err(FrameAllocError::TooManyRegions)
+        );
+    }
+
+    #[test]
+    fn normalized_map_can_create_allocator() {
+        let map = normalize_memory_regions::<4>(&[
+            MemoryRegion::new(0x1003, 0x3fff, MemoryRegionKind::Usable),
+            MemoryRegion::new(0x8000, 0xa000, MemoryRegionKind::Usable),
+        ])
+        .unwrap();
+        let mut allocator = map.try_into_allocator().unwrap();
+
+        assert_eq!(allocator.active_ranges(), 2);
+        assert_eq!(allocator.range(0).as_range(), 0x2000..0x3000);
+        assert_eq!(allocator.range(1).as_range(), 0x8000..0xa000);
+
+        let first = allocator.allocate(Layout::new::<u8>()).unwrap();
+        assert_eq!(first.as_range(), 0x2000..0x3000);
+
+        let second = allocator.allocate(Layout::new::<u8>()).unwrap();
+        assert_eq!(second.as_range(), 0x8000..0x9000);
+    }
+
+    #[test]
+    fn empty_normalized_map_cannot_create_allocator() {
+        let map = NormalizedMemoryMap::<2>::empty();
+        assert_eq!(
+            map.try_into_allocator().unwrap_err(),
+            FrameAllocError::Exhausted
         );
     }
 }
