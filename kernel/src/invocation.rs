@@ -86,6 +86,10 @@ pub enum InvocationError {
         requested: u8,
         source: u8,
     },
+    ReplyTargetMismatch {
+        expected: ObjectId,
+        actual: ObjectId,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -222,9 +226,9 @@ pub fn invoke(
         Invocation::Reply { target } => match view.capability {
             Capability::Reply(cap) => {
                 if !cap.can_reply(target) {
-                    return Err(InvocationError::MissingRights {
-                        required: Rights::MANAGE,
-                        actual: view.rights,
+                    return Err(InvocationError::ReplyTargetMismatch {
+                        expected: cap.target,
+                        actual: target,
                     });
                 }
                 Ok(InvocationOutcome::ReplyAuthorized {
@@ -489,9 +493,9 @@ mod tests {
                     target: ObjectId::new(201),
                 },
             ),
-            Err(InvocationError::MissingRights {
-                required: Rights::MANAGE,
-                actual: Rights::NONE,
+            Err(InvocationError::ReplyTargetMismatch {
+                expected: target,
+                actual: ObjectId::new(201),
             })
         );
     }

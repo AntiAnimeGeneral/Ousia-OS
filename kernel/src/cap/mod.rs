@@ -216,6 +216,10 @@ pub enum CapError {
         capability: Capability,
         params: MintParams,
     },
+    WrongCapability {
+        expected: ObjectKind,
+        actual: ObjectKind,
+    },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -353,6 +357,21 @@ impl CapabilitySpace {
 
     pub fn delete(&mut self, descriptor: CapabilityDescriptor) -> Result<(), CapError> {
         self.validate_descriptor(descriptor)?;
+        self.delete_slot(descriptor.slot);
+        Ok(())
+    }
+
+    pub fn consume_reply_cap(&mut self, descriptor: CapabilityDescriptor) -> Result<(), CapError> {
+        self.validate_descriptor(descriptor)?;
+
+        let slot = self.live_slot(descriptor.slot)?;
+        if !matches!(slot.capability, Capability::Reply(_)) {
+            return Err(CapError::WrongCapability {
+                expected: ObjectKind::Reply,
+                actual: capability_kind(&slot.capability),
+            });
+        }
+
         self.delete_slot(descriptor.slot);
         Ok(())
     }
@@ -1080,5 +1099,61 @@ mod tests {
                 capability: reply(caller, target, true),
             })
         );
+    }
+
+    #[test]
+    fn consuming_reply_cap_invalidates_that_slot() {
+        let mut cspace = CapabilitySpace::new();
+        let caller = ObjectId::new(100);
+        let target = ObjectId::new(200);
+        let reply = cspace.create_object(reply(caller, target, true));
+
+        cspace.consume_reply_cap(reply).unwrap();
+
+        assert_eq!(
+            cspace.lookup(reply),
+            Err(CapError::SlotNotFound(reply.slot))
+        );
+    }
+
+    #[test]
+    fn consumed_reply_slot_reuse_rejects_old_descriptor() {
+        let mut cspace = CapabilitySpace::new();
+        let caller = ObjectId::new(100);
+        let target = ObjectId::new(200);
+        let reply = cspace.create_object(reply(caller, target, true));
+
+        cspace.consume_reply_cap(reply).unwrap();
+        let reused = cspace.create_object(endpoint(Rights::READ));
+
+        assert_eq!(reply.slot, reused.slot);
+        assert_ne!(reply.slot_generation, reused.slot_generation);
+        assert_eq!(
+            cspace.lookup(reply),
+            Err(CapError::StaleDescriptor {
+                slot: reply.slot,
+                expected_generation: reused.slot_generation,
+                actual_generation: reply.slot_generation,
+            })
+        );
+        assert_eq!(
+            cspace.lookup(reused).unwrap().capability,
+            endpoint(Rights::READ)
+        );
+    }
+
+    #[test]
+    fn only_reply_cap_can_be_consumed_as_reply() {
+        let mut cspace = CapabilitySpace::new();
+        let endpoint = cspace.create_object(endpoint(Rights::READ));
+
+        assert_eq!(
+            cspace.consume_reply_cap(endpoint),
+            Err(CapError::WrongCapability {
+                expected: ObjectKind::Reply,
+                actual: ObjectKind::Endpoint,
+            })
+        );
+        assert!(cspace.lookup(endpoint).is_ok());
     }
 }

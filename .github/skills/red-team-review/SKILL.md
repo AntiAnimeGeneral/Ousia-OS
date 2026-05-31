@@ -31,7 +31,7 @@ argument-hint: "changed files, implementation summary, validation results, or re
 - 已运行的验证命令和结果。
 - 需要特别关注的语义边界或参考基线。
 
-调用 subagent 时应显式指定与当前主上下文同型号的模型。若当前工具或环境无法显式指定模型，主 agent 必须在最终报告中说明这一点。
+调用 subagent 时必须显式指定与当前主上下文同型号、且带 provider 后缀的完整模型名，例如 `gpt-5.5::fxh (oaicopilot)`。不要使用裸型号名、`Auto`、Copilot 默认模型或任何隐式 fallback。若指定失败或环境无法显式指定模型，停止本次 subagent review，并在最终报告中说明没有运行黑队 subagent；不要自动改用默认模型。
 
 建议提示词：
 
@@ -99,6 +99,6 @@ argument-hint: "changed files, implementation summary, validation results, or re
 
 ## 模型选择说明
 
-黑队 review subagent 默认应使用与当前主上下文同型号的模型。主 agent 调用 subagent 时，如果工具提供 `model` 参数，必须传入当前上下文模型型号。
+黑队 review subagent 必须使用与当前主上下文同型号的模型。主 agent 调用 subagent 时，如果工具提供 `model` 参数，必须传入带 provider 后缀的完整模型名，例如 `gpt-5.5::fxh (oaicopilot)`。
 
-如果当前环境不支持显式指定模型，或指定的同型号模型不可用，skill 本身无法强制执行；主 agent 必须在最终报告中说明没有成功强制同型号，并标记这项剩余风险。
+如果当前环境不支持显式指定模型，或指定的同型号模型不可用，不能 fallback 到 `Auto`、Copilot 默认模型或其他模型。主 agent 应跳过 subagent review，在最终报告中说明原因，并把“未运行同型号黑队 subagent review”标记为剩余风险。
