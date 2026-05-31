@@ -1,0 +1,175 @@
+use crate::cap::ObjectId;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
+pub struct CpuId(u32);
+
+impl CpuId {
+    pub const fn new(raw: u32) -> Self {
+        Self(raw)
+    }
+
+    pub const fn raw(self) -> u32 {
+        self.0
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
+pub struct ThreadId(u64);
+
+impl ThreadId {
+    pub const fn new(raw: u64) -> Self {
+        Self(raw)
+    }
+
+    pub const fn raw(self) -> u64 {
+        self.0
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ThreadState {
+    Inactive,
+    Running,
+    Restart,
+    BlockedOnReceive { endpoint: ObjectId },
+    BlockedOnSend { endpoint: ObjectId },
+    BlockedOnReply,
+    BlockedOnNotification { notification: ObjectId },
+    IdleThreadState,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Tcb {
+    id: ThreadId,
+    affinity: CpuId,
+    state: ThreadState,
+}
+
+impl ThreadState {
+    pub const fn is_blocked(self) -> bool {
+        matches!(
+            self,
+            Self::BlockedOnReceive { .. }
+                | Self::BlockedOnSend { .. }
+                | Self::BlockedOnReply
+                | Self::BlockedOnNotification { .. }
+        )
+    }
+
+    pub const fn is_stopped(self) -> bool {
+        matches!(self, Self::Inactive) || self.is_blocked()
+    }
+}
+
+impl Tcb {
+    pub const fn new(id: ThreadId, affinity: CpuId) -> Self {
+        Self {
+            id,
+            affinity,
+            state: ThreadState::Inactive,
+        }
+    }
+
+    pub const fn id(&self) -> ThreadId {
+        self.id
+    }
+
+    pub const fn affinity(&self) -> CpuId {
+        self.affinity
+    }
+
+    pub const fn state(&self) -> ThreadState {
+        self.state
+    }
+
+    pub fn set_state(&mut self, state: ThreadState) {
+        self.state = state;
+    }
+
+    pub fn set_affinity(&mut self, affinity: CpuId) {
+        self.affinity = affinity;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn object(raw: u64) -> ObjectId {
+        ObjectId::new(raw)
+    }
+
+    #[test]
+    fn new_tcb_starts_inactive_with_affinity() {
+        let tcb = Tcb::new(ThreadId::new(1), CpuId::new(2));
+
+        assert_eq!(tcb.id(), ThreadId::new(1));
+        assert_eq!(tcb.affinity(), CpuId::new(2));
+        assert_eq!(tcb.state(), ThreadState::Inactive);
+        assert!(tcb.state().is_stopped());
+    }
+
+    #[test]
+    fn blocked_states_match_sel4_blocked_semantics() {
+        assert!(
+            ThreadState::BlockedOnReceive {
+                endpoint: object(1)
+            }
+            .is_blocked()
+        );
+        assert!(
+            ThreadState::BlockedOnSend {
+                endpoint: object(1)
+            }
+            .is_blocked()
+        );
+        assert!(ThreadState::BlockedOnReply.is_blocked());
+        assert!(
+            ThreadState::BlockedOnNotification {
+                notification: object(2),
+            }
+            .is_blocked()
+        );
+        assert!(!ThreadState::Running.is_blocked());
+        assert!(!ThreadState::Restart.is_blocked());
+        assert!(!ThreadState::IdleThreadState.is_blocked());
+    }
+
+    #[test]
+    fn stopped_states_match_sel4_stopped_semantics() {
+        assert!(ThreadState::Inactive.is_stopped());
+        assert!(
+            ThreadState::BlockedOnReceive {
+                endpoint: object(1)
+            }
+            .is_stopped()
+        );
+        assert!(
+            ThreadState::BlockedOnSend {
+                endpoint: object(1)
+            }
+            .is_stopped()
+        );
+        assert!(ThreadState::BlockedOnReply.is_stopped());
+        assert!(
+            ThreadState::BlockedOnNotification {
+                notification: object(2),
+            }
+            .is_stopped()
+        );
+        assert!(!ThreadState::Running.is_stopped());
+        assert!(!ThreadState::Restart.is_stopped());
+        assert!(!ThreadState::IdleThreadState.is_stopped());
+    }
+
+    #[test]
+    fn tcb_state_and_affinity_are_explicit() {
+        let mut tcb = Tcb::new(ThreadId::new(1), CpuId::new(0));
+
+        tcb.set_state(ThreadState::Running);
+        tcb.set_affinity(CpuId::new(3));
+
+        assert_eq!(tcb.state(), ThreadState::Running);
+        assert_eq!(tcb.affinity(), CpuId::new(3));
+    }
+}
