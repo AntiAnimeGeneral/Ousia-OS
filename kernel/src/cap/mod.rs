@@ -82,6 +82,7 @@ pub enum Capability {
     CNode(CNodeCap),
     Untyped(UntypedCap),
     Tcb(TcbCap),
+    Notification(NotificationCap),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -129,12 +130,29 @@ pub struct TcbCap {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NotificationCap {
+    pub badge: u64,
+    pub rights: Rights,
+}
+
+impl NotificationCap {
+    pub const fn can_send(&self) -> bool {
+        self.rights.contains(Rights::WRITE)
+    }
+
+    pub const fn can_receive(&self) -> bool {
+        self.rights.contains(Rights::READ)
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ObjectKind {
     Endpoint,
     Frame,
     CNode,
     Untyped,
     Tcb,
+    Notification,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -484,6 +502,7 @@ fn capability_kind(capability: &Capability) -> ObjectKind {
         Capability::CNode(_) => ObjectKind::CNode,
         Capability::Untyped(_) => ObjectKind::Untyped,
         Capability::Tcb(_) => ObjectKind::Tcb,
+        Capability::Notification(_) => ObjectKind::Notification,
     }
 }
 
@@ -494,6 +513,7 @@ fn capability_rights(capability: &Capability) -> Rights {
         Capability::CNode(cap) => cap.rights,
         Capability::Untyped(_) => Rights::NONE,
         Capability::Tcb(cap) => cap.rights,
+        Capability::Notification(cap) => cap.rights,
     }
 }
 
@@ -555,6 +575,19 @@ fn derive_capability(
                 rights: requested_rights,
             }))
         }
+        Capability::Notification(cap) => {
+            if !requested_rights.is_subset_of(cap.rights) {
+                return Err(CapError::RightsEscalation {
+                    parent: parent_slot,
+                    parent_rights: cap.rights,
+                    requested_rights,
+                });
+            }
+            Ok(Capability::Notification(NotificationCap {
+                badge: cap.badge,
+                rights: requested_rights,
+            }))
+        }
     }
 }
 
@@ -572,6 +605,10 @@ mod tests {
 
     fn tcb(rights: Rights) -> Capability {
         Capability::Tcb(TcbCap { rights })
+    }
+
+    fn notification(rights: Rights) -> Capability {
+        Capability::Notification(NotificationCap { badge: 1, rights })
     }
 
     #[test]
@@ -767,5 +804,18 @@ mod tests {
             cspace.lookup(grandchild),
             Err(CapError::SlotNotFound(grandchild.slot))
         );
+    }
+
+    #[test]
+    fn notification_capability_derivation_preserves_badge_and_reduces_rights() {
+        let mut cspace = CapabilitySpace::new();
+        let root = cspace.create_object(notification(Rights::READ | Rights::WRITE));
+
+        let receive_only = cspace.derive(root, Rights::READ).unwrap();
+        let view = cspace.lookup(receive_only).unwrap();
+
+        assert_eq!(view.object_kind, ObjectKind::Notification);
+        assert_eq!(view.capability, notification(Rights::READ));
+        assert_eq!(view.rights, Rights::READ);
     }
 }

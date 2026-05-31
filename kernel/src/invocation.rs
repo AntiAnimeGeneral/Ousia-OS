@@ -18,6 +18,10 @@ pub enum Invocation {
         size_bits: u8,
     },
     TcbResume,
+    NotificationSignal,
+    NotificationWait {
+        blocking: bool,
+    },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -48,6 +52,14 @@ pub enum InvocationOutcome {
     TcbResumeAuthorized {
         tcb: ObjectId,
     },
+    NotificationSignalAuthorized {
+        notification: ObjectId,
+        badge: u64,
+    },
+    NotificationReceiveAuthorized {
+        notification: ObjectId,
+        blocking: bool,
+    },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -73,6 +85,7 @@ pub enum InvocationTarget {
     Frame,
     Untyped,
     Tcb,
+    Notification,
 }
 
 impl From<CapError> for InvocationError {
@@ -166,6 +179,36 @@ pub fn invoke(
             }
             actual => Err(wrong_capability(InvocationTarget::Tcb, actual)),
         },
+        Invocation::NotificationSignal => match view.capability {
+            Capability::Notification(cap) => {
+                if !cap.can_send() {
+                    return Err(InvocationError::MissingRights {
+                        required: Rights::WRITE,
+                        actual: view.rights,
+                    });
+                }
+                Ok(InvocationOutcome::NotificationSignalAuthorized {
+                    notification: view.object,
+                    badge: cap.badge,
+                })
+            }
+            actual => Err(wrong_capability(InvocationTarget::Notification, actual)),
+        },
+        Invocation::NotificationWait { blocking } => match view.capability {
+            Capability::Notification(cap) => {
+                if !cap.can_receive() {
+                    return Err(InvocationError::MissingRights {
+                        required: Rights::READ,
+                        actual: view.rights,
+                    });
+                }
+                Ok(InvocationOutcome::NotificationReceiveAuthorized {
+                    notification: view.object,
+                    blocking,
+                })
+            }
+            actual => Err(wrong_capability(InvocationTarget::Notification, actual)),
+        },
     }
 }
 
@@ -184,7 +227,7 @@ fn wrong_capability(expected: InvocationTarget, actual: Capability) -> Invocatio
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cap::{EndpointCap, FrameCap, TcbCap, UntypedCap};
+    use crate::cap::{EndpointCap, FrameCap, NotificationCap, TcbCap, UntypedCap};
 
     fn endpoint(rights: Rights, badge: u64) -> Capability {
         Capability::Endpoint(EndpointCap { badge, rights })
@@ -200,6 +243,10 @@ mod tests {
 
     fn tcb(rights: Rights) -> Capability {
         Capability::Tcb(TcbCap { rights })
+    }
+
+    fn notification(rights: Rights, badge: u64) -> Capability {
+        Capability::Notification(NotificationCap { badge, rights })
     }
 
     #[test]
@@ -355,6 +402,39 @@ mod tests {
             Err(InvocationError::MissingRights {
                 required: Rights::MANAGE,
                 actual: Rights::READ,
+            })
+        );
+    }
+
+    #[test]
+    fn notification_signal_requires_write_and_preserves_badge() {
+        let mut cspace = CapabilitySpace::new();
+        let cap = cspace.create_object(notification(Rights::WRITE, 0x55));
+        let object = cspace.object_of(cap).unwrap();
+
+        assert_eq!(
+            invoke(&cspace, cap, Invocation::NotificationSignal),
+            Ok(InvocationOutcome::NotificationSignalAuthorized {
+                notification: object,
+                badge: 0x55,
+            })
+        );
+    }
+
+    #[test]
+    fn notification_wait_requires_read_rights() {
+        let mut cspace = CapabilitySpace::new();
+        let cap = cspace.create_object(notification(Rights::WRITE, 0));
+
+        assert_eq!(
+            invoke(
+                &cspace,
+                cap,
+                Invocation::NotificationWait { blocking: false },
+            ),
+            Err(InvocationError::MissingRights {
+                required: Rights::READ,
+                actual: Rights::WRITE,
             })
         );
     }

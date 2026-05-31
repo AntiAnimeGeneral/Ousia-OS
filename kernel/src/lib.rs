@@ -5,4 +5,5 @@ extern crate alloc;
 pub mod cap;
 pub mod invocation;
 pub mod ipc;
+pub mod notification;
 pub mod tcb;
