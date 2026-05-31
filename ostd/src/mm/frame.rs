@@ -9,13 +9,51 @@ pub enum FrameAllocError {
     EmptyRegion,
     UnalignedRegion,
     InvalidLayout,
+    TooManyRegions,
     Exhausted,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MemoryRegionKind {
+    Usable,
+    Reserved,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct MemoryRegion {
+    start: Paddr,
+    end: Paddr,
+    kind: MemoryRegionKind,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct FrameRange {
     start: Paddr,
     end: Paddr,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct NormalizedMemoryMap<const N: usize> {
+    ranges: [Option<FrameRange>; N],
+    len: usize,
+}
+
+impl MemoryRegion {
+    pub const fn new(start: Paddr, end: Paddr, kind: MemoryRegionKind) -> Self {
+        Self { start, end, kind }
+    }
+
+    pub const fn start(self) -> Paddr {
+        self.start
+    }
+
+    pub const fn end(self) -> Paddr {
+        self.end
+    }
+
+    pub const fn kind(self) -> MemoryRegionKind {
+        self.kind
+    }
 }
 
 impl FrameRange {
@@ -44,6 +82,54 @@ impl FrameRange {
     pub const fn as_range(self) -> Range<Paddr> {
         self.start..self.end
     }
+}
+
+impl<const N: usize> NormalizedMemoryMap<N> {
+    pub const fn empty() -> Self {
+        Self {
+            ranges: [None; N],
+            len: 0,
+        }
+    }
+
+    pub const fn len(&self) -> usize {
+        self.len
+    }
+
+    pub const fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    pub const fn range(&self, index: usize) -> Option<FrameRange> {
+        if index >= self.len {
+            return None;
+        }
+        self.ranges[index]
+    }
+
+    fn push(&mut self, range: FrameRange) -> Result<(), FrameAllocError> {
+        if self.len == N {
+            return Err(FrameAllocError::TooManyRegions);
+        }
+        self.ranges[self.len] = Some(range);
+        self.len += 1;
+        Ok(())
+    }
+}
+
+pub fn normalize_memory_regions<const N: usize>(
+    regions: &[MemoryRegion],
+) -> Result<NormalizedMemoryMap<N>, FrameAllocError> {
+    let mut map = NormalizedMemoryMap::empty();
+    for region in regions {
+        if region.kind != MemoryRegionKind::Usable {
+            continue;
+        }
+        if let Some(range) = normalize_usable_region(*region) {
+            map.push(range)?;
+        }
+    }
+    Ok(map)
 }
 
 #[derive(Debug)]
@@ -140,6 +226,15 @@ fn normalize_layout(layout: Layout) -> Result<Layout, FrameAllocError> {
     Layout::from_size_align(size, align).map_err(|_| FrameAllocError::InvalidLayout)
 }
 
+fn normalize_usable_region(region: MemoryRegion) -> Option<FrameRange> {
+    let start = align_up(region.start, PAGE_SIZE)?;
+    let end = align_down(region.end, PAGE_SIZE);
+    if start >= end {
+        return None;
+    }
+    FrameRange::new(start, end).ok()
+}
+
 const fn is_page_aligned(value: usize) -> bool {
     value % PAGE_SIZE == 0
 }
@@ -148,6 +243,11 @@ fn align_up(value: usize, align: usize) -> Option<usize> {
     debug_assert!(align.is_power_of_two());
     let mask = align - 1;
     value.checked_add(mask).map(|value| value & !mask)
+}
+
+const fn align_down(value: usize, align: usize) -> usize {
+    debug_assert!(align.is_power_of_two());
+    value & !(align - 1)
 }
 
 #[cfg(test)]
@@ -267,5 +367,43 @@ mod tests {
         );
         assert_eq!(allocator.allocated_in(0), 0x1000..0x1000);
         assert_eq!(allocator.allocated_in(1), 0x4000..0x4000);
+    }
+
+    #[test]
+    fn normalizes_only_usable_page_ranges() {
+        let map = normalize_memory_regions::<4>(&[
+            MemoryRegion::new(0x1003, 0x3fff, MemoryRegionKind::Usable),
+            MemoryRegion::new(0x4000, 0x9000, MemoryRegionKind::Reserved),
+            MemoryRegion::new(0x9001, 0xa000, MemoryRegionKind::Usable),
+            MemoryRegion::new(0xa000, 0xc000, MemoryRegionKind::Usable),
+        ])
+        .unwrap();
+
+        assert_eq!(map.len(), 2);
+        assert_eq!(map.range(0).unwrap().as_range(), 0x2000..0x3000);
+        assert_eq!(map.range(1).unwrap().as_range(), 0xa000..0xc000);
+        assert_eq!(map.range(2), None);
+    }
+
+    #[test]
+    fn normalizing_empty_usable_result_is_allowed() {
+        let map = normalize_memory_regions::<2>(&[
+            MemoryRegion::new(0x1001, 0x1fff, MemoryRegionKind::Usable),
+            MemoryRegion::new(0x2000, 0x4000, MemoryRegionKind::Reserved),
+        ])
+        .unwrap();
+
+        assert!(map.is_empty());
+    }
+
+    #[test]
+    fn normalizing_reports_capacity_exhaustion() {
+        assert_eq!(
+            normalize_memory_regions::<1>(&[
+                MemoryRegion::new(0x1000, 0x2000, MemoryRegionKind::Usable),
+                MemoryRegion::new(0x3000, 0x4000, MemoryRegionKind::Usable),
+            ]),
+            Err(FrameAllocError::TooManyRegions)
+        );
     }
 }

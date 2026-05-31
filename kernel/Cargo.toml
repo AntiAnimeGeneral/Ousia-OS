@@ -3,6 +3,14 @@ name = "kernel"
 version.workspace = true
 authors.workspace = true
 edition.workspace = true
+autobins = false
+
+[[bin]]
+name = "kernel"
+path = "src/main.rs"
+test = false
+doctest = false
+bench = false
 
 [dependencies]
 bitflags = { version = "2", default-features = false }

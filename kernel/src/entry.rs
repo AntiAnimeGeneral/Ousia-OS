@@ -45,18 +45,10 @@ fn run_alloc_smoke() {
     }
 }
 
-#[cfg(all(
-    feature = "exception-smoke",
-    target_os = "none",
-    target_arch = "aarch64"
-))]
+#[cfg(feature = "exception-smoke")]
 fn trigger_exception_smoke_if_requested() {
-    ostd::boot::trigger_diagnostic_exception()
+    ostd::boot::trigger_diagnostic_exception_if_supported()
 }
 
-#[cfg(not(all(
-    feature = "exception-smoke",
-    target_os = "none",
-    target_arch = "aarch64"
-)))]
+#[cfg(not(feature = "exception-smoke"))]
 fn trigger_exception_smoke_if_requested() {}

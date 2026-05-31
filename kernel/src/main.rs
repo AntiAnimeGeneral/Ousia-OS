@@ -1,8 +1,4 @@
-#![cfg_attr(target_os = "none", no_std)]
-#![cfg_attr(target_os = "none", no_main)]
+#![no_std]
+#![no_main]
 
-#[cfg(target_os = "none")]
 mod entry;
-
-#[cfg(not(target_os = "none"))]
-fn main() {}
