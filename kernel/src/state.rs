@@ -8,7 +8,7 @@ use crate::{
     tcb::{CpuId, Tcb, ThreadId, ThreadState},
     thread_action::{
         ThreadAction, ThreadActionError, ThreadTable, poll_notification, recv_ipc, reply_to_caller,
-        send_ipc, signal_notification, wait_notification,
+        resume_tcb, send_ipc, signal_notification, wait_notification,
     },
 };
 
@@ -34,7 +34,6 @@ pub enum ExecutionOutcome {
 pub enum UnsupportedInvocation {
     FrameMap,
     UntypedRetype,
-    TcbResume,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -232,9 +231,7 @@ impl KernelState {
             InvocationOutcome::UntypedRetypeAuthorized { .. } => Ok(ExecutionOutcome::Unsupported(
                 UnsupportedInvocation::UntypedRetype,
             )),
-            InvocationOutcome::TcbResumeAuthorized { .. } => Ok(ExecutionOutcome::Unsupported(
-                UnsupportedInvocation::TcbResume,
-            )),
+            InvocationOutcome::TcbResumeAuthorized { tcb } => self.execute_tcb_resume(tcb),
         }
     }
 
@@ -496,6 +493,15 @@ impl KernelState {
         self.cspace
             .consume_reply_cap(descriptor)
             .map_err(InvocationError::Cap)?;
+        Ok(ExecutionOutcome::Thread(action))
+    }
+
+    fn execute_tcb_resume(
+        &mut self,
+        tcb: ObjectId,
+    ) -> Result<ExecutionOutcome, KernelExecutionError> {
+        let thread = self.objects.tcb_thread(tcb)?;
+        let action = resume_tcb(&mut self.threads, &mut self.scheduler, thread)?;
         Ok(ExecutionOutcome::Thread(action))
     }
 
@@ -1276,5 +1282,104 @@ mod tests {
             state.cspace().lookup(reply_descriptor),
             Err(crate::cap::CapError::SlotNotFound(reply_descriptor.slot))
         );
+    }
+
+    #[test]
+    fn tcb_resume_invocation_restarts_bound_thread() {
+        let mut cspace = CapabilitySpace::new();
+        let tcb_descriptor = cspace
+            .insert_initial_capability(Capability::Tcb(crate::cap::TcbCap {
+                rights: Rights::MANAGE,
+            }))
+            .unwrap();
+        let tcb_object = cspace.object_of(tcb_descriptor).unwrap();
+        let mut objects = ObjectTable::new();
+        objects.bind_tcb(tcb_object, thread(2)).unwrap();
+        let mut threads = ThreadTable::new();
+        threads.insert(Tcb::new(thread(2), cpu(1)));
+        let scheduler = Scheduler::new(&[cpu(0), cpu(1)]).unwrap();
+        let mut state = KernelState::from_parts(cspace, objects, threads, scheduler);
+
+        assert_eq!(
+            state.execute_invocation(
+                InvocationContext::new(thread(1), cpu(0)),
+                tcb_descriptor,
+                Invocation::TcbResume,
+            ),
+            Ok(ExecutionOutcome::Thread(ThreadAction::Resumed {
+                thread: thread(2),
+                cpu: cpu(1),
+                scheduler: SchedulerAction::Enqueued {
+                    thread: thread(2),
+                    cpu: cpu(1),
+                },
+            }))
+        );
+        assert_eq!(state.threads().state(thread(2)), Some(ThreadState::Restart));
+        assert_eq!(
+            state.scheduler().placement(thread(2)),
+            Some(crate::scheduler::ThreadPlacement::Ready { cpu: cpu(1) })
+        );
+    }
+
+    #[test]
+    fn tcb_resume_rejects_unbound_tcb_object_without_thread_mutation() {
+        let mut cspace = CapabilitySpace::new();
+        let tcb_descriptor = cspace
+            .insert_initial_capability(Capability::Tcb(crate::cap::TcbCap {
+                rights: Rights::MANAGE,
+            }))
+            .unwrap();
+        let mut threads = ThreadTable::new();
+        threads.insert(Tcb::new(thread(2), cpu(1)));
+        let scheduler = Scheduler::new(&[cpu(0), cpu(1)]).unwrap();
+        let mut state = KernelState::from_parts(cspace, ObjectTable::new(), threads, scheduler);
+
+        assert_eq!(
+            state.execute_invocation(
+                InvocationContext::new(thread(1), cpu(0)),
+                tcb_descriptor,
+                Invocation::TcbResume,
+            ),
+            Err(KernelExecutionError::Object(
+                ObjectTableError::ObjectNotFound {
+                    object: state.cspace().object_of(tcb_descriptor).unwrap(),
+                }
+            ))
+        );
+        assert_eq!(
+            state.threads().state(thread(2)),
+            Some(ThreadState::Inactive)
+        );
+        assert_eq!(state.scheduler().placement(thread(2)), None);
+    }
+
+    #[test]
+    fn tcb_resume_rejects_bound_missing_thread_without_scheduler_mutation() {
+        let mut cspace = CapabilitySpace::new();
+        let tcb_descriptor = cspace
+            .insert_initial_capability(Capability::Tcb(crate::cap::TcbCap {
+                rights: Rights::MANAGE,
+            }))
+            .unwrap();
+        let tcb_object = cspace.object_of(tcb_descriptor).unwrap();
+        let mut objects = ObjectTable::new();
+        objects.bind_tcb(tcb_object, thread(2)).unwrap();
+        let threads = ThreadTable::new();
+        let scheduler = Scheduler::new(&[cpu(0), cpu(1)]).unwrap();
+        let mut state = KernelState::from_parts(cspace, objects, threads, scheduler);
+
+        assert_eq!(
+            state.execute_invocation(
+                InvocationContext::new(thread(1), cpu(0)),
+                tcb_descriptor,
+                Invocation::TcbResume,
+            ),
+            Err(KernelExecutionError::Thread(
+                ThreadActionError::UnknownThread { thread: thread(2) }
+            ))
+        );
+        assert_eq!(state.scheduler().run_queue(cpu(0)).unwrap().ready_len(), 0);
+        assert_eq!(state.scheduler().run_queue(cpu(1)).unwrap().ready_len(), 0);
     }
 }

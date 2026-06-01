@@ -36,6 +36,11 @@ pub enum ThreadAction {
     ReplyRecorded {
         setup: ReplySetup,
     },
+    Resumed {
+        thread: ThreadId,
+        cpu: CpuId,
+        scheduler: SchedulerAction,
+    },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -72,6 +77,10 @@ pub enum ThreadActionError {
         setup: ReplySetup,
     },
     ReplyAlreadyPending,
+    ThreadNotResumable {
+        thread: ThreadId,
+        state: ThreadState,
+    },
     Reply(ReplyError),
     Scheduler(SchedulerError),
 }
@@ -586,6 +595,35 @@ pub fn reply_to_caller(
     apply_reply_action(threads, scheduler, action)
 }
 
+pub fn resume_tcb(
+    threads: &mut ThreadTable,
+    scheduler: &mut Scheduler,
+    thread: ThreadId,
+) -> Result<ThreadAction, ThreadActionError> {
+    let tcb = threads
+        .get(thread)
+        .ok_or(ThreadActionError::UnknownThread { thread })?;
+    let cpu = tcb.affinity();
+    let state = tcb.state();
+    if state != ThreadState::Inactive {
+        return Err(ThreadActionError::ThreadNotResumable { thread, state });
+    }
+
+    scheduler.validate_enqueue_fields(thread, cpu, ThreadState::Restart)?;
+
+    threads
+        .get_mut(thread)
+        .expect("validated resumed thread must exist")
+        .set_state(ThreadState::Restart);
+    let scheduler_action = scheduler.enqueue_validated(thread, cpu);
+
+    Ok(ThreadAction::Resumed {
+        thread,
+        cpu,
+        scheduler: scheduler_action,
+    })
+}
+
 fn block_current(
     threads: &mut ThreadTable,
     scheduler: &mut Scheduler,
@@ -841,6 +879,86 @@ mod tests {
             scheduler.schedule_next(cpu(1)).unwrap();
         }
         scheduler
+    }
+
+    #[test]
+    fn resume_tcb_sets_restart_and_enqueues_on_affinity_cpu() {
+        let mut threads = ThreadTable::new();
+        assert!(threads.insert(Tcb::new(thread(1), cpu(1))).is_none());
+        let mut scheduler = Scheduler::new(&[cpu(0), cpu(1)]).unwrap();
+
+        assert_eq!(
+            resume_tcb(&mut threads, &mut scheduler, thread(1)),
+            Ok(ThreadAction::Resumed {
+                thread: thread(1),
+                cpu: cpu(1),
+                scheduler: SchedulerAction::Enqueued {
+                    thread: thread(1),
+                    cpu: cpu(1),
+                },
+            })
+        );
+        assert_eq!(threads.state(thread(1)), Some(ThreadState::Restart));
+        assert_eq!(
+            scheduler.placement(thread(1)),
+            Some(crate::scheduler::ThreadPlacement::Ready { cpu: cpu(1) })
+        );
+    }
+
+    #[test]
+    fn resume_tcb_rejects_non_inactive_without_mutation() {
+        let mut threads = table_with_threads(&[(1, cpu(0))]);
+        let mut scheduler = Scheduler::new(&[cpu(0), cpu(1)]).unwrap();
+
+        assert_eq!(
+            resume_tcb(&mut threads, &mut scheduler, thread(1)),
+            Err(ThreadActionError::ThreadNotResumable {
+                thread: thread(1),
+                state: ThreadState::Running,
+            })
+        );
+        assert_eq!(threads.state(thread(1)), Some(ThreadState::Running));
+        assert_eq!(scheduler.placement(thread(1)), None);
+    }
+
+    #[test]
+    fn resume_tcb_unknown_cpu_fails_before_state_change() {
+        let mut threads = ThreadTable::new();
+        assert!(threads.insert(Tcb::new(thread(1), cpu(9))).is_none());
+        let mut scheduler = Scheduler::new(&[cpu(0), cpu(1)]).unwrap();
+
+        assert_eq!(
+            resume_tcb(&mut threads, &mut scheduler, thread(1)),
+            Err(ThreadActionError::Scheduler(SchedulerError::UnknownCpu {
+                cpu: cpu(9),
+            }))
+        );
+        assert_eq!(threads.state(thread(1)), Some(ThreadState::Inactive));
+        assert_eq!(scheduler.placement(thread(1)), None);
+    }
+
+    #[test]
+    fn resume_tcb_rejects_already_scheduled_thread_without_state_change() {
+        let mut threads = ThreadTable::new();
+        let mut tcb = Tcb::new(thread(1), cpu(0));
+        tcb.set_state(ThreadState::Inactive);
+        assert!(threads.insert(tcb).is_none());
+        let mut scheduler = Scheduler::new(&[cpu(0), cpu(1)]).unwrap();
+        scheduler
+            .enqueue(&runnable_tcb(1, cpu(0)))
+            .expect("test setup must schedule placeholder runnable view");
+
+        assert_eq!(
+            resume_tcb(&mut threads, &mut scheduler, thread(1)),
+            Err(ThreadActionError::Scheduler(
+                SchedulerError::ThreadAlreadyScheduled {
+                    thread: thread(1),
+                    placement: crate::scheduler::ThreadPlacement::Ready { cpu: cpu(0) },
+                }
+            ))
+        );
+        assert_eq!(threads.state(thread(1)), Some(ThreadState::Inactive));
+        assert_eq!(scheduler.run_queue(cpu(0)).unwrap().ready_len(), 1);
     }
 
     #[test]
