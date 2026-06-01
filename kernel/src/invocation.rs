@@ -1,4 +1,6 @@
-use crate::cap::{CapError, Capability, CapabilityDescriptor, CapabilitySpace, ObjectId, Rights};
+use crate::cap::{
+    CapError, Capability, CapabilityDescriptor, CapabilitySpace, ObjectId, RetypeTarget, Rights,
+};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Invocation {
@@ -15,7 +17,7 @@ pub enum Invocation {
         vm_rights: Rights,
     },
     UntypedRetype {
-        size_bits: u8,
+        target: RetypeTarget,
     },
     TcbResume,
     NotificationSignal,
@@ -50,7 +52,7 @@ pub enum InvocationOutcome {
     },
     UntypedRetypeAuthorized {
         untyped: ObjectId,
-        size_bits: u8,
+        target: RetypeTarget,
     },
     TcbResumeAuthorized {
         tcb: ObjectId,
@@ -171,17 +173,18 @@ pub fn invoke(
             }
             actual => Err(wrong_capability(InvocationTarget::Frame, actual)),
         },
-        Invocation::UntypedRetype { size_bits } => match view.capability {
+        Invocation::UntypedRetype { target } => match view.capability {
             Capability::Untyped(cap) => {
-                if size_bits > cap.size_bits {
+                let requested_size = target.minimum_size_bits();
+                if requested_size > cap.size_bits {
                     return Err(InvocationError::InvalidRetypeSize {
-                        requested: size_bits,
+                        requested: requested_size,
                         source: cap.size_bits,
                     });
                 }
                 Ok(InvocationOutcome::UntypedRetypeAuthorized {
                     untyped: view.object,
-                    size_bits,
+                    target,
                 })
             }
             actual => Err(wrong_capability(InvocationTarget::Untyped, actual)),
@@ -423,10 +426,63 @@ mod tests {
         let cap = cspace.create_object(untyped(12));
 
         assert_eq!(
-            invoke(&cspace, cap, Invocation::UntypedRetype { size_bits: 13 }),
+            invoke(
+                &cspace,
+                cap,
+                Invocation::UntypedRetype {
+                    target: RetypeTarget::Untyped { size_bits: 13 },
+                },
+            ),
             Err(InvocationError::InvalidRetypeSize {
                 requested: 13,
                 source: 12,
+            })
+        );
+    }
+
+    #[test]
+    fn untyped_retype_authorizes_target_object() {
+        let mut cspace = CapabilitySpace::new();
+        let cap = cspace.create_object(untyped(12));
+        let untyped = cspace.object_of(cap).unwrap();
+
+        assert_eq!(
+            invoke(
+                &cspace,
+                cap,
+                Invocation::UntypedRetype {
+                    target: RetypeTarget::Frame {
+                        rights: Rights::READ | Rights::WRITE,
+                    },
+                },
+            ),
+            Ok(InvocationOutcome::UntypedRetypeAuthorized {
+                untyped,
+                target: RetypeTarget::Frame {
+                    rights: Rights::READ | Rights::WRITE,
+                },
+            })
+        );
+    }
+
+    #[test]
+    fn untyped_retype_checks_target_minimum_size() {
+        let mut cspace = CapabilitySpace::new();
+        let cap = cspace.create_object(untyped(11));
+
+        assert_eq!(
+            invoke(
+                &cspace,
+                cap,
+                Invocation::UntypedRetype {
+                    target: RetypeTarget::Frame {
+                        rights: Rights::READ,
+                    },
+                },
+            ),
+            Err(InvocationError::InvalidRetypeSize {
+                requested: 12,
+                source: 11,
             })
         );
     }

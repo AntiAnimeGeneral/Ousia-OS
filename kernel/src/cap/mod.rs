@@ -192,6 +192,19 @@ pub enum RetypeTarget {
     Notification,
 }
 
+impl RetypeTarget {
+    pub(crate) const fn minimum_size_bits(&self) -> u8 {
+        match self {
+            Self::Endpoint => PLACEHOLDER_ENDPOINT_SIZE_BITS,
+            Self::Frame { .. } => MIN_FRAME_SIZE_BITS,
+            Self::CNode { .. } => PLACEHOLDER_CNODE_SIZE_BITS,
+            Self::Untyped { size_bits } => *size_bits,
+            Self::Tcb { .. } => PLACEHOLDER_TCB_SIZE_BITS,
+            Self::Notification => PLACEHOLDER_NOTIFICATION_SIZE_BITS,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum MintParams {
     None,
@@ -328,7 +341,7 @@ impl CapabilitySpace {
             });
         };
 
-        let requested_size = retype_target_size_bits(&target);
+        let requested_size = target.minimum_size_bits();
         if requested_size > parent_cap.size_bits {
             return Err(CapError::InvalidRetypeSize {
                 parent: source.slot,
@@ -720,17 +733,6 @@ fn capability_rights(capability: &Capability) -> Rights {
         Capability::Tcb(cap) => cap.rights,
         Capability::Notification(cap) => cap.rights,
         Capability::Reply(_) => Rights::NONE,
-    }
-}
-
-fn retype_target_size_bits(target: &RetypeTarget) -> u8 {
-    match target {
-        RetypeTarget::Endpoint => PLACEHOLDER_ENDPOINT_SIZE_BITS,
-        RetypeTarget::Frame { .. } => MIN_FRAME_SIZE_BITS,
-        RetypeTarget::CNode { .. } => PLACEHOLDER_CNODE_SIZE_BITS,
-        RetypeTarget::Untyped { size_bits } => *size_bits,
-        RetypeTarget::Tcb { .. } => PLACEHOLDER_TCB_SIZE_BITS,
-        RetypeTarget::Notification => PLACEHOLDER_NOTIFICATION_SIZE_BITS,
     }
 }
 
