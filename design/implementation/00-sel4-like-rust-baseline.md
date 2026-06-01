@@ -65,18 +65,16 @@ OSDK 的价值在工作流：`cargo osdk new/build/run/test/debug/doc` 把裸机
 
 ### 1. Capability core
 
-当前 `kernel/src/cap/mod.rs` 应从通用 `ObjectKind + Rights` 模型逐步演进成 seL4-like CSpace：
+`kernel/src/cap/mod.rs` 已完成从通用 `ObjectKind + Rights` 模型到 seL4-like CSpace 基础层的第一轮演进：
 
-- `CSpace` / `CNode` / `Slot`
-- typed `Capability` enum
-- `EndpointCap`
-- `FrameCap`
-- `CNodeCap`
-- `UntypedCap`
-- `TcbCap`
-- `copy` / `mint` / `move` / `delete` / `revoke`
+- `CapabilitySpace`、slot descriptor、slot generation、object generation snapshot 和派生 lineage 已落地。
+- typed `Capability` enum 已覆盖 `EndpointCap`、`FrameCap`、`CNodeCap`、`UntypedCap`、`TcbCap`、`NotificationCap` 和一次性 `ReplyCap`。
+- `copy`、`mint`、`move_capability`、`delete`、`revoke_descendants`、`retype_untyped` 和 Reply cap consume/install 已分成独立语义入口。
+- CSpace 当前能表达 CNode-like slot 操作和 Untyped/retype 的最小对象创建约束，但还不是完整 seL4 CNode addressing 或 Untyped allocator。
 
-rights 的解释应跟随 capability 类型，而不是长期共享一套全局 `READ | WRITE | EXEC | MANAGE` 语义。Endpoint cap 当前用 `READ` 表达 receive、`WRITE` 表达 send，并显式保留 `GRANT` 和 `GRANT_REPLY`；调用边界必须把它们转换为 `can_send`、`can_receive`、`can_grant`、`can_grant_reply` 语义，不允许把 Endpoint 当普通文件式读写对象处理。Call 必须由 caller endpoint cap 的 `GRANT` 或 `GRANT_REPLY` 授权建立 reply authority；Reply cap 的 grant 位来自 receiver 执行 receive 时使用的 endpoint cap `GRANT` 位，而不是 caller 的 `GRANT_REPLY`。Frame map 当前按 frame cap 裁剪请求的 VM rights，而不是要求 frame cap 同时具备 read/write。
+rights 的解释已经跟随 capability 类型，而不是长期共享一套全局 `READ | WRITE | EXEC | MANAGE` 语义。Endpoint cap 当前用 `READ` 表达 receive、`WRITE` 表达 send，并显式保留 `GRANT` 和 `GRANT_REPLY`；调用边界把它们转换为 `can_send`、`can_receive`、`can_grant`、`can_grant_reply` 语义，不把 Endpoint 当普通文件式读写对象处理。Call 必须由 caller endpoint cap 的 `GRANT` 或 `GRANT_REPLY` 授权建立 reply authority；Reply cap 的 grant 位来自 receiver 执行 receive 时使用的 endpoint cap `GRANT` 位，而不是 caller 的 `GRANT_REPLY`。Frame map 当前按 frame cap 裁剪请求的 VM rights，而不是要求 frame cap 同时具备 read/write。
+
+剩余工作集中在更完整的 seL4 CSpace/Untyped 细节：CNode guard/radix addressing、真实 slot lookup path、Untyped 可用区间、watermark、alignment、容量 accounting、完整 object size table，以及 revoke 与并发 IPC/多核调度之间的一致性。
 
 ### 2. Memory and retype
 
@@ -125,13 +123,12 @@ Ousia 可以在 seL4-like baseline 上增加：
 
 ## 近期代码步骤
 
-1. 保留当前测试覆盖，避免语义倒退。
-2. 引入 typed `Capability` enum，替代长期依赖 `ObjectKind + Rights` 的泛化模型。
-3. 把当前 `derive` 拆成更接近 `mint` / `copy` 的操作语义。
-4. 引入 `CNodeCap` 和 slot guard 的雏形。
-5. 为 Endpoint / Frame / Untyped 增加类型化 rights 校验。
-6. 再考虑是否拆分 `cap/` 子模块。
-7. 用 AArch64 QEMU `virt` direct boot + `tools/qemu-runner` 建立最小 QEMU 闭环：早期启动路径应具备 PL011 串口、异常向量和可自动验证的 smoke test，再逐步接入 device tree、frame allocator、页表、GIC 和 timer。amd64 同样是一等支持目标，但当前先通过裸机编译检查覆盖，QEMU runner 暂时只跑 AArch64。
+1. 保留当前 capability、IPC、Reply、TCB 和 scheduler 测试覆盖，避免 seL4 baseline 语义倒退。
+2. 收紧 CNodeCap 的 guard/radix addressing 和真实 slot lookup path，不再只把 CNode 当 typed object kind。
+3. 补 Untyped 可用区间、watermark、alignment、容量 accounting 和完整 object size table。
+4. 在 frame metadata / typed object table 接入后，把 Frame、Untyped 和 ObjectTable 的对象生命周期收敛到单一权威边界。
+5. 再考虑是否拆分 `cap/` 子模块；拆分前保持 `CapabilitySpace` 的 lineage、slot generation 和 object generation 不变量集中可见。
+6. 用 AArch64 QEMU `virt` direct boot + `tools/qemu-runner` 建立最小 QEMU 闭环：早期启动路径应具备 PL011 串口、异常向量和可自动验证的 smoke test，再逐步接入 device tree、frame allocator、页表、GIC 和 timer。amd64 同样是一等支持目标，但当前先通过裸机编译检查覆盖，QEMU runner 暂时只跑 AArch64。
 
 ## 当前运行路径
 
