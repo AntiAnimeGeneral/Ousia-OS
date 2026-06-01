@@ -61,6 +61,9 @@ pub enum ThreadActionError {
     MissingReplyObject {
         setup: ReplySetup,
     },
+    MissingCallerObject {
+        setup: ReplySetup,
+    },
     ReceiveCallTransactionUnsupported {
         setup: ReplySetup,
     },
@@ -200,6 +203,7 @@ pub fn send_ipc(
     endpoint: &mut Endpoint,
     reply: Option<&mut Reply>,
     endpoint_object: ObjectId,
+    caller_object: Option<ObjectId>,
     sender: ThreadId,
     sender_cpu: CpuId,
     badge: u64,
@@ -223,15 +227,17 @@ pub fn send_ipc(
         )?;
 
         if options.is_call {
+            let setup = ReplySetup {
+                caller: sender,
+                caller_cpu: sender_cpu,
+                can_grant: options.can_grant || options.can_grant_reply,
+            };
             let reply = reply
                 .as_deref()
-                .ok_or(ThreadActionError::MissingReplyObject {
-                    setup: ReplySetup {
-                        caller: sender,
-                        caller_cpu: sender_cpu,
-                        can_grant: options.can_grant || options.can_grant_reply,
-                    },
-                })?;
+                .ok_or(ThreadActionError::MissingReplyObject { setup })?;
+            if caller_object.is_none() {
+                return Err(ThreadActionError::MissingCallerObject { setup });
+            }
             if reply.is_pending() {
                 return Err(ThreadActionError::ReplyAlreadyPending);
             }
@@ -247,12 +253,14 @@ pub fn send_ipc(
             message,
             reply_setup: Some(setup),
         } => {
+            let caller_object = caller_object
+                .expect("prechecked immediate call delivery must provide caller TCB object");
             let reply = reply
                 .as_deref_mut()
                 .expect("prechecked immediate call delivery must provide reply object");
             let _ = reply
                 .record_caller(ReplyCaller::new(
-                    ObjectId::new(setup.caller.raw()),
+                    caller_object,
                     endpoint_object,
                     setup.caller,
                     setup.caller_cpu,
@@ -281,6 +289,7 @@ pub fn recv_ipc(
     endpoint: &mut Endpoint,
     reply: Option<&mut Reply>,
     endpoint_object: ObjectId,
+    caller_object: Option<ObjectId>,
     receiver: ThreadId,
     receiver_cpu: CpuId,
     options: IpcReceiveOptions,
@@ -314,6 +323,9 @@ pub fn recv_ipc(
             let reply = reply
                 .as_deref()
                 .ok_or(ThreadActionError::MissingReplyObject { setup })?;
+            if caller_object.is_none() {
+                return Err(ThreadActionError::MissingCallerObject { setup });
+            }
             if reply.is_pending() {
                 return Err(ThreadActionError::ReplyAlreadyPending);
             }
@@ -335,12 +347,14 @@ pub fn recv_ipc(
             reply_setup: Some(setup),
             ..
         } => {
+            let caller_object =
+                caller_object.expect("prechecked receive-side call must provide caller TCB object");
             let reply = reply
                 .as_deref_mut()
                 .expect("prechecked receive-side call must provide reply object");
             let _ = reply
                 .record_caller(ReplyCaller::new(
-                    ObjectId::new(setup.caller.raw()),
+                    caller_object,
                     endpoint_object,
                     setup.caller,
                     setup.caller_cpu,
@@ -423,6 +437,38 @@ pub fn wait_notification(
 
     let action = notification.wait(receiver, receiver_cpu);
     apply_notification_action(threads, scheduler, notification_object, action)
+}
+
+pub fn poll_notification(
+    threads: &ThreadTable,
+    scheduler: &Scheduler,
+    notification: &mut Notification,
+    notification_object: ObjectId,
+    receiver: ThreadId,
+    receiver_cpu: CpuId,
+) -> Result<ThreadAction, ThreadActionError> {
+    validate_block_current(threads, scheduler, receiver, receiver_cpu)?;
+
+    let action = notification.poll(receiver, receiver_cpu);
+    let _ = notification_object;
+    apply_notification_poll_action(action)
+}
+
+fn apply_notification_poll_action(
+    action: NotificationAction,
+) -> Result<ThreadAction, ThreadActionError> {
+    match action {
+        NotificationAction::BadgeConsumed { thread, cpu, .. } => {
+            Ok(ThreadAction::KeptRunning { thread, cpu })
+        }
+        NotificationAction::PollFailed { thread, cpu } => Ok(ThreadAction::Ignored { thread, cpu }),
+        NotificationAction::ReceiverBlocked { .. }
+        | NotificationAction::Delivered { .. }
+        | NotificationAction::BoundReceiveCompleted { .. }
+        | NotificationAction::BecameActive { .. } => {
+            unreachable!("notification poll must not produce blocking, delivery, or active actions")
+        }
+    }
 }
 
 pub fn signal_notification(
@@ -774,6 +820,7 @@ mod tests {
                 &mut endpoint,
                 None,
                 object(10),
+                None,
                 thread(1),
                 cpu(0),
                 7,
@@ -816,6 +863,7 @@ mod tests {
                 &mut endpoint,
                 None,
                 object(10),
+                None,
                 thread(1),
                 cpu(0),
                 7,
@@ -864,6 +912,7 @@ mod tests {
                 &mut endpoint,
                 None,
                 object(10),
+                None,
                 thread(1),
                 cpu(0),
                 7,
@@ -924,6 +973,7 @@ mod tests {
                 &mut endpoint,
                 Some(&mut reply),
                 object(10),
+                Some(object(100)),
                 thread(1),
                 cpu(0),
                 7,
@@ -978,6 +1028,7 @@ mod tests {
                 &mut endpoint,
                 None,
                 object(10),
+                None,
                 thread(1),
                 cpu(0),
                 7,
@@ -1011,6 +1062,68 @@ mod tests {
             scheduler.run_queue(cpu(0)).unwrap().current(),
             Some(thread(1))
         );
+    }
+
+    #[test]
+    fn send_ipc_call_without_caller_object_does_not_consume_receiver() {
+        let mut endpoint = crate::ipc::Endpoint::new();
+        endpoint.recv(
+            thread(2),
+            cpu(1),
+            IpcReceiveOptions {
+                blocking: true,
+                can_grant: true,
+            },
+        );
+        let mut reply = Reply::new();
+        let mut threads = table_with_threads(&[(1, cpu(0)), (2, cpu(1))]);
+        threads
+            .get_mut(thread(2))
+            .unwrap()
+            .set_state(ThreadState::BlockedOnReceive {
+                endpoint: object(10),
+                can_grant: true,
+            });
+        let mut scheduler = scheduler_with_current(Some(1), None);
+
+        assert_eq!(
+            send_ipc(
+                &mut threads,
+                &mut scheduler,
+                &mut endpoint,
+                Some(&mut reply),
+                object(10),
+                None,
+                thread(1),
+                cpu(0),
+                7,
+                crate::ipc::IpcSendOptions {
+                    blocking: true,
+                    is_call: true,
+                    can_grant: true,
+                    can_grant_reply: false,
+                },
+                IpcPayload::empty(),
+            ),
+            Err(ThreadActionError::MissingCallerObject {
+                setup: ReplySetup {
+                    caller: thread(1),
+                    caller_cpu: cpu(0),
+                    can_grant: true,
+                },
+            })
+        );
+        assert_eq!(endpoint.state(), crate::ipc::EndpointState::Recv);
+        assert_eq!(endpoint.queued_receivers(), 1);
+        assert_eq!(threads.state(thread(1)), Some(ThreadState::Running));
+        assert_eq!(
+            threads.state(thread(2)),
+            Some(ThreadState::BlockedOnReceive {
+                endpoint: object(10),
+                can_grant: true,
+            })
+        );
+        assert!(!reply.is_pending());
     }
 
     #[test]
@@ -1203,6 +1316,7 @@ mod tests {
                 &mut endpoint,
                 None,
                 object(10),
+                None,
                 thread(2),
                 cpu(1),
                 IpcReceiveOptions {
@@ -1265,6 +1379,7 @@ mod tests {
                 &mut endpoint,
                 Some(&mut reply),
                 object(10),
+                Some(object(100)),
                 thread(2),
                 cpu(1),
                 IpcReceiveOptions {
@@ -1326,6 +1441,7 @@ mod tests {
                 &mut endpoint,
                 None,
                 object(10),
+                None,
                 thread(2),
                 cpu(1),
                 IpcReceiveOptions {
@@ -1358,6 +1474,74 @@ mod tests {
             scheduler.run_queue(cpu(1)).unwrap().current(),
             Some(thread(2))
         );
+    }
+
+    #[test]
+    fn recv_ipc_call_without_caller_object_does_not_consume_sender() {
+        let mut endpoint = crate::ipc::Endpoint::new();
+        endpoint.send(
+            thread(1),
+            cpu(0),
+            7,
+            crate::ipc::IpcSendOptions {
+                blocking: true,
+                is_call: true,
+                can_grant: true,
+                can_grant_reply: false,
+            },
+            IpcPayload::empty(),
+        );
+        let mut reply = Reply::new();
+        let mut threads = table_with_threads(&[(1, cpu(0)), (2, cpu(1))]);
+        threads
+            .get_mut(thread(1))
+            .unwrap()
+            .set_state(ThreadState::BlockedOnSend {
+                endpoint: object(10),
+                badge: 7,
+                can_grant: true,
+                can_grant_reply: false,
+                is_call: true,
+            });
+        let mut scheduler = scheduler_with_current(None, Some(2));
+
+        assert_eq!(
+            recv_ipc(
+                &mut threads,
+                &mut scheduler,
+                &mut endpoint,
+                Some(&mut reply),
+                object(10),
+                None,
+                thread(2),
+                cpu(1),
+                IpcReceiveOptions {
+                    blocking: true,
+                    can_grant: true,
+                },
+            ),
+            Err(ThreadActionError::MissingCallerObject {
+                setup: ReplySetup {
+                    caller: thread(1),
+                    caller_cpu: cpu(0),
+                    can_grant: true,
+                },
+            })
+        );
+        assert_eq!(endpoint.state(), crate::ipc::EndpointState::Send);
+        assert_eq!(endpoint.queued_senders(), 1);
+        assert_eq!(
+            threads.state(thread(1)),
+            Some(ThreadState::BlockedOnSend {
+                endpoint: object(10),
+                badge: 7,
+                can_grant: true,
+                can_grant_reply: false,
+                is_call: true,
+            })
+        );
+        assert_eq!(threads.state(thread(2)), Some(ThreadState::Running));
+        assert!(!reply.is_pending());
     }
 
     #[test]
@@ -1405,6 +1589,7 @@ mod tests {
                 &mut endpoint,
                 Some(&mut reply),
                 object(10),
+                Some(object(100)),
                 thread(2),
                 cpu(1),
                 IpcReceiveOptions {
@@ -1465,6 +1650,7 @@ mod tests {
                 &mut endpoint,
                 Some(&mut reply),
                 object(10),
+                None,
                 thread(2),
                 cpu(1),
                 IpcReceiveOptions {
@@ -1526,6 +1712,7 @@ mod tests {
                 &mut endpoint,
                 None,
                 object(10),
+                None,
                 thread(2),
                 cpu(1),
                 IpcReceiveOptions {
@@ -1586,6 +1773,7 @@ mod tests {
                 &mut endpoint,
                 None,
                 object(10),
+                None,
                 thread(2),
                 cpu(1),
                 IpcReceiveOptions {
@@ -1625,6 +1813,7 @@ mod tests {
                 &mut endpoint,
                 None,
                 object(10),
+                None,
                 thread(2),
                 cpu(1),
                 IpcReceiveOptions {
