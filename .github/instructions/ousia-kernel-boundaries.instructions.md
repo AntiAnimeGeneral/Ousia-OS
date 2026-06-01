@@ -24,7 +24,9 @@ description: "Ousia OS 内核边界：kernel/OSTD/tooling 职责归属、seL4 ba
 ## Reference-First 内核工作
 
 - 实现 OS、kernel、boot、QEMU、driver、MMIO、IPC、scheduler、FPU/SIMD 或 loader 能力前，先查看项目已有 reference、成熟 crate、工业级实现和硬件手册。
-- 优先参考 seL4、rust-sel4、Microkit、sDDF、Asterinas OSTD/OSDK、rust-osdev 生态和相关硬件手册。只有检查过边界、license、维护成本和语义适配后，才写自定义实现。
+- 本仓库存在本地 reference 时必须优先读取本地源码，例如 `third_party/sel4`、`third_party/asterinas`、`third_party/rust-sel4`。不要在未检查本地 reference 的情况下只凭记忆、网络搜索或概括性知识做内核设计判断。
+- 优先参考 seL4、rust-sel4、Microkit、sDDF、Asterinas OSTD/OSDK、Linux/rust-osdev 生态和相关硬件手册。只有检查过边界、license、维护成本和语义适配后，才写自定义实现。
+- 如果实现过程中发现自己对项目 reference、边界或现有代码了解不足，先补读本地源码和 owning docs；若这个不足来自 instruction/skill 没有约束到位，应同步更新对应 instruction 或 skill，避免下次复发。
 - 遇到 QEMU、boot、serial、exception level、CPU feature、loader 和 device tree 问题时，不要把偶然跑通的路径当成最佳实践。先对比 seL4、Asterinas 和 rust-sel4 的 machine 参数、boot 约束、exception-level 假设、device model 和测试方式，再选择 Ousia 的最小路径。
 
 ## Memory 与平台方向

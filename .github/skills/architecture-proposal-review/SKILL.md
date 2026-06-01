@@ -68,6 +68,7 @@ argument-hint: "proposal summary, source architect skill, affected boundaries, a
 - 错误类型或错误库选择是否服务调用方行为、边界映射、`no_std`/ABI 约束或测试诊断，而不是只为了风格或样板。
 - 是否为了“工程化”引入薄抽象、透传 helper、空泛框架或不可实施的层次。
 - 是否误读 seL4、rust-sel4、Microkit、sDDF、Asterinas、CortenMM 或硬件/论文资料。
+- 涉及本仓库已有 reference 的提案是否优先读取了 `third_party/**` 本地源码，并列出具体文件、符号和采用/不采用理由；没有本地证据时，不应接受笼统的“参考了 X”。
 - 是否过早偏离 seL4 baseline，或过早发明 Ousia-specific 语义。
 - 是否把 `design/notes/**` 或外部参考当成 owning docs。
 - 是否遗漏 multi-core-only 约束、kernel/OSTD/tooling 边界或 host tooling 隔离。

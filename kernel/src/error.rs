@@ -6,6 +6,9 @@
 
 use crate::cap::CapError;
 use crate::invocation::InvocationError;
+use crate::ipc::IpcError;
+use crate::reply::ReplyError;
+use crate::scheduler::SchedulerError;
 
 #[repr(u32)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -63,6 +66,37 @@ impl InvocationError {
     }
 }
 
+impl IpcError {
+    pub fn error_code(&self) -> KernelErrorCode {
+        match self {
+            Self::TooManyMessageWords { .. } => KernelErrorCode::TruncatedMessage,
+        }
+    }
+}
+
+impl ReplyError {
+    pub fn error_code(&self) -> KernelErrorCode {
+        match self {
+            Self::AlreadyPending { .. } | Self::NoPendingCaller => {
+                KernelErrorCode::IllegalOperation
+            }
+        }
+    }
+}
+
+impl SchedulerError {
+    pub fn error_code(&self) -> KernelErrorCode {
+        match self {
+            Self::NotEnoughCpus { .. } | Self::DuplicateCpu { .. } | Self::UnknownCpu { .. } => {
+                KernelErrorCode::InvalidArgument
+            }
+            Self::ThreadNotRunnable { .. }
+            | Self::ThreadAlreadyScheduled { .. }
+            | Self::CpuAlreadyHasCurrent { .. } => KernelErrorCode::IllegalOperation,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -71,6 +105,8 @@ mod tests {
         UntypedCap,
     };
     use crate::invocation::{Invocation, invoke};
+    use crate::ipc::{IpcError, IpcPayload, MAX_IPC_WORDS};
+    use crate::reply::{Reply, ReplyCaller, ReplyError};
 
     fn endpoint(rights: Rights) -> Capability {
         Capability::Endpoint(EndpointCap { badge: 0, rights })
@@ -234,6 +270,55 @@ mod tests {
             .unwrap_err()
             .error_code(),
             KernelErrorCode::IllegalOperation
+        );
+    }
+
+    #[test]
+    fn ipc_payload_failure_collapses_to_truncated_message_code() {
+        let error = IpcPayload::new(&[1, 2, 3, 4, 5]).unwrap_err();
+
+        assert_eq!(
+            error,
+            IpcError::TooManyMessageWords {
+                requested: MAX_IPC_WORDS + 1,
+                limit: MAX_IPC_WORDS,
+            }
+        );
+        assert_eq!(error.error_code(), KernelErrorCode::TruncatedMessage);
+    }
+
+    #[test]
+    fn reply_state_errors_collapse_to_illegal_operation_code() {
+        let mut reply = Reply::new();
+
+        assert_eq!(reply.reply().unwrap_err(), ReplyError::NoPendingCaller,);
+        assert_eq!(
+            ReplyError::NoPendingCaller.error_code(),
+            KernelErrorCode::IllegalOperation,
+        );
+
+        reply
+            .record_caller(ReplyCaller::new(
+                ObjectId::new(1),
+                ObjectId::new(2),
+                crate::tcb::ThreadId::new(3),
+                crate::tcb::CpuId::new(0),
+                false,
+            ))
+            .unwrap();
+
+        assert_eq!(
+            reply
+                .record_caller(ReplyCaller::new(
+                    ObjectId::new(4),
+                    ObjectId::new(2),
+                    crate::tcb::ThreadId::new(5),
+                    crate::tcb::CpuId::new(1),
+                    true,
+                ))
+                .unwrap_err()
+                .error_code(),
+            KernelErrorCode::IllegalOperation,
         );
     }
 }

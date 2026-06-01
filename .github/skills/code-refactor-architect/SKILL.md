@@ -30,23 +30,25 @@ argument-hint: "target files, subsystem, refactor goal, constraints, or validati
 
 - 用户目标和不希望改变的行为。
 - 目标文件、相关模块、直接依赖和被依赖方。
+- 本地 reference 证据，尤其是 `third_party/sel4`、`third_party/asterinas`、`third_party/rust-sel4` 中与目标子系统对应的实现；涉及 Linux 语义时也应说明 Linux 参考来源。
 - 当前测试、验证命令和失败信息。
 - 现有设计文档或 instruction 对该区域的约束。
 - 是否允许同步修改测试、文档或 public API。
 
-如果这些信息不足，先探索代码，再给出受限假设；不要凭感觉大拆。
+如果这些信息不足，先探索代码和本地 reference，再给出受限假设；不要凭感觉大拆。若发现信息缺口来自 instruction/skill 没有要求读取关键 reference，应把这个教训写回对应 instruction 或 skill。
 
 ## 工作流程
 
 1. 读取相关 instruction、目标文件、相邻模块、测试和调用方。
-2. 用一两句话说清当前主流程：输入从哪来，输出到哪去，谁拥有状态，失败由谁处理。
-3. 判断现有模式是稳定约束还是历史偶然：看它是否被多个模块一致采用、是否有测试依赖、是否代表外部契约。
-4. 找出真正的变化轴：经常变化的策略、稳定的不变量、外部副作用、传输模型、领域模型和持久化模型。
-5. 单独分析错误边界：哪些错误来自外部输入，哪个层建立不变量，哪些内部函数之后可以信任不变量，失败是否会留下副作用。
-6. 至少比较两个方案：保守局部演进、边界修正、抽象提取、成熟库/现有模块复用，或暂不改动。
-7. 推荐最小可验证方案，说明为什么它改善边界而不是只增加层数。
-8. 形成 proposal packet，交给 `architecture-proposal-review` 审查。
-9. review 通过后，把实施步骤、验证命令和 implementation diff review focus 交给后续实现流程。
+2. 涉及 kernel、OSTD、scheduler、IPC、memory、driver 或 boot 时，先读取本地 reference 中对应实现，并在提案中列出读到的具体文件或符号。
+3. 用一两句话说清当前主流程：输入从哪来，输出到哪去，谁拥有状态，失败由谁处理。
+4. 判断现有模式是稳定约束还是历史偶然：看它是否被多个模块一致采用、是否有测试依赖、是否代表外部契约。
+5. 找出真正的变化轴：经常变化的策略、稳定的不变量、外部副作用、传输模型、领域模型和持久化模型。
+6. 单独分析错误边界：哪些错误来自外部输入，哪个层建立不变量，哪些内部函数之后可以信任不变量，失败是否会留下副作用。
+7. 至少比较两个方案：保守局部演进、边界修正、抽象提取、成熟库/现有模块复用，或暂不改动。
+8. 推荐最小可验证方案，说明为什么它改善边界而不是只增加层数。
+9. 形成 proposal packet，交给 `architecture-proposal-review` 审查。
+10. review 通过后，把实施步骤、验证命令和 implementation diff review focus 交给后续实现流程。
 
 ## 重构原则
 
@@ -78,6 +80,7 @@ argument-hint: "target files, subsystem, refactor goal, constraints, or validati
 
 - 背景与约束。
 - 当前结构中应继承、演进或停止模仿的部分。
+- 已读取的本地 reference 文件/符号，以及从 seL4、Asterinas、rust-sel4、Linux 或其他成熟实现中继承、调整或拒绝的设计点。
 - 候选方案与取舍。
 - 推荐方案和依赖方向。
 - 状态所有权、数据流、副作用边界、校验/归一化所在层。

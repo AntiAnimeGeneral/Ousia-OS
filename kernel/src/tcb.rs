@@ -58,6 +58,10 @@ pub struct Tcb {
 }
 
 impl ThreadState {
+    pub const fn is_runnable(self) -> bool {
+        matches!(self, Self::Running | Self::Restart)
+    }
+
     pub const fn is_blocked(self) -> bool {
         matches!(
             self,
@@ -169,6 +173,15 @@ mod tests {
         assert!(!ThreadState::Running.is_blocked());
         assert!(!ThreadState::Restart.is_blocked());
         assert!(!ThreadState::IdleThreadState.is_blocked());
+    }
+
+    #[test]
+    fn runnable_states_match_sel4_schedulable_states() {
+        assert!(ThreadState::Running.is_runnable());
+        assert!(ThreadState::Restart.is_runnable());
+        assert!(!ThreadState::Inactive.is_runnable());
+        assert!(!ThreadState::BlockedOnReply.is_runnable());
+        assert!(!ThreadState::IdleThreadState.is_runnable());
     }
 
     #[test]

@@ -8,4 +8,5 @@ pub mod invocation;
 pub mod ipc;
 pub mod notification;
 pub mod reply;
+pub mod scheduler;
 pub mod tcb;
