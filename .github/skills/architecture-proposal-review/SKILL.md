@@ -64,6 +64,8 @@ argument-hint: "proposal summary, source architect skill, affected boundaries, a
 - 推荐方案是否解释了为什么不选其他方案。
 - 状态所有权、依赖方向、数据流和副作用边界是否闭合。
 - 校验、归一化、默认值、权限检查和错误映射是否有单一权威位置。
+- 错误模型是否区分外部可恢复错误、内部不变量破坏和诊断/测试上下文；是否证明可恢复错误返回前不会产生部分副作用。
+- 错误类型或错误库选择是否服务调用方行为、边界映射、`no_std`/ABI 约束或测试诊断，而不是只为了风格或样板。
 - 是否为了“工程化”引入薄抽象、透传 helper、空泛框架或不可实施的层次。
 - 是否误读 seL4、rust-sel4、Microkit、sDDF、Asterinas、CortenMM 或硬件/论文资料。
 - 是否过早偏离 seL4 baseline，或过早发明 Ousia-specific 语义。

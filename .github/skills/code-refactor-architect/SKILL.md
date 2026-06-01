@@ -42,10 +42,11 @@ argument-hint: "target files, subsystem, refactor goal, constraints, or validati
 2. 用一两句话说清当前主流程：输入从哪来，输出到哪去，谁拥有状态，失败由谁处理。
 3. 判断现有模式是稳定约束还是历史偶然：看它是否被多个模块一致采用、是否有测试依赖、是否代表外部契约。
 4. 找出真正的变化轴：经常变化的策略、稳定的不变量、外部副作用、传输模型、领域模型和持久化模型。
-5. 至少比较两个方案：保守局部演进、边界修正、抽象提取、成熟库/现有模块复用，或暂不改动。
-6. 推荐最小可验证方案，说明为什么它改善边界而不是只增加层数。
-7. 形成 proposal packet，交给 `architecture-proposal-review` 审查。
-8. review 通过后，把实施步骤、验证命令和 implementation diff review focus 交给后续实现流程。
+5. 单独分析错误边界：哪些错误来自外部输入，哪个层建立不变量，哪些内部函数之后可以信任不变量，失败是否会留下副作用。
+6. 至少比较两个方案：保守局部演进、边界修正、抽象提取、成熟库/现有模块复用，或暂不改动。
+7. 推荐最小可验证方案，说明为什么它改善边界而不是只增加层数。
+8. 形成 proposal packet，交给 `architecture-proposal-review` 审查。
+9. review 通过后，把实施步骤、验证命令和 implementation diff review focus 交给后续实现流程。
 
 ## 重构原则
 
@@ -54,11 +55,14 @@ argument-hint: "target files, subsystem, refactor goal, constraints, or validati
 - 状态所有权唯一且可命名。
 - 高层策略不反向依赖底层细节。
 - 校验、归一化、默认值和错误映射有单一权威位置。
+- 所有可能因外部输入失败的检查先完成，再做状态修改、对象创建、slot/graph mutation、队列写入或外部副作用。
+- 内部不变量由边界建立后，内部实现应信任它们；不要把内部 graph/object 损坏伪装成 public recoverable error。
+- 错误库选择必须服务边界语义、`no_std` 约束、ABI 稳定性或调用方行为，不要只为了省样板引入框架。
 - 副作用集中在边界层，核心决策可测试。
 - 类型、enum 和显式 match 表达状态机，不用 wildcard fallback 吞掉未来状态。
 - 公共抽象保存真实语义，而不是只包装调用。
 - 模块名和类型名暴露职责，避免模糊的 manager、handler、data、info。
-- 测试覆盖新语义、失败路径和边界状态，不只覆盖 happy path。
+- 测试覆盖新语义、失败路径、失败后的状态不变性和边界状态，不只覆盖 happy path。
 
 避免这些问题：
 
@@ -77,6 +81,7 @@ argument-hint: "target files, subsystem, refactor goal, constraints, or validati
 - 候选方案与取舍。
 - 推荐方案和依赖方向。
 - 状态所有权、数据流、副作用边界、校验/归一化所在层。
+- 错误所有权、错误映射层、内部 invariant 表达方式、失败前副作用控制，以及是否需要错误库。
 - 实施步骤和每步验证方式。
 - 兼容性、迁移成本、回滚方式和剩余风险。
 - 需要交给 review 阶段重点检查的问题。
@@ -98,6 +103,6 @@ proposal review 和 implementation diff review 都必须遵守 `.github/instruct
 - 计划改动文件、模块或 API。
 - 状态所有权、依赖方向、数据流和副作用边界。
 - 计划运行的验证。
-- 特别关注的边界：状态所有权、薄抽象、错误映射、测试缺口、seL4 baseline、kernel/OSTD/tooling 污染。
+- 特别关注的边界：状态所有权、薄抽象、错误映射、失败无副作用、内部 invariant、测试缺口、seL4 baseline、kernel/OSTD/tooling 污染。
 
 交给 implementation diff review 时至少提供真实改动文件、实现摘要、关键 diff、已运行检查和剩余风险。

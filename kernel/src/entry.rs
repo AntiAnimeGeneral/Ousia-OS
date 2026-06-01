@@ -32,10 +32,13 @@ fn boot_message() -> &'static str {
 
 fn run_alloc_smoke() {
     let mut cspace = CapabilitySpace::new();
-    let root = cspace.create_object(Capability::Endpoint(EndpointCap {
+    let root = match cspace.insert_initial_capability(Capability::Endpoint(EndpointCap {
         badge: 1,
         rights: Rights::READ | Rights::WRITE | Rights::GRANT,
-    }));
+    })) {
+        Ok(root) => root,
+        Err(_) => panic!("initial capability insertion failed during alloc smoke"),
+    };
     let child = match cspace.derive(root, Rights::READ) {
         Ok(child) => child,
         Err(_) => panic!("capability derivation failed during alloc smoke"),

@@ -175,6 +175,7 @@ pub fn invoke(
         },
         Invocation::UntypedRetype { target } => match view.capability {
             Capability::Untyped(cap) => {
+                target.validate_rights()?;
                 let requested_size = target.minimum_size_bits();
                 if requested_size > cap.size_bits {
                     return Err(InvocationError::InvalidRetypeSize {
@@ -283,18 +284,12 @@ mod tests {
         Capability::Notification(NotificationCap { badge, rights })
     }
 
-    fn reply(caller: ObjectId, target: ObjectId, can_grant: bool) -> Capability {
-        Capability::Reply(ReplyCap {
-            caller,
-            target,
-            can_grant,
-        })
-    }
-
     #[test]
     fn endpoint_send_requires_write_rights_and_preserves_badge() {
         let mut cspace = CapabilitySpace::new();
-        let cap = cspace.create_object(endpoint(Rights::READ | Rights::WRITE, 0x2a));
+        let cap = cspace
+            .insert_initial_capability(endpoint(Rights::READ | Rights::WRITE, 0x2a))
+            .unwrap();
         let endpoint = cspace.object_of(cap).unwrap();
 
         assert_eq!(
@@ -322,7 +317,9 @@ mod tests {
     #[test]
     fn endpoint_recv_requires_read_rights() {
         let mut cspace = CapabilitySpace::new();
-        let cap = cspace.create_object(endpoint(Rights::WRITE, 0));
+        let cap = cspace
+            .insert_initial_capability(endpoint(Rights::WRITE, 0))
+            .unwrap();
 
         assert_eq!(
             invoke(&cspace, cap, Invocation::EndpointRecv { blocking: true }),
@@ -336,10 +333,12 @@ mod tests {
     #[test]
     fn endpoint_invocation_exports_grant_flags() {
         let mut cspace = CapabilitySpace::new();
-        let cap = cspace.create_object(endpoint(
-            Rights::READ | Rights::WRITE | Rights::GRANT | Rights::GRANT_REPLY,
-            0x2a,
-        ));
+        let cap = cspace
+            .insert_initial_capability(endpoint(
+                Rights::READ | Rights::WRITE | Rights::GRANT | Rights::GRANT_REPLY,
+                0x2a,
+            ))
+            .unwrap();
         let endpoint = cspace.object_of(cap).unwrap();
 
         assert_eq!(
@@ -376,7 +375,9 @@ mod tests {
     #[test]
     fn wrong_capability_is_reported_explicitly() {
         let mut cspace = CapabilitySpace::new();
-        let cap = cspace.create_object(frame(Rights::READ | Rights::WRITE));
+        let cap = cspace
+            .insert_initial_capability(frame(Rights::READ | Rights::WRITE))
+            .unwrap();
 
         assert_eq!(
             invoke(
@@ -398,8 +399,12 @@ mod tests {
     #[test]
     fn frame_map_masks_requested_vm_rights_by_cap_rights() {
         let mut cspace = CapabilitySpace::new();
-        let frame = cspace.create_object(frame(Rights::READ));
-        let address_space_cap = cspace.create_object(tcb(Rights::MANAGE));
+        let frame = cspace
+            .insert_initial_capability(frame(Rights::READ))
+            .unwrap();
+        let address_space_cap = cspace
+            .insert_initial_capability(tcb(Rights::MANAGE))
+            .unwrap();
         let address_space = cspace.object_of(address_space_cap).unwrap();
         let frame_object = cspace.object_of(frame).unwrap();
 
@@ -423,7 +428,7 @@ mod tests {
     #[test]
     fn untyped_retype_cannot_exceed_source_size() {
         let mut cspace = CapabilitySpace::new();
-        let cap = cspace.create_object(untyped(12));
+        let cap = cspace.insert_initial_capability(untyped(12)).unwrap();
 
         assert_eq!(
             invoke(
@@ -443,7 +448,7 @@ mod tests {
     #[test]
     fn untyped_retype_authorizes_target_object() {
         let mut cspace = CapabilitySpace::new();
-        let cap = cspace.create_object(untyped(12));
+        let cap = cspace.insert_initial_capability(untyped(12)).unwrap();
         let untyped = cspace.object_of(cap).unwrap();
 
         assert_eq!(
@@ -466,9 +471,32 @@ mod tests {
     }
 
     #[test]
+    fn untyped_retype_rejects_target_rights_outside_object_policy() {
+        let mut cspace = CapabilitySpace::new();
+        let cap = cspace.insert_initial_capability(untyped(12)).unwrap();
+
+        assert_eq!(
+            invoke(
+                &cspace,
+                cap,
+                Invocation::UntypedRetype {
+                    target: RetypeTarget::Frame {
+                        rights: Rights::READ | Rights::GRANT_REPLY,
+                    },
+                },
+            ),
+            Err(InvocationError::Cap(CapError::InvalidRights {
+                object: crate::cap::ObjectKind::Frame,
+                requested_rights: Rights::READ | Rights::GRANT_REPLY,
+                allowed_rights: Rights::READ | Rights::WRITE | Rights::EXECUTE,
+            }))
+        );
+    }
+
+    #[test]
     fn untyped_retype_outcome_feeds_cspace_retype() {
         let mut cspace = CapabilitySpace::new();
-        let cap = cspace.create_object(untyped(12));
+        let cap = cspace.insert_initial_capability(untyped(12)).unwrap();
 
         let outcome = invoke(
             &cspace,
@@ -495,7 +523,7 @@ mod tests {
     #[test]
     fn untyped_retype_checks_target_minimum_size() {
         let mut cspace = CapabilitySpace::new();
-        let cap = cspace.create_object(untyped(11));
+        let cap = cspace.insert_initial_capability(untyped(11)).unwrap();
 
         assert_eq!(
             invoke(
@@ -517,13 +545,13 @@ mod tests {
     #[test]
     fn tcb_resume_requires_manage_rights() {
         let mut cspace = CapabilitySpace::new();
-        let cap = cspace.create_object(tcb(Rights::READ));
+        let cap = cspace.insert_initial_capability(tcb(Rights::NONE)).unwrap();
 
         assert_eq!(
             invoke(&cspace, cap, Invocation::TcbResume),
             Err(InvocationError::MissingRights {
                 required: Rights::MANAGE,
-                actual: Rights::READ,
+                actual: Rights::NONE,
             })
         );
     }
@@ -531,7 +559,9 @@ mod tests {
     #[test]
     fn notification_signal_requires_write_and_preserves_badge() {
         let mut cspace = CapabilitySpace::new();
-        let cap = cspace.create_object(notification(Rights::WRITE, 0x55));
+        let cap = cspace
+            .insert_initial_capability(notification(Rights::WRITE, 0x55))
+            .unwrap();
         let object = cspace.object_of(cap).unwrap();
 
         assert_eq!(
@@ -546,7 +576,9 @@ mod tests {
     #[test]
     fn notification_wait_requires_read_rights() {
         let mut cspace = CapabilitySpace::new();
-        let cap = cspace.create_object(notification(Rights::WRITE, 0));
+        let cap = cspace
+            .insert_initial_capability(notification(Rights::WRITE, 0))
+            .unwrap();
 
         assert_eq!(
             invoke(
@@ -566,7 +598,13 @@ mod tests {
         let mut cspace = CapabilitySpace::new();
         let caller = ObjectId::new(100);
         let target = ObjectId::new(200);
-        let cap = cspace.create_object(reply(caller, target, true));
+        let cap = cspace
+            .insert_reply_capability_for_test(ReplyCap {
+                caller,
+                target,
+                can_grant: true,
+            })
+            .unwrap();
 
         assert_eq!(
             invoke(
@@ -588,7 +626,13 @@ mod tests {
         let mut cspace = CapabilitySpace::new();
         let caller = ObjectId::new(100);
         let target = ObjectId::new(200);
-        let cap = cspace.create_object(reply(caller, target, true));
+        let cap = cspace
+            .insert_reply_capability_for_test(ReplyCap {
+                caller,
+                target,
+                can_grant: true,
+            })
+            .unwrap();
         let object = cspace.object_of(cap).unwrap();
 
         assert_eq!(

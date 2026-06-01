@@ -75,8 +75,13 @@ argument-hint: "changed files, implementation summary, validation results, or re
 - 行为 bug、权限扩大、状态机漏状态、对象生命周期错误、stale descriptor / generation / revoke / move 语义错误。
 - seL4 baseline 语义偏移，尤其是把 copy/mint/move、reply cap、badge、grant/grant-reply、blocking/nonblocking、bound notification 混为一谈。
 - 状态所有权放错层，例如 invocation 持有调度事实、Notification 读取 TCB 状态、kernel 写架构 cfg、doc checker 写项目路径。
-- 错误处理不保留上下文，或用默认值、静默容错掩盖边界问题。
-- 测试只覆盖主路径，没有覆盖拒绝扩权、错误 capability、stale descriptor、空队列、重复绑定、跨 CPU 或并发相关风险。
+- 错误处理不保留必要上下文，或用默认值、静默容错掩盖边界问题。
+- 同一个外部错误条件在多层重复检查，说明校验、权限或错误映射没有单一权威位置。
+- 内部 object graph、slot linkage、队列、TCB/reply/notification 状态不变量被包装成 public recoverable error，导致内部实现错误像用户错误一样扩散。
+- 可恢复错误路径在返回前已经产生部分副作用，例如分配对象、修改 slot/derivation graph、写队列、提交调度状态、发送消息或更新持久状态。
+- `expect`、assertion 或 panic 可被外部输入触发，或者反过来，真正内部不变量被写成普通 `Result` 跨越多个内部层。
+- 错误类型暴露过细且没有消费者，例如 expected/actual、slot/object、rights 字段既不影响调用方行为，也不被测试、trace、诊断或边界映射使用。
+- 测试只覆盖主路径，没有覆盖拒绝扩权、错误 capability、stale descriptor、空队列、重复绑定、失败无副作用、跨 CPU 或并发相关风险。
 - 文档把实现过程写成稳定规范，或把稳定结论留在 notes 而没有回写 owning 文档。
 - 新 abstraction 只是薄包装、透传 helper 或为了风格拆分，不能稳定语义边界。
 
