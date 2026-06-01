@@ -70,7 +70,14 @@ pub enum IpcAction {
         thread: ThreadId,
         cpu: CpuId,
     },
-    Delivered {
+    DeliveredToReceiver {
+        receiver: ThreadId,
+        receiver_cpu: CpuId,
+        receiver_can_grant: bool,
+        message: IpcMessage,
+        reply_setup: Option<ReplySetup>,
+    },
+    SenderReleased {
         receiver: ThreadId,
         receiver_cpu: CpuId,
         receiver_can_grant: bool,
@@ -234,7 +241,7 @@ impl Endpoint {
                 if self.receivers.is_empty() {
                     self.state = EndpointState::Idle;
                 }
-                IpcAction::Delivered {
+                IpcAction::DeliveredToReceiver {
                     receiver: receiver.thread,
                     receiver_cpu: receiver.cpu,
                     receiver_can_grant: receiver.can_grant,
@@ -280,7 +287,7 @@ impl Endpoint {
                 if self.senders.is_empty() {
                     self.state = EndpointState::Idle;
                 }
-                IpcAction::Delivered {
+                IpcAction::SenderReleased {
                     receiver,
                     receiver_cpu,
                     receiver_can_grant: options.can_grant,
@@ -301,6 +308,14 @@ impl Endpoint {
 
     pub fn queued_receivers(&self) -> usize {
         self.receivers.len()
+    }
+
+    pub fn next_receiver(&self) -> Option<EndpointWaiter> {
+        self.receivers.front().copied()
+    }
+
+    pub fn next_sender(&self) -> Option<IpcMessage> {
+        self.senders.front().copied()
     }
 }
 
@@ -423,7 +438,7 @@ mod tests {
 
         assert_eq!(
             endpoint.recv(thread(3), cpu(2), blocking_recv()),
-            IpcAction::Delivered {
+            IpcAction::SenderReleased {
                 receiver: thread(3),
                 receiver_cpu: cpu(2),
                 receiver_can_grant: true,
@@ -480,7 +495,7 @@ mod tests {
                 blocking_call(),
                 IpcPayload::new(&[10]).unwrap(),
             ),
-            IpcAction::Delivered {
+            IpcAction::DeliveredToReceiver {
                 receiver: thread(3),
                 receiver_cpu: cpu(2),
                 receiver_can_grant: true,
@@ -550,7 +565,7 @@ mod tests {
                 blocking_send(),
                 IpcPayload::new(&[10]).unwrap(),
             ),
-            IpcAction::Delivered {
+            IpcAction::DeliveredToReceiver {
                 receiver: thread(3),
                 receiver_cpu: cpu(2),
                 receiver_can_grant: true,

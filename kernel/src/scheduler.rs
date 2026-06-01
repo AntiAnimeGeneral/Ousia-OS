@@ -121,14 +121,12 @@ impl PerCpuRunQueue {
         self.cpu
     }
 
-    fn enqueue<T: ThreadScheduleView>(
-        &mut self,
-        thread_view: &T,
-    ) -> Result<SchedulerAction, SchedulerError> {
-        let thread = thread_view.id();
-        let actual_cpu = thread_view.affinity();
-        let state = thread_view.state();
-
+    fn validate_enqueue_fields(
+        &self,
+        thread: ThreadId,
+        actual_cpu: CpuId,
+        state: ThreadState,
+    ) -> Result<(), SchedulerError> {
         if actual_cpu != self.cpu {
             return Err(SchedulerError::ThreadAffinityMismatch {
                 thread,
@@ -145,11 +143,32 @@ impl PerCpuRunQueue {
             return Err(SchedulerError::ThreadAlreadyScheduled { thread, placement });
         }
 
+        Ok(())
+    }
+
+    fn enqueue<T: ThreadScheduleView>(
+        &mut self,
+        thread_view: &T,
+    ) -> Result<SchedulerAction, SchedulerError> {
+        let thread = thread_view.id();
+        let actual_cpu = thread_view.affinity();
+        let state = thread_view.state();
+
+        self.validate_enqueue_fields(thread, actual_cpu, state)?;
+
         self.ready.push_back(thread);
         Ok(SchedulerAction::Enqueued {
             thread,
             cpu: self.cpu,
         })
+    }
+
+    fn enqueue_validated(&mut self, thread: ThreadId) -> SchedulerAction {
+        self.ready.push_back(thread);
+        SchedulerAction::Enqueued {
+            thread,
+            cpu: self.cpu,
+        }
     }
 
     pub fn schedule_next(&mut self) -> Result<SchedulerAction, SchedulerError> {
@@ -294,6 +313,26 @@ impl Scheduler {
 
         self.run_queue_mut(thread_view.affinity())?
             .enqueue(thread_view)
+    }
+
+    pub(crate) fn validate_enqueue_fields(
+        &self,
+        thread: ThreadId,
+        cpu: CpuId,
+        state: ThreadState,
+    ) -> Result<(), SchedulerError> {
+        if let Some(placement) = self.placement(thread) {
+            return Err(SchedulerError::ThreadAlreadyScheduled { thread, placement });
+        }
+
+        self.run_queue(cpu)?
+            .validate_enqueue_fields(thread, cpu, state)
+    }
+
+    pub(crate) fn enqueue_validated(&mut self, thread: ThreadId, cpu: CpuId) -> SchedulerAction {
+        self.run_queue_mut(cpu)
+            .expect("validated scheduler enqueue must target a known CPU")
+            .enqueue_validated(thread)
     }
 
     pub fn placement(&self, thread: ThreadId) -> Option<ThreadPlacement> {

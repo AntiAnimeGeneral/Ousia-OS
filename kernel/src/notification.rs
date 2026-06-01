@@ -204,6 +204,10 @@ impl Notification {
         self.waiters.len()
     }
 
+    pub fn next_waiter(&self) -> Option<NotificationWaiter> {
+        self.waiters.front().copied()
+    }
+
     pub const fn bound_tcb(&self) -> Option<BoundTcb> {
         self.bound_tcb
     }

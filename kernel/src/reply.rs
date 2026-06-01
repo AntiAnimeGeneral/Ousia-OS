@@ -129,6 +129,10 @@ impl Reply {
     pub const fn state(&self) -> ReplyState {
         self.state
     }
+
+    pub const fn is_pending(&self) -> bool {
+        matches!(self.state, ReplyState::Pending { .. })
+    }
 }
 
 #[cfg(test)]
