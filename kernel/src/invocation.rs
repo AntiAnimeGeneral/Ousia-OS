@@ -466,6 +466,33 @@ mod tests {
     }
 
     #[test]
+    fn untyped_retype_outcome_feeds_cspace_retype() {
+        let mut cspace = CapabilitySpace::new();
+        let cap = cspace.create_object(untyped(12));
+
+        let outcome = invoke(
+            &cspace,
+            cap,
+            Invocation::UntypedRetype {
+                target: RetypeTarget::Frame {
+                    rights: Rights::READ | Rights::WRITE,
+                },
+            },
+        )
+        .unwrap();
+
+        let InvocationOutcome::UntypedRetypeAuthorized { target, .. } = outcome else {
+            panic!("expected untyped retype authorization");
+        };
+        let frame_cap = cspace.retype_untyped(cap, target).unwrap();
+
+        assert_eq!(
+            cspace.lookup(frame_cap).unwrap().capability,
+            frame(Rights::READ | Rights::WRITE)
+        );
+    }
+
+    #[test]
     fn untyped_retype_checks_target_minimum_size() {
         let mut cspace = CapabilitySpace::new();
         let cap = cspace.create_object(untyped(11));

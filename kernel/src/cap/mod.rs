@@ -203,6 +203,23 @@ impl RetypeTarget {
             Self::Notification => PLACEHOLDER_NOTIFICATION_SIZE_BITS,
         }
     }
+
+    fn into_capability(self) -> Capability {
+        match self {
+            Self::Endpoint => Capability::Endpoint(EndpointCap {
+                badge: 0,
+                rights: Rights::READ | Rights::WRITE | Rights::GRANT | Rights::GRANT_REPLY,
+            }),
+            Self::Frame { rights } => Capability::Frame(FrameCap { rights }),
+            Self::CNode { rights } => Capability::CNode(CNodeCap { rights }),
+            Self::Untyped { size_bits } => Capability::Untyped(UntypedCap { size_bits }),
+            Self::Tcb { rights } => Capability::Tcb(TcbCap { rights }),
+            Self::Notification => Capability::Notification(NotificationCap {
+                badge: 0,
+                rights: Rights::READ | Rights::WRITE,
+            }),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -350,36 +367,7 @@ impl CapabilitySpace {
             });
         }
 
-        let parent_slot_id = source.slot;
-        let capability = capability_for_retype_target(target);
-        let kind = capability_kind(&capability);
-        let (object, object_generation) = self.alloc_object(kind);
-        let slot = self.alloc_slot_id();
-        let slot_generation = self.slot_generation_for_insert(slot);
-        self.detach_reused_slot(slot);
-        self.slots.insert(
-            slot,
-            CapabilitySlot {
-                object,
-                capability: capability.clone(),
-                rights: capability_rights(&capability),
-                slot_generation,
-                object_generation_snapshot: object_generation,
-                parent: Some(parent_slot_id),
-                children: BTreeSet::new(),
-                alive: true,
-            },
-        );
-        self.slots
-            .get_mut(&parent_slot_id)
-            .ok_or(CapError::SlotNotFound(parent_slot_id))?
-            .children
-            .insert(slot);
-
-        Ok(CapabilityDescriptor {
-            slot,
-            slot_generation,
-        })
+        self.insert_retyped_capability(source.slot, target.into_capability())
     }
 
     pub fn move_capability(
@@ -561,6 +549,41 @@ impl CapabilitySpace {
         })
     }
 
+    fn insert_retyped_capability(
+        &mut self,
+        parent: SlotId,
+        capability: Capability,
+    ) -> Result<CapabilityDescriptor, CapError> {
+        let kind = capability_kind(&capability);
+        let (object, object_generation) = self.alloc_object(kind);
+        let slot = self.alloc_slot_id();
+        let slot_generation = self.slot_generation_for_insert(slot);
+        self.detach_reused_slot(slot);
+        self.slots.insert(
+            slot,
+            CapabilitySlot {
+                object,
+                rights: capability_rights(&capability),
+                capability,
+                slot_generation,
+                object_generation_snapshot: object_generation,
+                parent: Some(parent),
+                children: BTreeSet::new(),
+                alive: true,
+            },
+        );
+        self.slots
+            .get_mut(&parent)
+            .ok_or(CapError::SlotNotFound(parent))?
+            .children
+            .insert(slot);
+
+        Ok(CapabilityDescriptor {
+            slot,
+            slot_generation,
+        })
+    }
+
     fn alloc_object(&mut self, kind: ObjectKind) -> (ObjectId, u64) {
         let object = ObjectId(self.next_object);
         self.next_object += 1;
@@ -733,23 +756,6 @@ fn capability_rights(capability: &Capability) -> Rights {
         Capability::Tcb(cap) => cap.rights,
         Capability::Notification(cap) => cap.rights,
         Capability::Reply(_) => Rights::NONE,
-    }
-}
-
-fn capability_for_retype_target(target: RetypeTarget) -> Capability {
-    match target {
-        RetypeTarget::Endpoint => Capability::Endpoint(EndpointCap {
-            badge: 0,
-            rights: Rights::READ | Rights::WRITE | Rights::GRANT | Rights::GRANT_REPLY,
-        }),
-        RetypeTarget::Frame { rights } => Capability::Frame(FrameCap { rights }),
-        RetypeTarget::CNode { rights } => Capability::CNode(CNodeCap { rights }),
-        RetypeTarget::Untyped { size_bits } => Capability::Untyped(UntypedCap { size_bits }),
-        RetypeTarget::Tcb { rights } => Capability::Tcb(TcbCap { rights }),
-        RetypeTarget::Notification => Capability::Notification(NotificationCap {
-            badge: 0,
-            rights: Rights::READ | Rights::WRITE,
-        }),
     }
 }
 
