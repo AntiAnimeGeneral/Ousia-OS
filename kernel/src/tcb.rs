@@ -34,6 +34,7 @@ pub enum ThreadState {
     BlockedOnReceive {
         endpoint: ObjectId,
         can_grant: bool,
+        reply: Option<ObjectId>,
     },
     BlockedOnSend {
         endpoint: ObjectId,
@@ -150,6 +151,7 @@ mod tests {
             ThreadState::BlockedOnReceive {
                 endpoint: object(1),
                 can_grant: true,
+                reply: None,
             }
             .is_blocked()
         );
@@ -191,6 +193,7 @@ mod tests {
             ThreadState::BlockedOnReceive {
                 endpoint: object(1),
                 can_grant: true,
+                reply: None,
             }
             .is_stopped()
         );
@@ -235,6 +238,7 @@ mod tests {
         tcb.set_state(ThreadState::BlockedOnReceive {
             endpoint: object(20),
             can_grant: false,
+            reply: None,
         });
 
         assert!(tcb.waits_on_bound_notification_receive(object(10)));

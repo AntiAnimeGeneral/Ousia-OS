@@ -9,6 +9,10 @@ use crate::{
     tcb::{CpuId, Tcb, ThreadId, ThreadState},
 };
 
+fn reply_setup_with_receiver_grant(setup: ReplySetup, can_grant: bool) -> ReplySetup {
+    ReplySetup { can_grant, ..setup }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ThreadAction {
     NoThread,
@@ -75,6 +79,7 @@ pub enum ThreadActionError {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum WakeExpectation {
     State(ThreadState),
+    Receive { endpoint: ObjectId, can_grant: bool },
     BoundNotificationReceive { notification: ObjectId },
 }
 
@@ -115,6 +120,7 @@ fn apply_ipc_action(
     threads: &mut ThreadTable,
     scheduler: &mut Scheduler,
     endpoint: ObjectId,
+    receiver_reply: Option<ObjectId>,
     action: IpcAction,
 ) -> Result<ThreadAction, ThreadActionError> {
     match action {
@@ -150,6 +156,7 @@ fn apply_ipc_action(
             ThreadState::BlockedOnReceive {
                 endpoint,
                 can_grant,
+                reply: receiver_reply,
             },
         ),
         IpcAction::DeliveredToReceiver {
@@ -162,10 +169,10 @@ fn apply_ipc_action(
             scheduler,
             receiver,
             receiver_cpu,
-            WakeExpectation::State(ThreadState::BlockedOnReceive {
+            WakeExpectation::Receive {
                 endpoint,
                 can_grant: receiver_can_grant,
-            }),
+            },
         ),
         IpcAction::SenderReleased {
             message,
@@ -220,18 +227,21 @@ pub fn send_ipc(
             scheduler,
             receiver.thread(),
             receiver.cpu(),
-            WakeExpectation::State(ThreadState::BlockedOnReceive {
+            WakeExpectation::Receive {
                 endpoint: endpoint_object,
                 can_grant: receiver.can_grant(),
-            }),
+            },
         )?;
 
         if options.is_call {
-            let setup = ReplySetup {
-                caller: sender,
-                caller_cpu: sender_cpu,
-                can_grant: options.can_grant || options.can_grant_reply,
-            };
+            let setup = reply_setup_with_receiver_grant(
+                ReplySetup {
+                    caller: sender,
+                    caller_cpu: sender_cpu,
+                    can_grant: options.can_grant || options.can_grant_reply,
+                },
+                receiver.can_grant(),
+            );
             let reply = reply
                 .as_deref()
                 .ok_or(ThreadActionError::MissingReplyObject { setup })?;
@@ -253,6 +263,7 @@ pub fn send_ipc(
             message,
             reply_setup: Some(setup),
         } => {
+            let setup = reply_setup_with_receiver_grant(setup, receiver_can_grant);
             let caller_object = caller_object
                 .expect("prechecked immediate call delivery must provide caller TCB object");
             let reply = reply
@@ -275,11 +286,10 @@ pub fn send_ipc(
                 ThreadState::BlockedOnReply,
             );
             let wake = wake_thread_validated(threads, scheduler, receiver, receiver_cpu);
-            let _ = receiver_can_grant;
             let _ = block;
             Ok(wake)
         }
-        action => apply_ipc_action(threads, scheduler, endpoint_object, action),
+        action => apply_ipc_action(threads, scheduler, endpoint_object, None, action),
     }
 }
 
@@ -290,6 +300,7 @@ pub fn recv_ipc(
     reply: Option<&mut Reply>,
     endpoint_object: ObjectId,
     caller_object: Option<ObjectId>,
+    receiver_reply: Option<ObjectId>,
     receiver: ThreadId,
     receiver_cpu: CpuId,
     options: IpcReceiveOptions,
@@ -315,11 +326,14 @@ pub fn recv_ipc(
                 message.sender_cpu(),
                 expected,
             )?;
-            let setup = ReplySetup {
-                caller: message.sender(),
-                caller_cpu: message.sender_cpu(),
-                can_grant: message.can_grant() || message.can_grant_reply(),
-            };
+            let setup = reply_setup_with_receiver_grant(
+                ReplySetup {
+                    caller: message.sender(),
+                    caller_cpu: message.sender_cpu(),
+                    can_grant: message.can_grant() || message.can_grant_reply(),
+                },
+                options.can_grant,
+            );
             let reply = reply
                 .as_deref()
                 .ok_or(ThreadActionError::MissingReplyObject { setup })?;
@@ -347,6 +361,7 @@ pub fn recv_ipc(
             reply_setup: Some(setup),
             ..
         } => {
+            let setup = reply_setup_with_receiver_grant(setup, options.can_grant);
             let caller_object =
                 caller_object.expect("prechecked receive-side call must provide caller TCB object");
             let reply = reply
@@ -377,7 +392,7 @@ pub fn recv_ipc(
             message.sender(),
             message.sender_cpu(),
         )),
-        action => apply_ipc_action(threads, scheduler, endpoint_object, action),
+        action => apply_ipc_action(threads, scheduler, endpoint_object, receiver_reply, action),
     }
 }
 
@@ -719,6 +734,27 @@ fn validate_wake_expectation(
                 });
             }
         }
+        WakeExpectation::Receive {
+            endpoint,
+            can_grant,
+        } => match tcb.state() {
+            ThreadState::BlockedOnReceive {
+                endpoint: actual_endpoint,
+                can_grant: actual_can_grant,
+                ..
+            } if actual_endpoint == endpoint && actual_can_grant == can_grant => {}
+            actual => {
+                return Err(ThreadActionError::UnexpectedThreadState {
+                    thread,
+                    expected: ThreadState::BlockedOnReceive {
+                        endpoint,
+                        can_grant,
+                        reply: None,
+                    },
+                    actual,
+                });
+            }
+        },
         WakeExpectation::BoundNotificationReceive { notification } => {
             if !tcb.waits_on_bound_notification_receive(notification) {
                 return Err(ThreadActionError::NotWaitingOnBoundNotification {
@@ -929,6 +965,7 @@ mod tests {
                 expected: ThreadState::BlockedOnReceive {
                     endpoint: object(10),
                     can_grant: true,
+                    reply: None,
                 },
                 actual: ThreadState::BlockedOnNotification {
                     notification: object(20),
@@ -963,6 +1000,7 @@ mod tests {
             .set_state(ThreadState::BlockedOnReceive {
                 endpoint: object(10),
                 can_grant: true,
+                reply: None,
             });
         let mut scheduler = scheduler_with_current(Some(1), None);
 
@@ -1018,6 +1056,7 @@ mod tests {
             .set_state(ThreadState::BlockedOnReceive {
                 endpoint: object(10),
                 can_grant: true,
+                reply: None,
             });
         let mut scheduler = scheduler_with_current(Some(1), None);
 
@@ -1056,6 +1095,7 @@ mod tests {
             Some(ThreadState::BlockedOnReceive {
                 endpoint: object(10),
                 can_grant: true,
+                reply: None,
             })
         );
         assert_eq!(
@@ -1083,6 +1123,7 @@ mod tests {
             .set_state(ThreadState::BlockedOnReceive {
                 endpoint: object(10),
                 can_grant: true,
+                reply: None,
             });
         let mut scheduler = scheduler_with_current(Some(1), None);
 
@@ -1121,6 +1162,7 @@ mod tests {
             Some(ThreadState::BlockedOnReceive {
                 endpoint: object(10),
                 can_grant: true,
+                reply: None,
             })
         );
         assert!(!reply.is_pending());
@@ -1156,11 +1198,12 @@ mod tests {
             .set_state(ThreadState::BlockedOnReceive {
                 endpoint: object(10),
                 can_grant: true,
+                reply: None,
             });
         let mut scheduler = Scheduler::new(&[cpu(0), cpu(1)]).unwrap();
 
         assert_eq!(
-            apply_ipc_action(&mut threads, &mut scheduler, object(10), action),
+            apply_ipc_action(&mut threads, &mut scheduler, object(10), None, action),
             Ok(ThreadAction::Woken {
                 thread: thread(2),
                 cpu: cpu(1),
@@ -1183,6 +1226,7 @@ mod tests {
             .set_state(ThreadState::BlockedOnReceive {
                 endpoint: object(10),
                 can_grant: true,
+                reply: None,
             });
         let mut scheduler = Scheduler::new(&[cpu(0), cpu(1)]).unwrap();
         scheduler.enqueue(&runnable_tcb(2, cpu(1))).unwrap();
@@ -1209,7 +1253,7 @@ mod tests {
         );
 
         assert_eq!(
-            apply_ipc_action(&mut threads, &mut scheduler, object(10), action),
+            apply_ipc_action(&mut threads, &mut scheduler, object(10), None, action),
             Err(ThreadActionError::Scheduler(
                 SchedulerError::ThreadAlreadyScheduled {
                     thread: thread(2),
@@ -1222,6 +1266,7 @@ mod tests {
             Some(ThreadState::BlockedOnReceive {
                 endpoint: object(10),
                 can_grant: true,
+                reply: None,
             })
         );
         assert_eq!(scheduler.run_queue(cpu(1)).unwrap().ready_len(), 1);
@@ -1260,12 +1305,13 @@ mod tests {
         let mut scheduler = Scheduler::new(&[cpu(0), cpu(1)]).unwrap();
 
         assert_eq!(
-            apply_ipc_action(&mut threads, &mut scheduler, object(10), action),
+            apply_ipc_action(&mut threads, &mut scheduler, object(10), None, action),
             Err(ThreadActionError::UnexpectedThreadState {
                 thread: thread(2),
                 expected: ThreadState::BlockedOnReceive {
                     endpoint: object(10),
                     can_grant: true,
+                    reply: None,
                 },
                 actual: ThreadState::BlockedOnNotification {
                     notification: object(20),
@@ -1316,6 +1362,7 @@ mod tests {
                 &mut endpoint,
                 None,
                 object(10),
+                None,
                 None,
                 thread(2),
                 cpu(1),
@@ -1380,6 +1427,7 @@ mod tests {
                 Some(&mut reply),
                 object(10),
                 Some(object(100)),
+                Some(object(200)),
                 thread(2),
                 cpu(1),
                 IpcReceiveOptions {
@@ -1441,6 +1489,7 @@ mod tests {
                 &mut endpoint,
                 None,
                 object(10),
+                None,
                 None,
                 thread(2),
                 cpu(1),
@@ -1513,6 +1562,7 @@ mod tests {
                 Some(&mut reply),
                 object(10),
                 None,
+                Some(object(200)),
                 thread(2),
                 cpu(1),
                 IpcReceiveOptions {
@@ -1590,6 +1640,7 @@ mod tests {
                 Some(&mut reply),
                 object(10),
                 Some(object(100)),
+                Some(object(200)),
                 thread(2),
                 cpu(1),
                 IpcReceiveOptions {
@@ -1651,6 +1702,7 @@ mod tests {
                 Some(&mut reply),
                 object(10),
                 None,
+                Some(object(200)),
                 thread(2),
                 cpu(1),
                 IpcReceiveOptions {
@@ -1713,6 +1765,7 @@ mod tests {
                 None,
                 object(10),
                 None,
+                None,
                 thread(2),
                 cpu(1),
                 IpcReceiveOptions {
@@ -1763,6 +1816,7 @@ mod tests {
             .set_state(ThreadState::BlockedOnReceive {
                 endpoint: object(10),
                 can_grant: true,
+                reply: None,
             });
         let mut scheduler = scheduler_with_current(None, Some(2));
 
@@ -1773,6 +1827,7 @@ mod tests {
                 &mut endpoint,
                 None,
                 object(10),
+                None,
                 None,
                 thread(2),
                 cpu(1),
@@ -1793,6 +1848,7 @@ mod tests {
                 actual: ThreadState::BlockedOnReceive {
                     endpoint: object(10),
                     can_grant: true,
+                    reply: None,
                 },
             })
         );
@@ -1814,6 +1870,7 @@ mod tests {
                 None,
                 object(10),
                 None,
+                None,
                 thread(2),
                 cpu(1),
                 IpcReceiveOptions {
@@ -1833,6 +1890,7 @@ mod tests {
             Some(ThreadState::BlockedOnReceive {
                 endpoint: object(10),
                 can_grant: true,
+                reply: None,
             })
         );
         assert_eq!(scheduler.run_queue(cpu(1)).unwrap().current(), None);
@@ -1890,6 +1948,7 @@ mod tests {
             .set_state(ThreadState::BlockedOnReceive {
                 endpoint: object(10),
                 can_grant: true,
+                reply: None,
             });
         let mut scheduler = Scheduler::new(&[cpu(0), cpu(1)]).unwrap();
 
@@ -1910,6 +1969,7 @@ mod tests {
                 actual: ThreadState::BlockedOnReceive {
                     endpoint: object(10),
                     can_grant: true,
+                    reply: None,
                 },
             })
         );
@@ -1939,6 +1999,7 @@ mod tests {
             .set_state(ThreadState::BlockedOnReceive {
                 endpoint: object(10),
                 can_grant: false,
+                reply: None,
             });
         let mut scheduler = Scheduler::new(&[cpu(0), cpu(1)]).unwrap();
 

@@ -1,11 +1,11 @@
 use crate::{
-    cap::{CapabilityDescriptor, CapabilitySpace, ObjectId},
+    cap::{CapabilityDescriptor, CapabilitySpace, ObjectId, ReplyCap},
     invocation::{Invocation, InvocationError, InvocationOutcome, invoke},
     ipc::{IpcPayload, IpcReceiveOptions, IpcSendOptions},
     object::{KernelObjectKind, ObjectTable, ObjectTableError},
     reply::ReplyState,
     scheduler::{Scheduler, SchedulerError},
-    tcb::{CpuId, Tcb, ThreadId},
+    tcb::{CpuId, Tcb, ThreadId, ThreadState},
     thread_action::{
         ThreadAction, ThreadActionError, ThreadTable, poll_notification, recv_ipc, reply_to_caller,
         send_ipc, signal_notification, wait_notification,
@@ -23,6 +23,10 @@ pub struct InvocationContext {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ExecutionOutcome {
     Thread(ThreadAction),
+    ThreadWithReplyCap {
+        thread: ThreadAction,
+        reply: CapabilityDescriptor,
+    },
     Unsupported(UnsupportedInvocation),
 }
 
@@ -243,12 +247,32 @@ impl KernelState {
     ) -> Result<ExecutionOutcome, KernelExecutionError> {
         self.objects
             .expect_kind(endpoint, KernelObjectKind::Endpoint)?;
-        let reply = self.reply_for_endpoint(endpoint, context.reply(), options.is_call)?;
-        let caller_object = if options.is_call {
+        let waiting_receiver = self.objects.endpoint(endpoint)?.next_receiver();
+        let reply = if options.is_call {
+            match waiting_receiver {
+                Some(receiver) => self.reply_from_receiver_state(endpoint, receiver.thread())?,
+                None => None,
+            }
+        } else {
+            None
+        };
+        let caller_object = if reply.is_some() {
             Some(self.objects.tcb_object_for_thread(context.current())?)
         } else {
             None
         };
+        let reply_cap = reply.map(|_| ReplyCap {
+            caller: caller_object.expect("reply path must have caller object"),
+            target: endpoint,
+            can_grant: waiting_receiver
+                .expect("reply path must have waiting receiver")
+                .can_grant(),
+        });
+        if let (Some(reply), Some(reply_cap)) = (reply, reply_cap.as_ref()) {
+            self.cspace
+                .validate_reply_capability(reply, reply_cap)
+                .map_err(InvocationError::Cap)?;
+        }
 
         let action = match reply {
             Some(reply) => {
@@ -286,7 +310,19 @@ impl KernelState {
             }
         };
 
-        Ok(ExecutionOutcome::Thread(action))
+        match (reply, reply_cap) {
+            (Some(reply), Some(reply_cap)) => {
+                let descriptor = self
+                    .cspace
+                    .insert_reply_capability(reply, reply_cap)
+                    .expect("prevalidated reply cap installation must succeed");
+                Ok(ExecutionOutcome::ThreadWithReplyCap {
+                    thread: action,
+                    reply: descriptor,
+                })
+            }
+            _ => Ok(ExecutionOutcome::Thread(action)),
+        }
     }
 
     fn execute_endpoint_recv(
@@ -314,6 +350,19 @@ impl KernelState {
         } else {
             None
         };
+        let reply_cap = if let (Some(reply), Some(caller)) = (reply, caller_object) {
+            let reply_cap = ReplyCap {
+                caller,
+                target: endpoint,
+                can_grant: options.can_grant,
+            };
+            self.cspace
+                .validate_reply_capability(reply, &reply_cap)
+                .map_err(InvocationError::Cap)?;
+            Some(reply_cap)
+        } else {
+            None
+        };
 
         let action = match reply {
             Some(reply) => {
@@ -326,6 +375,7 @@ impl KernelState {
                     Some(reply_ref),
                     endpoint,
                     caller_object,
+                    context.reply(),
                     context.current(),
                     context.cpu(),
                     options,
@@ -340,6 +390,7 @@ impl KernelState {
                     None,
                     endpoint,
                     caller_object,
+                    context.reply(),
                     context.current(),
                     context.cpu(),
                     options,
@@ -347,7 +398,19 @@ impl KernelState {
             }
         };
 
-        Ok(ExecutionOutcome::Thread(action))
+        match (reply, reply_cap) {
+            (Some(reply), Some(reply_cap)) => {
+                let descriptor = self
+                    .cspace
+                    .insert_reply_capability(reply, reply_cap)
+                    .expect("prevalidated reply cap installation must succeed");
+                Ok(ExecutionOutcome::ThreadWithReplyCap {
+                    thread: action,
+                    reply: descriptor,
+                })
+            }
+            _ => Ok(ExecutionOutcome::Thread(action)),
+        }
     }
 
     fn execute_notification_signal(
@@ -448,10 +511,28 @@ impl KernelState {
             }
             (Some(reply), _) => {
                 self.objects.expect_kind(reply, KernelObjectKind::Reply)?;
+                self.cspace
+                    .validate_reply_object(reply)
+                    .map_err(InvocationError::Cap)?;
                 Ok(Some(reply))
             }
             (None, true) => Err(KernelExecutionError::MissingReplyObject { endpoint }),
             (None, false) => Ok(None),
+        }
+    }
+
+    fn reply_from_receiver_state(
+        &self,
+        endpoint: ObjectId,
+        receiver: ThreadId,
+    ) -> Result<Option<ObjectId>, KernelExecutionError> {
+        match self.threads.state(receiver) {
+            Some(ThreadState::BlockedOnReceive {
+                endpoint: blocked_endpoint,
+                reply,
+                ..
+            }) if blocked_endpoint == endpoint => self.reply_for_endpoint(endpoint, reply, true),
+            _ => Ok(None),
         }
     }
 }
@@ -832,7 +913,15 @@ mod tests {
             }))
             .unwrap();
         let endpoint_object = cspace.object_of(endpoint_descriptor).unwrap();
-        let reply_object = object(300);
+        let reply_descriptor = cspace
+            .insert_reply_capability_for_test(ReplyCap {
+                caller: object(1000),
+                target: object(1001),
+                can_grant: false,
+            })
+            .unwrap();
+        let reply_object = cspace.object_of(reply_descriptor).unwrap();
+        cspace.consume_reply_cap(reply_descriptor).unwrap();
         let caller_tcb_object = object(900);
         let receiver_tcb_object = object(901);
         let mut objects = ObjectTable::new();
@@ -861,30 +950,52 @@ mod tests {
             .unwrap();
         state
             .execute_invocation(
-                InvocationContext::new(thread(2), cpu(1)),
+                InvocationContext::new(thread(2), cpu(1)).with_reply(reply_object),
                 endpoint_descriptor,
                 Invocation::EndpointRecv { blocking: true },
             )
             .unwrap();
 
-        assert_eq!(
-            state.execute_invocation(
-                InvocationContext::new(thread(1), cpu(0)).with_reply(reply_object),
+        let outcome = state
+            .execute_invocation(
+                InvocationContext::new(thread(1), cpu(0)),
                 endpoint_descriptor,
                 Invocation::EndpointSend {
                     message_words: 0,
                     blocking: true,
                     is_call: true,
                 },
-            ),
-            Ok(ExecutionOutcome::Thread(ThreadAction::Woken {
+            )
+            .unwrap();
+        let ExecutionOutcome::ThreadWithReplyCap {
+            thread: action,
+            reply: reply_descriptor,
+        } = outcome
+        else {
+            panic!("endpoint call must create a reply cap");
+        };
+        assert_eq!(
+            action,
+            ThreadAction::Woken {
                 thread: thread(2),
                 cpu: cpu(1),
                 scheduler: SchedulerAction::Enqueued {
                     thread: thread(2),
                     cpu: cpu(1),
                 },
-            }))
+            }
+        );
+        assert_eq!(
+            state.cspace().lookup(reply_descriptor).unwrap().capability,
+            Capability::Reply(ReplyCap {
+                caller: caller_tcb_object,
+                target: endpoint_object,
+                can_grant: true,
+            })
+        );
+        assert_eq!(
+            state.cspace().object_of(reply_descriptor).unwrap(),
+            reply_object
         );
         assert_eq!(
             state.objects().reply(reply_object).unwrap().state(),
@@ -897,6 +1008,273 @@ mod tests {
                     true
                 ),
             }
+        );
+    }
+
+    #[test]
+    fn immediate_call_reply_grant_comes_from_receiver_cap() {
+        let mut cspace = CapabilitySpace::new();
+        let endpoint_root = cspace
+            .insert_initial_capability(Capability::Endpoint(EndpointCap {
+                badge: 7,
+                rights: Rights::READ | Rights::WRITE | Rights::GRANT | Rights::GRANT_REPLY,
+            }))
+            .unwrap();
+        let endpoint_object = cspace.object_of(endpoint_root).unwrap();
+        let caller_descriptor = cspace
+            .copy(endpoint_root, Rights::WRITE | Rights::GRANT_REPLY)
+            .unwrap();
+        let receiver_descriptor = cspace.copy(endpoint_root, Rights::READ).unwrap();
+        let reply_seed = cspace
+            .insert_reply_capability_for_test(ReplyCap {
+                caller: object(1000),
+                target: object(1001),
+                can_grant: true,
+            })
+            .unwrap();
+        let reply_object = cspace.object_of(reply_seed).unwrap();
+        cspace.consume_reply_cap(reply_seed).unwrap();
+        let caller_tcb_object = object(900);
+        let receiver_tcb_object = object(901);
+        let mut objects = ObjectTable::new();
+        objects
+            .insert_endpoint(endpoint_object, Endpoint::new())
+            .unwrap();
+        objects.insert_reply(reply_object, Reply::new()).unwrap();
+        let mut threads = ThreadTable::new();
+        let caller = runnable_tcb(1, cpu(0));
+        let receiver = runnable_tcb(2, cpu(1));
+        threads.insert(caller.clone());
+        threads.insert(receiver.clone());
+        let mut scheduler = Scheduler::new(&[cpu(0), cpu(1)]).unwrap();
+        scheduler.enqueue(&caller).unwrap();
+        scheduler.enqueue(&receiver).unwrap();
+        scheduler.schedule_next(cpu(0)).unwrap();
+        scheduler.schedule_next(cpu(1)).unwrap();
+        let mut state = KernelState::from_parts(cspace, objects, threads, scheduler);
+        state
+            .objects_mut()
+            .bind_tcb(caller_tcb_object, thread(1))
+            .unwrap();
+        state
+            .objects_mut()
+            .bind_tcb(receiver_tcb_object, thread(2))
+            .unwrap();
+        state
+            .execute_invocation(
+                InvocationContext::new(thread(2), cpu(1)).with_reply(reply_object),
+                receiver_descriptor,
+                Invocation::EndpointRecv { blocking: true },
+            )
+            .unwrap();
+
+        let outcome = state
+            .execute_invocation(
+                InvocationContext::new(thread(1), cpu(0)),
+                caller_descriptor,
+                Invocation::EndpointSend {
+                    message_words: 0,
+                    blocking: true,
+                    is_call: true,
+                },
+            )
+            .unwrap();
+        let ExecutionOutcome::ThreadWithReplyCap {
+            reply: reply_descriptor,
+            ..
+        } = outcome
+        else {
+            panic!("endpoint call must create a reply cap");
+        };
+
+        assert_eq!(
+            state.cspace().lookup(reply_descriptor).unwrap().capability,
+            Capability::Reply(ReplyCap {
+                caller: caller_tcb_object,
+                target: endpoint_object,
+                can_grant: false,
+            })
+        );
+        assert_eq!(
+            state.objects().reply(reply_object).unwrap().state(),
+            ReplyState::Pending {
+                caller: ReplyCaller::new(
+                    caller_tcb_object,
+                    endpoint_object,
+                    thread(1),
+                    cpu(0),
+                    false
+                ),
+            }
+        );
+    }
+
+    #[test]
+    fn blocking_receive_rejects_reply_object_missing_from_cspace_without_enqueueing() {
+        let mut cspace = CapabilitySpace::new();
+        let endpoint_descriptor = cspace
+            .insert_initial_capability(Capability::Endpoint(EndpointCap {
+                badge: 7,
+                rights: Rights::READ,
+            }))
+            .unwrap();
+        let endpoint_object = cspace.object_of(endpoint_descriptor).unwrap();
+        let reply_object = object(300);
+        let mut objects = ObjectTable::new();
+        objects
+            .insert_endpoint(endpoint_object, Endpoint::new())
+            .unwrap();
+        objects.insert_reply(reply_object, Reply::new()).unwrap();
+        let mut threads = ThreadTable::new();
+        let receiver = runnable_tcb(2, cpu(1));
+        threads.insert(receiver.clone());
+        let mut scheduler = Scheduler::new(&[cpu(0), cpu(1)]).unwrap();
+        scheduler.enqueue(&receiver).unwrap();
+        scheduler.schedule_next(cpu(1)).unwrap();
+        let mut state = KernelState::from_parts(cspace, objects, threads, scheduler);
+
+        assert_eq!(
+            state.execute_invocation(
+                InvocationContext::new(thread(2), cpu(1)).with_reply(reply_object),
+                endpoint_descriptor,
+                Invocation::EndpointRecv { blocking: true },
+            ),
+            Err(KernelExecutionError::Invocation(InvocationError::Cap(
+                crate::cap::CapError::ObjectNotFound(reply_object),
+            )))
+        );
+        assert_eq!(state.threads().state(thread(2)), Some(ThreadState::Running));
+        assert_eq!(
+            state
+                .objects()
+                .endpoint(endpoint_object)
+                .unwrap()
+                .queued_receivers(),
+            0
+        );
+        assert_eq!(
+            state.scheduler().placement(thread(2)),
+            Some(crate::scheduler::ThreadPlacement::Current { cpu: cpu(1) })
+        );
+    }
+
+    #[test]
+    fn queued_call_receive_creates_reply_cap_and_reply_consumes_it() {
+        let mut cspace = CapabilitySpace::new();
+        let endpoint_descriptor = cspace
+            .insert_initial_capability(Capability::Endpoint(EndpointCap {
+                badge: 7,
+                rights: Rights::READ | Rights::WRITE | Rights::GRANT | Rights::GRANT_REPLY,
+            }))
+            .unwrap();
+        let endpoint_object = cspace.object_of(endpoint_descriptor).unwrap();
+        let reply_seed = cspace
+            .insert_reply_capability_for_test(ReplyCap {
+                caller: object(1000),
+                target: object(1001),
+                can_grant: false,
+            })
+            .unwrap();
+        let reply_object = cspace.object_of(reply_seed).unwrap();
+        cspace.consume_reply_cap(reply_seed).unwrap();
+        let caller_tcb_object = object(900);
+        let receiver_tcb_object = object(901);
+        let mut objects = ObjectTable::new();
+        objects
+            .insert_endpoint(endpoint_object, Endpoint::new())
+            .unwrap();
+        objects.insert_reply(reply_object, Reply::new()).unwrap();
+        let mut threads = ThreadTable::new();
+        let caller = runnable_tcb(1, cpu(0));
+        let receiver = runnable_tcb(2, cpu(1));
+        threads.insert(caller.clone());
+        threads.insert(receiver.clone());
+        let mut scheduler = Scheduler::new(&[cpu(0), cpu(1)]).unwrap();
+        scheduler.enqueue(&caller).unwrap();
+        scheduler.enqueue(&receiver).unwrap();
+        scheduler.schedule_next(cpu(0)).unwrap();
+        scheduler.schedule_next(cpu(1)).unwrap();
+        let mut state = KernelState::from_parts(cspace, objects, threads, scheduler);
+        state
+            .objects_mut()
+            .bind_tcb(caller_tcb_object, thread(1))
+            .unwrap();
+        state
+            .objects_mut()
+            .bind_tcb(receiver_tcb_object, thread(2))
+            .unwrap();
+
+        assert_eq!(
+            state.execute_invocation(
+                InvocationContext::new(thread(1), cpu(0)),
+                endpoint_descriptor,
+                Invocation::EndpointSend {
+                    message_words: 0,
+                    blocking: true,
+                    is_call: true,
+                },
+            ),
+            Ok(ExecutionOutcome::Thread(ThreadAction::Blocked {
+                thread: thread(1),
+                cpu: cpu(0),
+            }))
+        );
+
+        let outcome = state
+            .execute_invocation(
+                InvocationContext::new(thread(2), cpu(1)).with_reply(reply_object),
+                endpoint_descriptor,
+                Invocation::EndpointRecv { blocking: true },
+            )
+            .unwrap();
+        let ExecutionOutcome::ThreadWithReplyCap {
+            thread: action,
+            reply: reply_descriptor,
+        } = outcome
+        else {
+            panic!("receive-side call must create a reply cap");
+        };
+        assert_eq!(
+            action,
+            ThreadAction::ReplyRecorded {
+                setup: crate::ipc::ReplySetup {
+                    caller: thread(1),
+                    caller_cpu: cpu(0),
+                    can_grant: true,
+                },
+            }
+        );
+        assert_eq!(
+            state.cspace().lookup(reply_descriptor).unwrap().capability,
+            Capability::Reply(ReplyCap {
+                caller: caller_tcb_object,
+                target: endpoint_object,
+                can_grant: true,
+            })
+        );
+
+        assert_eq!(
+            state.execute_invocation(
+                InvocationContext::new(thread(2), cpu(1)),
+                reply_descriptor,
+                Invocation::Reply {
+                    target: endpoint_object,
+                },
+            ),
+            Ok(ExecutionOutcome::Thread(ThreadAction::Woken {
+                thread: thread(1),
+                cpu: cpu(0),
+                scheduler: SchedulerAction::Enqueued {
+                    thread: thread(1),
+                    cpu: cpu(0),
+                },
+            }))
+        );
+        assert_eq!(state.threads().state(thread(1)), Some(ThreadState::Running));
+        assert!(!state.objects().reply(reply_object).unwrap().is_pending());
+        assert_eq!(
+            state.cspace().lookup(reply_descriptor),
+            Err(crate::cap::CapError::SlotNotFound(reply_descriptor.slot))
         );
     }
 }

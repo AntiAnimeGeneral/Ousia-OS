@@ -130,6 +130,12 @@ pub fn invoke(
                         actual: view.rights,
                     });
                 }
+                if is_call && !(cap.can_grant() || cap.can_grant_reply()) {
+                    return Err(InvocationError::MissingRights {
+                        required: Rights::GRANT | Rights::GRANT_REPLY,
+                        actual: view.rights,
+                    });
+                }
                 Ok(InvocationOutcome::SendIpcAuthorized {
                     endpoint: view.object,
                     badge: cap.badge,
@@ -288,7 +294,10 @@ mod tests {
     fn endpoint_send_requires_write_rights_and_preserves_badge() {
         let mut cspace = CapabilitySpace::new();
         let cap = cspace
-            .insert_initial_capability(endpoint(Rights::READ | Rights::WRITE, 0x2a))
+            .insert_initial_capability(endpoint(
+                Rights::READ | Rights::WRITE | Rights::GRANT_REPLY,
+                0x2a,
+            ))
             .unwrap();
         let endpoint = cspace.object_of(cap).unwrap();
 
@@ -309,7 +318,31 @@ mod tests {
                 blocking: true,
                 is_call: true,
                 can_grant: false,
-                can_grant_reply: false,
+                can_grant_reply: true,
+            })
+        );
+    }
+
+    #[test]
+    fn endpoint_call_requires_grant_or_grant_reply() {
+        let mut cspace = CapabilitySpace::new();
+        let cap = cspace
+            .insert_initial_capability(endpoint(Rights::WRITE, 0x2a))
+            .unwrap();
+
+        assert_eq!(
+            invoke(
+                &cspace,
+                cap,
+                Invocation::EndpointSend {
+                    message_words: 0,
+                    blocking: true,
+                    is_call: true,
+                },
+            ),
+            Err(InvocationError::MissingRights {
+                required: Rights::GRANT | Rights::GRANT_REPLY,
+                actual: Rights::WRITE,
             })
         );
     }

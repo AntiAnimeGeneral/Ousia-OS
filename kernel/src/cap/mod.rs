@@ -452,6 +452,43 @@ impl CapabilitySpace {
         Ok(self.insert_retyped_capability(source.slot, capability))
     }
 
+    pub fn validate_reply_capability(
+        &self,
+        reply_object: ObjectId,
+        capability: &ReplyCap,
+    ) -> Result<(), CapError> {
+        self.validate_reply_object(reply_object)?;
+        validate_capability_rights(&Capability::Reply(capability.clone()))
+    }
+
+    pub fn validate_reply_object(&self, reply_object: ObjectId) -> Result<(), CapError> {
+        let object = self.object(reply_object)?;
+        if object.destroyed {
+            return Err(CapError::ObjectDestroyed(reply_object));
+        }
+        if object.kind != ObjectKind::Reply {
+            return Err(CapError::WrongCapability {
+                expected: ObjectKind::Reply,
+                actual: object.kind.clone(),
+            });
+        }
+
+        Ok(())
+    }
+
+    pub fn insert_reply_capability(
+        &mut self,
+        reply_object: ObjectId,
+        capability: ReplyCap,
+    ) -> Result<CapabilityDescriptor, CapError> {
+        self.validate_reply_capability(reply_object, &capability)?;
+        let generation = self
+            .object(reply_object)
+            .expect("validated reply object must remain in CSpace")
+            .generation;
+        Ok(self.insert_root_slot(reply_object, Capability::Reply(capability), generation))
+    }
+
     pub fn move_capability(
         &mut self,
         source: CapabilityDescriptor,
@@ -1673,6 +1710,64 @@ mod tests {
             cspace.lookup(reply),
             Err(CapError::SlotNotFound(reply.slot))
         );
+    }
+
+    #[test]
+    fn reply_capability_can_target_existing_reply_object() {
+        let mut cspace = CapabilitySpace::new();
+        let initial = cspace
+            .insert_reply_capability_for_test(ReplyCap {
+                caller: ObjectId::new(100),
+                target: ObjectId::new(200),
+                can_grant: true,
+            })
+            .unwrap();
+        let reply_object = cspace.object_of(initial).unwrap();
+        cspace.consume_reply_cap(initial).unwrap();
+
+        let installed = cspace
+            .insert_reply_capability(
+                reply_object,
+                ReplyCap {
+                    caller: ObjectId::new(101),
+                    target: ObjectId::new(201),
+                    can_grant: false,
+                },
+            )
+            .unwrap();
+
+        let view = cspace.lookup(installed).unwrap();
+        assert_eq!(view.object, reply_object);
+        assert_eq!(view.object_kind, ObjectKind::Reply);
+        assert_eq!(
+            view.capability,
+            reply(ObjectId::new(101), ObjectId::new(201), false)
+        );
+    }
+
+    #[test]
+    fn reply_capability_install_rejects_non_reply_object_without_slot() {
+        let mut cspace = CapabilitySpace::new();
+        let endpoint = cspace
+            .insert_initial_capability(endpoint(Rights::READ))
+            .unwrap();
+        let endpoint_object = cspace.object_of(endpoint).unwrap();
+
+        assert_eq!(
+            cspace.insert_reply_capability(
+                endpoint_object,
+                ReplyCap {
+                    caller: ObjectId::new(100),
+                    target: ObjectId::new(200),
+                    can_grant: true,
+                },
+            ),
+            Err(CapError::WrongCapability {
+                expected: ObjectKind::Reply,
+                actual: ObjectKind::Endpoint,
+            })
+        );
+        assert_eq!(cspace.lookup(endpoint).unwrap().object, endpoint_object);
     }
 
     #[test]
