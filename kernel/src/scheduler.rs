@@ -2,6 +2,40 @@ use alloc::collections::{BTreeMap, VecDeque};
 
 use crate::tcb::{CpuId, Tcb, ThreadId, ThreadState};
 
+mod sealed {
+    pub trait Sealed {}
+}
+
+/// Read-only thread view required by scheduler enqueue paths.
+///
+/// Implementing this trait does not mean the thread is runnable. Runnable
+/// semantics remain owned by the concrete seL4-like `ThreadState` state
+/// machine. The trait is sealed so only kernel-owned thread state sources can
+/// represent schedulable input.
+pub trait ThreadScheduleView: sealed::Sealed {
+    fn id(&self) -> ThreadId;
+
+    fn affinity(&self) -> CpuId;
+
+    fn state(&self) -> ThreadState;
+}
+
+impl sealed::Sealed for Tcb {}
+
+impl ThreadScheduleView for Tcb {
+    fn id(&self) -> ThreadId {
+        self.id()
+    }
+
+    fn affinity(&self) -> CpuId {
+        self.affinity()
+    }
+
+    fn state(&self) -> ThreadState {
+        self.state()
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ThreadPlacement {
     Ready { cpu: CpuId },
@@ -43,6 +77,11 @@ pub enum SchedulerError {
     UnknownCpu {
         cpu: CpuId,
     },
+    ThreadAffinityMismatch {
+        thread: ThreadId,
+        expected_cpu: CpuId,
+        actual_cpu: CpuId,
+    },
     ThreadNotRunnable {
         thread: ThreadId,
         state: ThreadState,
@@ -57,16 +96,148 @@ pub enum SchedulerError {
     },
 }
 
-#[derive(Debug, Default)]
-struct CpuRunQueue {
+#[derive(Debug)]
+pub struct PerCpuRunQueue {
+    cpu: CpuId,
     current: Option<ThreadId>,
     ready: VecDeque<ThreadId>,
 }
 
 #[derive(Debug)]
 pub struct Scheduler {
-    cpus: BTreeMap<CpuId, CpuRunQueue>,
-    placement: BTreeMap<ThreadId, ThreadPlacement>,
+    run_queues: BTreeMap<CpuId, PerCpuRunQueue>,
+}
+
+impl PerCpuRunQueue {
+    pub const fn new(cpu: CpuId) -> Self {
+        Self {
+            cpu,
+            current: None,
+            ready: VecDeque::new(),
+        }
+    }
+
+    pub const fn cpu(&self) -> CpuId {
+        self.cpu
+    }
+
+    fn enqueue<T: ThreadScheduleView>(
+        &mut self,
+        thread_view: &T,
+    ) -> Result<SchedulerAction, SchedulerError> {
+        let thread = thread_view.id();
+        let actual_cpu = thread_view.affinity();
+        let state = thread_view.state();
+
+        if actual_cpu != self.cpu {
+            return Err(SchedulerError::ThreadAffinityMismatch {
+                thread,
+                expected_cpu: self.cpu,
+                actual_cpu,
+            });
+        }
+
+        if !state.is_runnable() {
+            return Err(SchedulerError::ThreadNotRunnable { thread, state });
+        }
+
+        if let Some(placement) = self.placement(thread) {
+            return Err(SchedulerError::ThreadAlreadyScheduled { thread, placement });
+        }
+
+        self.ready.push_back(thread);
+        Ok(SchedulerAction::Enqueued {
+            thread,
+            cpu: self.cpu,
+        })
+    }
+
+    pub fn schedule_next(&mut self) -> Result<SchedulerAction, SchedulerError> {
+        if let Some(current) = self.current {
+            return Err(SchedulerError::CpuAlreadyHasCurrent {
+                cpu: self.cpu,
+                current,
+            });
+        }
+
+        let Some(next) = self.ready.pop_front() else {
+            return Ok(SchedulerAction::NoRunnableThread { cpu: self.cpu });
+        };
+
+        self.current = Some(next);
+        Ok(SchedulerAction::Switched {
+            cpu: self.cpu,
+            previous: None,
+            next,
+        })
+    }
+
+    pub fn yield_current(&mut self) -> SchedulerAction {
+        let Some(previous) = self.current else {
+            return match self.ready.pop_front() {
+                Some(next) => {
+                    self.current = Some(next);
+                    SchedulerAction::Switched {
+                        cpu: self.cpu,
+                        previous: None,
+                        next,
+                    }
+                }
+                None => SchedulerAction::NoRunnableThread { cpu: self.cpu },
+            };
+        };
+
+        if self.ready.is_empty() {
+            return SchedulerAction::KeptCurrent {
+                cpu: self.cpu,
+                current: previous,
+            };
+        }
+
+        self.current = None;
+        self.ready.push_back(previous);
+        let next = self
+            .ready
+            .pop_front()
+            .expect("non-empty ready queue must provide next thread during yield");
+        self.current = Some(next);
+
+        SchedulerAction::Switched {
+            cpu: self.cpu,
+            previous: Some(previous),
+            next,
+        }
+    }
+
+    pub fn block_current(&mut self) -> SchedulerAction {
+        let Some(thread) = self.current.take() else {
+            return SchedulerAction::NoRunnableThread { cpu: self.cpu };
+        };
+
+        SchedulerAction::BlockedCurrent {
+            cpu: self.cpu,
+            thread,
+        }
+    }
+
+    pub const fn current(&self) -> Option<ThreadId> {
+        self.current
+    }
+
+    pub fn ready_len(&self) -> usize {
+        self.ready.len()
+    }
+
+    pub fn placement(&self, thread: ThreadId) -> Option<ThreadPlacement> {
+        if self.current == Some(thread) {
+            return Some(ThreadPlacement::Current { cpu: self.cpu });
+        }
+
+        self.ready
+            .iter()
+            .any(|ready| *ready == thread)
+            .then_some(ThreadPlacement::Ready { cpu: self.cpu })
+    }
 }
 
 impl Scheduler {
@@ -79,148 +250,56 @@ impl Scheduler {
 
         let mut run_queues = BTreeMap::new();
         for cpu in cpus {
-            if run_queues.insert(*cpu, CpuRunQueue::default()).is_some() {
+            if run_queues.insert(*cpu, PerCpuRunQueue::new(*cpu)).is_some() {
                 return Err(SchedulerError::DuplicateCpu { cpu: *cpu });
             }
         }
 
-        Ok(Self {
-            cpus: run_queues,
-            placement: BTreeMap::new(),
-        })
+        Ok(Self { run_queues })
     }
 
-    pub fn enqueue(&mut self, tcb: &Tcb) -> Result<SchedulerAction, SchedulerError> {
-        let thread = tcb.id();
-        let cpu = tcb.affinity();
-        let state = tcb.state();
+    pub fn run_queue(&self, cpu: CpuId) -> Result<&PerCpuRunQueue, SchedulerError> {
+        self.run_queues
+            .get(&cpu)
+            .ok_or(SchedulerError::UnknownCpu { cpu })
+    }
 
-        if !state.is_runnable() {
-            return Err(SchedulerError::ThreadNotRunnable { thread, state });
-        }
-
-        if let Some(placement) = self.placement.get(&thread) {
-            return Err(SchedulerError::ThreadAlreadyScheduled {
-                thread,
-                placement: *placement,
-            });
-        }
-
-        let queue = self
-            .cpus
+    pub fn run_queue_mut(&mut self, cpu: CpuId) -> Result<&mut PerCpuRunQueue, SchedulerError> {
+        self.run_queues
             .get_mut(&cpu)
-            .ok_or(SchedulerError::UnknownCpu { cpu })?;
-        queue.ready.push_back(thread);
-        self.placement
-            .insert(thread, ThreadPlacement::Ready { cpu });
-
-        Ok(SchedulerAction::Enqueued { thread, cpu })
+            .ok_or(SchedulerError::UnknownCpu { cpu })
     }
 
     pub fn schedule_next(&mut self, cpu: CpuId) -> Result<SchedulerAction, SchedulerError> {
-        let queue = self
-            .cpus
-            .get_mut(&cpu)
-            .ok_or(SchedulerError::UnknownCpu { cpu })?;
-
-        if let Some(current) = queue.current {
-            return Err(SchedulerError::CpuAlreadyHasCurrent { cpu, current });
-        }
-
-        let Some(next) = queue.ready.pop_front() else {
-            return Ok(SchedulerAction::NoRunnableThread { cpu });
-        };
-
-        queue.current = Some(next);
-        self.placement
-            .insert(next, ThreadPlacement::Current { cpu });
-
-        Ok(SchedulerAction::Switched {
-            cpu,
-            previous: None,
-            next,
-        })
+        self.run_queue_mut(cpu)?.schedule_next()
     }
 
     pub fn yield_current(&mut self, cpu: CpuId) -> Result<SchedulerAction, SchedulerError> {
-        let queue = self
-            .cpus
-            .get_mut(&cpu)
-            .ok_or(SchedulerError::UnknownCpu { cpu })?;
-
-        let Some(previous) = queue.current else {
-            return Ok(match queue.ready.pop_front() {
-                Some(next) => {
-                    queue.current = Some(next);
-                    self.placement
-                        .insert(next, ThreadPlacement::Current { cpu });
-                    SchedulerAction::Switched {
-                        cpu,
-                        previous: None,
-                        next,
-                    }
-                }
-                None => SchedulerAction::NoRunnableThread { cpu },
-            });
-        };
-
-        if queue.ready.is_empty() {
-            return Ok(SchedulerAction::KeptCurrent {
-                cpu,
-                current: previous,
-            });
-        }
-
-        queue.current = None;
-        queue.ready.push_back(previous);
-        self.placement
-            .insert(previous, ThreadPlacement::Ready { cpu });
-
-        let next = queue
-            .ready
-            .pop_front()
-            .expect("non-empty ready queue must provide next thread during yield");
-        queue.current = Some(next);
-        self.placement
-            .insert(next, ThreadPlacement::Current { cpu });
-
-        Ok(SchedulerAction::Switched {
-            cpu,
-            previous: Some(previous),
-            next,
-        })
+        Ok(self.run_queue_mut(cpu)?.yield_current())
     }
 
     pub fn block_current(&mut self, cpu: CpuId) -> Result<SchedulerAction, SchedulerError> {
-        let queue = self
-            .cpus
-            .get_mut(&cpu)
-            .ok_or(SchedulerError::UnknownCpu { cpu })?;
-
-        let Some(thread) = queue.current.take() else {
-            return Ok(SchedulerAction::NoRunnableThread { cpu });
-        };
-
-        self.placement.remove(&thread);
-        Ok(SchedulerAction::BlockedCurrent { cpu, thread })
+        Ok(self.run_queue_mut(cpu)?.block_current())
     }
 
-    pub fn current(&self, cpu: CpuId) -> Result<Option<ThreadId>, SchedulerError> {
-        self.cpus
-            .get(&cpu)
-            .map(|queue| queue.current)
-            .ok_or(SchedulerError::UnknownCpu { cpu })
-    }
+    pub fn enqueue<T: ThreadScheduleView>(
+        &mut self,
+        thread_view: &T,
+    ) -> Result<SchedulerAction, SchedulerError> {
+        let thread = thread_view.id();
 
-    pub fn ready_len(&self, cpu: CpuId) -> Result<usize, SchedulerError> {
-        self.cpus
-            .get(&cpu)
-            .map(|queue| queue.ready.len())
-            .ok_or(SchedulerError::UnknownCpu { cpu })
+        if let Some(placement) = self.placement(thread) {
+            return Err(SchedulerError::ThreadAlreadyScheduled { thread, placement });
+        }
+
+        self.run_queue_mut(thread_view.affinity())?
+            .enqueue(thread_view)
     }
 
     pub fn placement(&self, thread: ThreadId) -> Option<ThreadPlacement> {
-        self.placement.get(&thread).copied()
+        self.run_queues
+            .values()
+            .find_map(|queue| queue.placement(thread))
     }
 }
 
@@ -228,6 +307,28 @@ impl Scheduler {
 mod tests {
     use super::*;
     use crate::error::KernelErrorCode;
+
+    struct FakeThread {
+        id: ThreadId,
+        affinity: CpuId,
+        state: ThreadState,
+    }
+
+    impl sealed::Sealed for FakeThread {}
+
+    impl ThreadScheduleView for FakeThread {
+        fn id(&self) -> ThreadId {
+            self.id
+        }
+
+        fn affinity(&self) -> CpuId {
+            self.affinity
+        }
+
+        fn state(&self) -> ThreadState {
+            self.state
+        }
+    }
 
     fn cpu(raw: u32) -> CpuId {
         CpuId::new(raw)
@@ -237,6 +338,14 @@ mod tests {
         let mut tcb = Tcb::new(ThreadId::new(raw), affinity);
         tcb.set_state(state);
         tcb
+    }
+
+    fn fake_thread(raw: u64, affinity: CpuId, state: ThreadState) -> FakeThread {
+        FakeThread {
+            id: ThreadId::new(raw),
+            affinity,
+            state,
+        }
     }
 
     fn scheduler() -> Scheduler {
@@ -260,6 +369,21 @@ mod tests {
     }
 
     #[test]
+    fn topology_exposes_per_cpu_run_queues() {
+        let mut scheduler = scheduler();
+
+        assert_eq!(scheduler.run_queue(cpu(0)).unwrap().cpu(), cpu(0));
+        assert_eq!(
+            scheduler.run_queue(cpu(9)).unwrap_err(),
+            SchedulerError::UnknownCpu { cpu: cpu(9) }
+        );
+        assert_eq!(
+            scheduler.run_queue_mut(cpu(9)).unwrap_err(),
+            SchedulerError::UnknownCpu { cpu: cpu(9) }
+        );
+    }
+
+    #[test]
     fn enqueue_uses_tcb_affinity_and_requires_runnable_state() {
         let mut scheduler = scheduler();
         let tcb = thread(1, cpu(1), ThreadState::Restart);
@@ -271,8 +395,8 @@ mod tests {
                 cpu: cpu(1),
             })
         );
-        assert_eq!(scheduler.ready_len(cpu(1)), Ok(1));
-        assert_eq!(scheduler.ready_len(cpu(0)), Ok(0));
+        assert_eq!(scheduler.run_queue(cpu(1)).unwrap().ready_len(), 1);
+        assert_eq!(scheduler.run_queue(cpu(0)).unwrap().ready_len(), 0);
         assert_eq!(
             scheduler.placement(ThreadId::new(1)),
             Some(ThreadPlacement::Ready { cpu: cpu(1) })
@@ -286,91 +410,141 @@ mod tests {
                 state: ThreadState::BlockedOnReply,
             })
         );
-        assert_eq!(scheduler.ready_len(cpu(1)), Ok(1));
+        assert_eq!(scheduler.run_queue(cpu(1)).unwrap().ready_len(), 1);
+    }
+
+    #[test]
+    fn enqueue_accepts_thread_schedule_view_without_full_tcb() {
+        let mut scheduler = scheduler();
+        let runnable = fake_thread(11, cpu(0), ThreadState::Restart);
+
+        assert_eq!(
+            scheduler.enqueue(&runnable),
+            Ok(SchedulerAction::Enqueued {
+                thread: ThreadId::new(11),
+                cpu: cpu(0),
+            })
+        );
+        assert_eq!(scheduler.run_queue(cpu(0)).unwrap().ready_len(), 1);
+
+        let blocked = fake_thread(12, cpu(0), ThreadState::BlockedOnReply);
+        assert_eq!(
+            scheduler.enqueue(&blocked),
+            Err(SchedulerError::ThreadNotRunnable {
+                thread: ThreadId::new(12),
+                state: ThreadState::BlockedOnReply,
+            })
+        );
+        assert_eq!(scheduler.run_queue(cpu(0)).unwrap().ready_len(), 1);
+        assert_eq!(scheduler.placement(ThreadId::new(12)), None);
+    }
+
+    #[test]
+    fn enqueue_unknown_cpu_fails_without_side_effects() {
+        let mut scheduler = scheduler();
+        let tcb = thread(13, cpu(9), ThreadState::Restart);
+
+        assert_eq!(
+            scheduler.enqueue(&tcb),
+            Err(SchedulerError::UnknownCpu { cpu: cpu(9) })
+        );
+        assert_eq!(scheduler.run_queue(cpu(0)).unwrap().ready_len(), 0);
+        assert_eq!(scheduler.run_queue(cpu(1)).unwrap().ready_len(), 0);
+        assert_eq!(scheduler.placement(ThreadId::new(13)), None);
+    }
+
+    #[test]
+    fn local_run_queue_rejects_wrong_affinity_without_side_effects() {
+        let mut scheduler = scheduler();
+        let tcb = thread(1, cpu(1), ThreadState::Restart);
+
+        assert_eq!(
+            scheduler.run_queue_mut(cpu(0)).unwrap().enqueue(&tcb),
+            Err(SchedulerError::ThreadAffinityMismatch {
+                thread: ThreadId::new(1),
+                expected_cpu: cpu(0),
+                actual_cpu: cpu(1),
+            })
+        );
+        assert_eq!(scheduler.run_queue(cpu(0)).unwrap().ready_len(), 0);
+        assert_eq!(scheduler.placement(ThreadId::new(1)), None);
     }
 
     #[test]
     fn schedule_next_picks_fifo_ready_thread_per_cpu() {
-        let mut scheduler = scheduler();
+        let mut queue = PerCpuRunQueue::new(cpu(0));
         let first = thread(1, cpu(0), ThreadState::Restart);
         let second = thread(2, cpu(0), ThreadState::Restart);
 
-        scheduler.enqueue(&first).unwrap();
-        scheduler.enqueue(&second).unwrap();
+        queue.enqueue(&first).unwrap();
+        queue.enqueue(&second).unwrap();
 
         assert_eq!(
-            scheduler.schedule_next(cpu(0)),
+            queue.schedule_next(),
             Ok(SchedulerAction::Switched {
                 cpu: cpu(0),
                 previous: None,
                 next: ThreadId::new(1),
             })
         );
-        assert_eq!(scheduler.current(cpu(0)), Ok(Some(ThreadId::new(1))));
-        assert_eq!(scheduler.ready_len(cpu(0)), Ok(1));
+        assert_eq!(queue.current(), Some(ThreadId::new(1)));
+        assert_eq!(queue.ready_len(), 1);
         assert_eq!(
-            scheduler.placement(ThreadId::new(1)),
+            queue.placement(ThreadId::new(1)),
             Some(ThreadPlacement::Current { cpu: cpu(0) })
         );
     }
 
     #[test]
     fn yielding_current_round_robins_with_same_cpu_ready_queue() {
-        let mut scheduler = scheduler();
+        let mut queue = PerCpuRunQueue::new(cpu(0));
         let first = thread(1, cpu(0), ThreadState::Restart);
         let second = thread(2, cpu(0), ThreadState::Restart);
 
-        scheduler.enqueue(&first).unwrap();
-        scheduler.enqueue(&second).unwrap();
-        scheduler.schedule_next(cpu(0)).unwrap();
+        queue.enqueue(&first).unwrap();
+        queue.enqueue(&second).unwrap();
+        queue.schedule_next().unwrap();
 
         assert_eq!(
-            scheduler.yield_current(cpu(0)),
-            Ok(SchedulerAction::Switched {
+            queue.yield_current(),
+            SchedulerAction::Switched {
                 cpu: cpu(0),
                 previous: Some(ThreadId::new(1)),
                 next: ThreadId::new(2),
-            })
+            }
         );
-        assert_eq!(scheduler.current(cpu(0)), Ok(Some(ThreadId::new(2))));
-        assert_eq!(scheduler.ready_len(cpu(0)), Ok(1));
+        assert_eq!(queue.current(), Some(ThreadId::new(2)));
+        assert_eq!(queue.ready_len(), 1);
         assert_eq!(
-            scheduler.placement(ThreadId::new(1)),
+            queue.placement(ThreadId::new(1)),
             Some(ThreadPlacement::Ready { cpu: cpu(0) })
         );
     }
 
     #[test]
-    fn blocking_current_removes_thread_from_scheduler() {
-        let mut scheduler = scheduler();
+    fn blocking_current_removes_thread_from_local_run_queue() {
+        let mut queue = PerCpuRunQueue::new(cpu(0));
         let tcb = thread(1, cpu(0), ThreadState::Restart);
 
-        scheduler.enqueue(&tcb).unwrap();
-        scheduler.schedule_next(cpu(0)).unwrap();
+        queue.enqueue(&tcb).unwrap();
+        queue.schedule_next().unwrap();
 
         assert_eq!(
-            scheduler.block_current(cpu(0)),
-            Ok(SchedulerAction::BlockedCurrent {
+            queue.block_current(),
+            SchedulerAction::BlockedCurrent {
                 cpu: cpu(0),
                 thread: ThreadId::new(1),
-            })
+            }
         );
-        assert_eq!(scheduler.current(cpu(0)), Ok(None));
-        assert_eq!(scheduler.placement(ThreadId::new(1)), None);
+        assert_eq!(queue.current(), None);
+        assert_eq!(queue.placement(ThreadId::new(1)), None);
     }
 
     #[test]
-    fn enqueue_rejects_unknown_cpu_and_duplicate_thread_without_side_effects() {
+    fn duplicate_thread_is_rejected_without_side_effects() {
         let mut scheduler = scheduler();
-        let unknown = thread(1, cpu(9), ThreadState::Restart);
+        let mut tcb = thread(2, cpu(0), ThreadState::Restart);
 
-        assert_eq!(
-            scheduler.enqueue(&unknown),
-            Err(SchedulerError::UnknownCpu { cpu: cpu(9) })
-        );
-        assert_eq!(scheduler.placement(ThreadId::new(1)), None);
-
-        let tcb = thread(2, cpu(0), ThreadState::Restart);
         scheduler.enqueue(&tcb).unwrap();
 
         assert_eq!(
@@ -380,61 +554,45 @@ mod tests {
                 placement: ThreadPlacement::Ready { cpu: cpu(0) },
             })
         );
-        assert_eq!(scheduler.ready_len(cpu(0)), Ok(1));
+        assert_eq!(scheduler.run_queue(cpu(0)).unwrap().ready_len(), 1);
+
+        tcb.set_affinity(cpu(1));
+        assert_eq!(
+            scheduler.enqueue(&tcb),
+            Err(SchedulerError::ThreadAlreadyScheduled {
+                thread: ThreadId::new(2),
+                placement: ThreadPlacement::Ready { cpu: cpu(0) },
+            })
+        );
+        assert_eq!(scheduler.run_queue(cpu(0)).unwrap().ready_len(), 1);
+        assert_eq!(scheduler.run_queue(cpu(1)).unwrap().ready_len(), 0);
     }
 
     #[test]
     fn schedule_next_rejects_cpu_with_current_without_side_effects() {
-        let mut scheduler = scheduler();
+        let mut queue = PerCpuRunQueue::new(cpu(0));
         let first = thread(1, cpu(0), ThreadState::Restart);
         let second = thread(2, cpu(0), ThreadState::Restart);
 
-        scheduler.enqueue(&first).unwrap();
-        scheduler.enqueue(&second).unwrap();
-        scheduler.schedule_next(cpu(0)).unwrap();
+        queue.enqueue(&first).unwrap();
+        queue.enqueue(&second).unwrap();
+        queue.schedule_next().unwrap();
 
         assert_eq!(
-            scheduler.schedule_next(cpu(0)),
+            queue.schedule_next(),
             Err(SchedulerError::CpuAlreadyHasCurrent {
                 cpu: cpu(0),
                 current: ThreadId::new(1),
             })
         );
-        assert_eq!(scheduler.current(cpu(0)), Ok(Some(ThreadId::new(1))));
-        assert_eq!(scheduler.ready_len(cpu(0)), Ok(1));
+        assert_eq!(queue.current(), Some(ThreadId::new(1)));
+        assert_eq!(queue.ready_len(), 1);
         assert_eq!(
-            scheduler.placement(ThreadId::new(1)),
+            queue.placement(ThreadId::new(1)),
             Some(ThreadPlacement::Current { cpu: cpu(0) })
         );
         assert_eq!(
-            scheduler.placement(ThreadId::new(2)),
-            Some(ThreadPlacement::Ready { cpu: cpu(0) })
-        );
-    }
-
-    #[test]
-    fn unknown_cpu_operations_do_not_change_existing_queues() {
-        let mut scheduler = scheduler();
-        let tcb = thread(1, cpu(0), ThreadState::Restart);
-
-        scheduler.enqueue(&tcb).unwrap();
-
-        assert_eq!(
-            scheduler.schedule_next(cpu(9)),
-            Err(SchedulerError::UnknownCpu { cpu: cpu(9) })
-        );
-        assert_eq!(
-            scheduler.yield_current(cpu(9)),
-            Err(SchedulerError::UnknownCpu { cpu: cpu(9) })
-        );
-        assert_eq!(
-            scheduler.block_current(cpu(9)),
-            Err(SchedulerError::UnknownCpu { cpu: cpu(9) })
-        );
-        assert_eq!(scheduler.current(cpu(0)), Ok(None));
-        assert_eq!(scheduler.ready_len(cpu(0)), Ok(1));
-        assert_eq!(
-            scheduler.placement(ThreadId::new(1)),
+            queue.placement(ThreadId::new(2)),
             Some(ThreadPlacement::Ready { cpu: cpu(0) })
         );
     }
@@ -443,6 +601,15 @@ mod tests {
     fn scheduler_errors_map_to_kernel_error_codes() {
         assert_eq!(
             SchedulerError::UnknownCpu { cpu: cpu(9) }.error_code(),
+            KernelErrorCode::InvalidArgument
+        );
+        assert_eq!(
+            SchedulerError::ThreadAffinityMismatch {
+                thread: ThreadId::new(1),
+                expected_cpu: cpu(0),
+                actual_cpu: cpu(1),
+            }
+            .error_code(),
             KernelErrorCode::InvalidArgument
         );
         assert_eq!(

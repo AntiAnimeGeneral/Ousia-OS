@@ -87,9 +87,10 @@ impl ReplyError {
 impl SchedulerError {
     pub fn error_code(&self) -> KernelErrorCode {
         match self {
-            Self::NotEnoughCpus { .. } | Self::DuplicateCpu { .. } | Self::UnknownCpu { .. } => {
-                KernelErrorCode::InvalidArgument
-            }
+            Self::NotEnoughCpus { .. }
+            | Self::DuplicateCpu { .. }
+            | Self::UnknownCpu { .. }
+            | Self::ThreadAffinityMismatch { .. } => KernelErrorCode::InvalidArgument,
             Self::ThreadNotRunnable { .. }
             | Self::ThreadAlreadyScheduled { .. }
             | Self::CpuAlreadyHasCurrent { .. } => KernelErrorCode::IllegalOperation,
