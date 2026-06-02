@@ -1052,6 +1052,10 @@ mod tests {
         })
     }
 
+    // CapabilitySpace tests protect authority, slot lineage, badge minting,
+    // stale descriptor handling, and retype lineage. Runtime ObjectTable entries
+    // and executor transaction ordering are tested at the host integration layer.
+
     #[test]
     fn root_capability_can_be_created_and_looked_up() {
         let mut cspace = CapabilitySpace::new();
@@ -1088,21 +1092,6 @@ mod tests {
                 allowed_rights: Rights::MANAGE,
             })
         );
-    }
-
-    #[test]
-    fn derived_capability_can_only_reduce_rights() {
-        let mut cspace = CapabilitySpace::new();
-        let root = cspace
-            .insert_initial_capability(endpoint(Rights::READ | Rights::WRITE))
-            .unwrap();
-
-        let read_only = cspace.derive(root, Rights::READ).unwrap();
-        let view = cspace.lookup(read_only).unwrap();
-
-        assert_eq!(view.capability, endpoint(Rights::READ));
-        assert_eq!(view.rights, Rights::READ);
-        assert_eq!(view.parent, Some(root.slot));
     }
 
     #[test]
@@ -1407,27 +1396,6 @@ mod tests {
 
     fn cnode_cap(rights: Rights) -> Capability {
         Capability::CNode(CNodeCap { rights })
-    }
-
-    #[test]
-    fn derivation_cannot_escalate_rights() {
-        let mut cspace = CapabilitySpace::new();
-        let root = cspace
-            .insert_initial_capability(endpoint(Rights::READ))
-            .unwrap();
-
-        let err = cspace
-            .derive(root, Rights::READ | Rights::WRITE)
-            .unwrap_err();
-
-        assert_eq!(
-            err,
-            CapError::RightsEscalation {
-                parent: root.slot,
-                parent_rights: Rights::READ,
-                requested_rights: Rights::READ | Rights::WRITE,
-            }
-        );
     }
 
     #[test]

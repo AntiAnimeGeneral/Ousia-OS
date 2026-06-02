@@ -313,6 +313,9 @@ mod tests {
 
     #[test]
     fn endpoint_send_requires_write_rights_and_preserves_badge() {
+        // Goal: invocation authorization exports endpoint send facts without queue side effects.
+        // Scope: unit test for the capability invocation boundary.
+        // Semantics: Endpoint rights and badge are read from CSpace; delivery is owned elsewhere.
         let mut cspace = CapabilitySpace::new();
         let cap = cspace
             .insert_initial_capability(endpoint(
@@ -346,6 +349,9 @@ mod tests {
 
     #[test]
     fn endpoint_call_requires_grant_or_grant_reply() {
+        // Goal: call setup cannot be authorized without grant or grant-reply authority.
+        // Scope: unit test for endpoint invocation rights.
+        // Semantics: WRITE permits send, but call reply authority needs an explicit grant bit.
         let mut cspace = CapabilitySpace::new();
         let cap = cspace
             .insert_initial_capability(endpoint(Rights::WRITE, 0x2a))
@@ -370,6 +376,9 @@ mod tests {
 
     #[test]
     fn endpoint_recv_requires_read_rights() {
+        // Goal: receive authorization depends on endpoint receive rights.
+        // Scope: unit test for invocation rights at the CSpace boundary.
+        // Semantics: WRITE-only endpoint caps cannot authorize receive-side IPC.
         let mut cspace = CapabilitySpace::new();
         let cap = cspace
             .insert_initial_capability(endpoint(Rights::WRITE, 0))
@@ -386,6 +395,9 @@ mod tests {
 
     #[test]
     fn endpoint_invocation_exports_grant_flags() {
+        // Goal: endpoint invocation exports grant facts for later IPC/reply handling.
+        // Scope: unit test for authorization output shape, not endpoint queue behavior.
+        // Semantics: grant flags are authority metadata, while scheduling side effects happen later.
         let mut cspace = CapabilitySpace::new();
         let cap = cspace
             .insert_initial_capability(endpoint(
@@ -428,6 +440,9 @@ mod tests {
 
     #[test]
     fn wrong_capability_is_reported_explicitly() {
+        // Goal: invocation boundary rejects object-type mismatch before rights checks.
+        // Scope: unit test for target object discrimination.
+        // Semantics: a valid cap for the wrong object kind is not interchangeable authority.
         let mut cspace = CapabilitySpace::new();
         let cap = cspace
             .insert_initial_capability(frame(Rights::READ | Rights::WRITE))
@@ -452,6 +467,9 @@ mod tests {
 
     #[test]
     fn frame_map_masks_requested_vm_rights_by_cap_rights() {
+        // Goal: FrameMap authorization cannot escalate VM rights beyond the frame cap.
+        // Scope: unit test for invocation-level authority clipping.
+        // Semantics: mapping state is not created here; only clipped rights are authorized.
         let mut cspace = CapabilitySpace::new();
         let frame = cspace
             .insert_initial_capability(frame(Rights::READ))
@@ -481,6 +499,9 @@ mod tests {
 
     #[test]
     fn untyped_retype_cannot_exceed_source_size() {
+        // Goal: retype authorization rejects targets larger than the source Untyped.
+        // Scope: unit test for invocation-level size guard.
+        // Semantics: CSpace lineage and ObjectTable entries must not be changed by authorization.
         let mut cspace = CapabilitySpace::new();
         let cap = cspace.insert_initial_capability(untyped(12)).unwrap();
 
@@ -501,6 +522,9 @@ mod tests {
 
     #[test]
     fn untyped_retype_authorizes_target_object() {
+        // Goal: Untyped retype authorization exports the source object and target request.
+        // Scope: unit test for authorization output before executor commit.
+        // Semantics: actual child object creation is tested through KernelState integration.
         let mut cspace = CapabilitySpace::new();
         let cap = cspace.insert_initial_capability(untyped(12)).unwrap();
         let untyped = cspace.object_of(cap).unwrap();
@@ -526,6 +550,9 @@ mod tests {
 
     #[test]
     fn untyped_retype_rejects_target_rights_outside_object_policy() {
+        // Goal: target-specific rights policy is enforced before retype commit.
+        // Scope: unit test for target validation at invocation authorization.
+        // Semantics: invalid target rights do not reach CSpace or ObjectTable mutation.
         let mut cspace = CapabilitySpace::new();
         let cap = cspace.insert_initial_capability(untyped(12)).unwrap();
 
@@ -548,34 +575,10 @@ mod tests {
     }
 
     #[test]
-    fn untyped_retype_outcome_feeds_cspace_retype() {
-        let mut cspace = CapabilitySpace::new();
-        let cap = cspace.insert_initial_capability(untyped(12)).unwrap();
-
-        let outcome = invoke(
-            &cspace,
-            cap,
-            Invocation::UntypedRetype {
-                target: RetypeTarget::Frame {
-                    rights: Rights::READ | Rights::WRITE,
-                },
-            },
-        )
-        .unwrap();
-
-        let InvocationOutcome::UntypedRetypeAuthorized { target, .. } = outcome else {
-            panic!("expected untyped retype authorization");
-        };
-        let frame_cap = cspace.retype_untyped(cap, target).unwrap();
-
-        assert_eq!(
-            cspace.lookup(frame_cap).unwrap().capability,
-            frame(Rights::READ | Rights::WRITE)
-        );
-    }
-
-    #[test]
     fn untyped_retype_checks_target_minimum_size() {
+        // Goal: fixed-size target objects use their minimum object size at authorization.
+        // Scope: unit test for target metadata consumed by invocation.
+        // Semantics: Frame size policy is checked before any child object is allocated.
         let mut cspace = CapabilitySpace::new();
         let cap = cspace.insert_initial_capability(untyped(11)).unwrap();
 
@@ -598,6 +601,9 @@ mod tests {
 
     #[test]
     fn tcb_resume_requires_manage_rights() {
+        // Goal: TCB resume cannot be authorized without manage rights.
+        // Scope: unit test for TCB invocation rights.
+        // Semantics: thread state and scheduler placement are owned by executor paths.
         let mut cspace = CapabilitySpace::new();
         let cap = cspace.insert_initial_capability(tcb(Rights::NONE)).unwrap();
 
@@ -612,6 +618,9 @@ mod tests {
 
     #[test]
     fn tcb_configure_requires_manage_rights_and_exports_configuration() {
+        // Goal: TCB configure authorization exports thread identity and affinity only after rights check.
+        // Scope: unit test for TCB invocation authorization output.
+        // Semantics: object binding, thread creation, and CPU validation happen in KernelState.
         let mut cspace = CapabilitySpace::new();
         let cap = cspace
             .insert_initial_capability(tcb(Rights::MANAGE))
@@ -653,6 +662,9 @@ mod tests {
 
     #[test]
     fn notification_signal_requires_write_and_preserves_badge() {
+        // Goal: notification signal authorization preserves cap badge authority.
+        // Scope: unit test for notification invocation boundary.
+        // Semantics: waiter wakeup and badge accumulation are Notification/ThreadAction concerns.
         let mut cspace = CapabilitySpace::new();
         let cap = cspace
             .insert_initial_capability(notification(Rights::WRITE, 0x55))
@@ -670,6 +682,9 @@ mod tests {
 
     #[test]
     fn notification_wait_requires_read_rights() {
+        // Goal: notification wait authorization requires receive rights.
+        // Scope: unit test for notification invocation rights.
+        // Semantics: blocking and waiter queue side effects are handled after authorization.
         let mut cspace = CapabilitySpace::new();
         let cap = cspace
             .insert_initial_capability(notification(Rights::WRITE, 0))
@@ -690,6 +705,9 @@ mod tests {
 
     #[test]
     fn reply_requires_matching_target() {
+        // Goal: reply caps are one-target authority and cannot reply to another endpoint.
+        // Scope: unit test for reply invocation metadata.
+        // Semantics: wakeup and reply-cap consumption remain executor responsibilities.
         let mut cspace = CapabilitySpace::new();
         let caller = ObjectId::new(100);
         let target = ObjectId::new(200);
@@ -718,6 +736,9 @@ mod tests {
 
     #[test]
     fn reply_invocation_authorizes_reply_object() {
+        // Goal: valid reply invocation exports caller, target, and grant metadata.
+        // Scope: unit test for reply authorization output.
+        // Semantics: this does not consume the reply cap or mutate thread state.
         let mut cspace = CapabilitySpace::new();
         let caller = ObjectId::new(100);
         let target = ObjectId::new(200);

@@ -881,6 +881,11 @@ mod tests {
         scheduler
     }
 
+    // ThreadAction tests cover local thread/queue state transitions after
+    // capability authorization has already succeeded. Higher-level executor
+    // tests cover CSpace/ObjectTable lookup; these tests keep the mutation and
+    // failure-no-side-effect rules for TCB, IPC, Notification, and Reply owners.
+
     #[test]
     fn resume_tcb_sets_restart_and_enqueues_on_affinity_cpu() {
         let mut threads = ThreadTable::new();
@@ -1002,41 +1007,6 @@ mod tests {
                 is_call: true,
             })
         );
-    }
-
-    #[test]
-    fn send_ipc_precheck_failure_does_not_mutate_endpoint() {
-        let mut endpoint = crate::ipc::Endpoint::new();
-        let mut threads = table_with_threads(&[(1, cpu(0))]);
-        let mut scheduler = Scheduler::new(&[cpu(0), cpu(1)]).unwrap();
-
-        assert_eq!(
-            send_ipc(
-                &mut threads,
-                &mut scheduler,
-                &mut endpoint,
-                None,
-                object(10),
-                None,
-                thread(1),
-                cpu(0),
-                7,
-                crate::ipc::IpcSendOptions {
-                    blocking: true,
-                    is_call: false,
-                    can_grant: true,
-                    can_grant_reply: false,
-                },
-                IpcPayload::empty(),
-            ),
-            Err(ThreadActionError::ThreadNotCurrent {
-                thread: thread(1),
-                cpu: cpu(0),
-            })
-        );
-        assert_eq!(endpoint.state(), crate::ipc::EndpointState::Idle);
-        assert_eq!(endpoint.queued_senders(), 0);
-        assert_eq!(threads.state(thread(1)), Some(ThreadState::Running));
     }
 
     #[test]
@@ -1220,70 +1190,6 @@ mod tests {
             scheduler.run_queue(cpu(0)).unwrap().current(),
             Some(thread(1))
         );
-    }
-
-    #[test]
-    fn send_ipc_call_without_caller_object_does_not_consume_receiver() {
-        let mut endpoint = crate::ipc::Endpoint::new();
-        endpoint.recv(
-            thread(2),
-            cpu(1),
-            IpcReceiveOptions {
-                blocking: true,
-                can_grant: true,
-            },
-        );
-        let mut reply = Reply::new();
-        let mut threads = table_with_threads(&[(1, cpu(0)), (2, cpu(1))]);
-        threads
-            .get_mut(thread(2))
-            .unwrap()
-            .set_state(ThreadState::BlockedOnReceive {
-                endpoint: object(10),
-                can_grant: true,
-                reply: None,
-            });
-        let mut scheduler = scheduler_with_current(Some(1), None);
-
-        assert_eq!(
-            send_ipc(
-                &mut threads,
-                &mut scheduler,
-                &mut endpoint,
-                Some(&mut reply),
-                object(10),
-                None,
-                thread(1),
-                cpu(0),
-                7,
-                crate::ipc::IpcSendOptions {
-                    blocking: true,
-                    is_call: true,
-                    can_grant: true,
-                    can_grant_reply: false,
-                },
-                IpcPayload::empty(),
-            ),
-            Err(ThreadActionError::MissingCallerObject {
-                setup: ReplySetup {
-                    caller: thread(1),
-                    caller_cpu: cpu(0),
-                    can_grant: true,
-                },
-            })
-        );
-        assert_eq!(endpoint.state(), crate::ipc::EndpointState::Recv);
-        assert_eq!(endpoint.queued_receivers(), 1);
-        assert_eq!(threads.state(thread(1)), Some(ThreadState::Running));
-        assert_eq!(
-            threads.state(thread(2)),
-            Some(ThreadState::BlockedOnReceive {
-                endpoint: object(10),
-                can_grant: true,
-                reply: None,
-            })
-        );
-        assert!(!reply.is_pending());
     }
 
     #[test]
@@ -1644,75 +1550,6 @@ mod tests {
     }
 
     #[test]
-    fn recv_ipc_call_without_caller_object_does_not_consume_sender() {
-        let mut endpoint = crate::ipc::Endpoint::new();
-        endpoint.send(
-            thread(1),
-            cpu(0),
-            7,
-            crate::ipc::IpcSendOptions {
-                blocking: true,
-                is_call: true,
-                can_grant: true,
-                can_grant_reply: false,
-            },
-            IpcPayload::empty(),
-        );
-        let mut reply = Reply::new();
-        let mut threads = table_with_threads(&[(1, cpu(0)), (2, cpu(1))]);
-        threads
-            .get_mut(thread(1))
-            .unwrap()
-            .set_state(ThreadState::BlockedOnSend {
-                endpoint: object(10),
-                badge: 7,
-                can_grant: true,
-                can_grant_reply: false,
-                is_call: true,
-            });
-        let mut scheduler = scheduler_with_current(None, Some(2));
-
-        assert_eq!(
-            recv_ipc(
-                &mut threads,
-                &mut scheduler,
-                &mut endpoint,
-                Some(&mut reply),
-                object(10),
-                None,
-                Some(object(200)),
-                thread(2),
-                cpu(1),
-                IpcReceiveOptions {
-                    blocking: true,
-                    can_grant: true,
-                },
-            ),
-            Err(ThreadActionError::MissingCallerObject {
-                setup: ReplySetup {
-                    caller: thread(1),
-                    caller_cpu: cpu(0),
-                    can_grant: true,
-                },
-            })
-        );
-        assert_eq!(endpoint.state(), crate::ipc::EndpointState::Send);
-        assert_eq!(endpoint.queued_senders(), 1);
-        assert_eq!(
-            threads.state(thread(1)),
-            Some(ThreadState::BlockedOnSend {
-                endpoint: object(10),
-                badge: 7,
-                can_grant: true,
-                can_grant_reply: false,
-                is_call: true,
-            })
-        );
-        assert_eq!(threads.state(thread(2)), Some(ThreadState::Running));
-        assert!(!reply.is_pending());
-    }
-
-    #[test]
     fn recv_ipc_call_pending_reply_does_not_consume_sender() {
         let mut endpoint = crate::ipc::Endpoint::new();
         endpoint.send(
@@ -1845,133 +1682,6 @@ mod tests {
             })
         );
         assert!(!reply.is_pending());
-    }
-
-    #[test]
-    fn recv_ipc_one_way_sender_already_scheduled_does_not_consume_sender() {
-        let mut endpoint = crate::ipc::Endpoint::new();
-        endpoint.send(
-            thread(1),
-            cpu(0),
-            7,
-            crate::ipc::IpcSendOptions {
-                blocking: true,
-                is_call: false,
-                can_grant: true,
-                can_grant_reply: false,
-            },
-            IpcPayload::empty(),
-        );
-        let mut threads = table_with_threads(&[(1, cpu(0)), (2, cpu(1))]);
-        threads
-            .get_mut(thread(1))
-            .unwrap()
-            .set_state(ThreadState::BlockedOnSend {
-                endpoint: object(10),
-                badge: 7,
-                can_grant: true,
-                can_grant_reply: false,
-                is_call: false,
-            });
-        let mut scheduler = scheduler_with_current(Some(1), Some(2));
-
-        assert_eq!(
-            recv_ipc(
-                &mut threads,
-                &mut scheduler,
-                &mut endpoint,
-                None,
-                object(10),
-                None,
-                None,
-                thread(2),
-                cpu(1),
-                IpcReceiveOptions {
-                    blocking: true,
-                    can_grant: true,
-                },
-            ),
-            Err(ThreadActionError::Scheduler(
-                SchedulerError::ThreadAlreadyScheduled {
-                    thread: thread(1),
-                    placement: crate::scheduler::ThreadPlacement::Current { cpu: cpu(0) },
-                }
-            ))
-        );
-        assert_eq!(endpoint.state(), crate::ipc::EndpointState::Send);
-        assert_eq!(endpoint.queued_senders(), 1);
-        assert_eq!(
-            threads.state(thread(1)),
-            Some(ThreadState::BlockedOnSend {
-                endpoint: object(10),
-                badge: 7,
-                can_grant: true,
-                can_grant_reply: false,
-                is_call: false,
-            })
-        );
-    }
-
-    #[test]
-    fn recv_ipc_one_way_sender_state_mismatch_does_not_consume_sender() {
-        let mut endpoint = crate::ipc::Endpoint::new();
-        endpoint.send(
-            thread(1),
-            cpu(0),
-            7,
-            crate::ipc::IpcSendOptions {
-                blocking: true,
-                is_call: false,
-                can_grant: true,
-                can_grant_reply: false,
-            },
-            IpcPayload::empty(),
-        );
-        let mut threads = table_with_threads(&[(1, cpu(0)), (2, cpu(1))]);
-        threads
-            .get_mut(thread(1))
-            .unwrap()
-            .set_state(ThreadState::BlockedOnReceive {
-                endpoint: object(10),
-                can_grant: true,
-                reply: None,
-            });
-        let mut scheduler = scheduler_with_current(None, Some(2));
-
-        assert_eq!(
-            recv_ipc(
-                &mut threads,
-                &mut scheduler,
-                &mut endpoint,
-                None,
-                object(10),
-                None,
-                None,
-                thread(2),
-                cpu(1),
-                IpcReceiveOptions {
-                    blocking: true,
-                    can_grant: true,
-                },
-            ),
-            Err(ThreadActionError::UnexpectedThreadState {
-                thread: thread(1),
-                expected: ThreadState::BlockedOnSend {
-                    endpoint: object(10),
-                    badge: 7,
-                    can_grant: true,
-                    can_grant_reply: false,
-                    is_call: false,
-                },
-                actual: ThreadState::BlockedOnReceive {
-                    endpoint: object(10),
-                    can_grant: true,
-                    reply: None,
-                },
-            })
-        );
-        assert_eq!(endpoint.state(), crate::ipc::EndpointState::Send);
-        assert_eq!(endpoint.queued_senders(), 1);
     }
 
     #[test]

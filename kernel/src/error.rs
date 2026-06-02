@@ -205,8 +205,15 @@ mod tests {
         )
     }
 
+    // Error tests protect the stable boundary code categories. Most cases
+    // intentionally trigger errors through public module or executor paths so
+    // the mapping can change only with an explicit semantic/API decision.
+
     #[test]
     fn error_code_values_match_sel4_ordering() {
+        // Goal: preserve stable seL4-like numeric ordering for external callers.
+        // Scope: unit test for the public error-code ABI.
+        // Semantics: changing these values is a compatibility decision, not cleanup.
         assert_eq!(KernelErrorCode::NoError.raw(), 0);
         assert_eq!(KernelErrorCode::InvalidArgument.raw(), 1);
         assert_eq!(KernelErrorCode::InvalidCapability.raw(), 2);
@@ -294,6 +301,9 @@ mod tests {
 
     #[test]
     fn invocation_errors_collapse_to_boundary_error_codes() {
+        // Goal: invocation authorization failures collapse into stable boundary categories.
+        // Scope: unit test through invoke(), not direct InvocationError construction.
+        // Semantics: detailed errors remain diagnostic; callers observe stable codes.
         let mut cspace = CapabilitySpace::new();
         let endpoint = cspace
             .insert_initial_capability(endpoint(Rights::WRITE))
@@ -410,6 +420,9 @@ mod tests {
 
     #[test]
     fn executor_object_lookup_failure_collapses_to_failed_lookup_code() {
+        // Goal: executor object lookup failures map to failed lookup at the boundary.
+        // Scope: host-style KernelState path crossing CSpace, ObjectTable, threads, and scheduler.
+        // Semantics: no endpoint object means lookup failed before IPC side effects.
         let mut cspace = CapabilitySpace::new();
         let descriptor = cspace
             .insert_initial_capability(Capability::Endpoint(EndpointCap {
@@ -513,6 +526,9 @@ mod tests {
 
     #[test]
     fn duplicate_thread_bootstrap_collapses_to_illegal_operation_code() {
+        // Goal: duplicate thread bootstrap fails without rebinding the new TCB object.
+        // Scope: KernelState path for TCB object/thread/scheduler ownership.
+        // Semantics: the error code is illegal operation and all existing ownership stays intact.
         let mut state = KernelState::new(&[cpu(0), cpu(1)]).unwrap();
         state.objects_mut().insert_tcb(ObjectId::new(1)).unwrap();
         state

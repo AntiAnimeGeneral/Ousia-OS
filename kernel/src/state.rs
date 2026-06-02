@@ -718,6 +718,11 @@ mod tests {
         )
     }
 
+    // KernelState tests protect host integration semantics across CSpace,
+    // ObjectTable, ThreadTable, and Scheduler. Retype transaction cases live in
+    // `kernel/tests/executor_retype.rs`; these tests focus on IPC, reply, TCB,
+    // and executor failure-before-side-effect behavior.
+
     #[test]
     fn endpoint_send_invocation_blocks_current_thread() {
         let (mut state, endpoint_descriptor, endpoint_object) = state_with_current_thread();
@@ -1401,125 +1406,6 @@ mod tests {
         assert_eq!(
             state.cspace().lookup(reply_descriptor),
             Err(crate::cap::CapError::SlotNotFound(reply_descriptor.slot))
-        );
-    }
-
-    #[test]
-    fn untyped_retype_object_table_conflict_does_not_commit_cspace() {
-        let mut cspace = CapabilitySpace::new();
-        let untyped = cspace
-            .insert_initial_capability(Capability::Untyped(crate::cap::UntypedCap {
-                size_bits: 12,
-            }))
-            .unwrap();
-        let predicted_object = cspace
-            .preview_retype_untyped(untyped, &crate::cap::RetypeTarget::Endpoint)
-            .unwrap();
-        let mut objects = ObjectTable::new();
-        objects
-            .insert_endpoint(predicted_object, Endpoint::new())
-            .unwrap();
-        let threads = ThreadTable::new();
-        let scheduler = Scheduler::new(&[cpu(0), cpu(1)]).unwrap();
-        let mut state = KernelState::from_parts(cspace, objects, threads, scheduler);
-
-        assert_eq!(
-            state.execute_invocation(
-                InvocationContext::new(thread(1), cpu(0)),
-                untyped,
-                Invocation::UntypedRetype {
-                    target: crate::cap::RetypeTarget::Endpoint,
-                },
-            ),
-            Err(KernelExecutionError::Object(
-                ObjectTableError::ObjectIdAlreadyBound {
-                    object: predicted_object,
-                }
-            ))
-        );
-
-        let endpoint = state
-            .cspace_mut()
-            .retype_untyped(untyped, crate::cap::RetypeTarget::Endpoint)
-            .unwrap();
-        assert_eq!(endpoint.slot.raw(), untyped.slot.raw() + 1);
-        assert_eq!(state.cspace().object_of(endpoint), Ok(predicted_object));
-    }
-
-    #[test]
-    fn untyped_retype_tcb_object_table_conflict_does_not_commit_cspace() {
-        let mut cspace = CapabilitySpace::new();
-        let untyped = cspace
-            .insert_initial_capability(Capability::Untyped(crate::cap::UntypedCap {
-                size_bits: 12,
-            }))
-            .unwrap();
-        let target = crate::cap::RetypeTarget::Tcb {
-            rights: Rights::MANAGE,
-        };
-        let predicted_object = cspace.preview_retype_untyped(untyped, &target).unwrap();
-        let mut objects = ObjectTable::new();
-        objects.insert_tcb(predicted_object).unwrap();
-        let threads = ThreadTable::new();
-        let scheduler = Scheduler::new(&[cpu(0), cpu(1)]).unwrap();
-        let mut state = KernelState::from_parts(cspace, objects, threads, scheduler);
-
-        assert_eq!(
-            state.execute_invocation(
-                InvocationContext::new(thread(1), cpu(0)),
-                untyped,
-                Invocation::UntypedRetype { target },
-            ),
-            Err(KernelExecutionError::Object(
-                ObjectTableError::ObjectIdAlreadyBound {
-                    object: predicted_object,
-                }
-            ))
-        );
-
-        let endpoint = state
-            .cspace_mut()
-            .retype_untyped(untyped, crate::cap::RetypeTarget::Endpoint)
-            .unwrap();
-        assert_eq!(endpoint.slot.raw(), untyped.slot.raw() + 1);
-        assert_eq!(state.cspace().object_of(endpoint), Ok(predicted_object));
-    }
-
-    #[test]
-    fn untyped_retype_nested_untyped_commits_cspace_without_object_table_entry() {
-        let mut cspace = CapabilitySpace::new();
-        let untyped = cspace
-            .insert_initial_capability(Capability::Untyped(crate::cap::UntypedCap {
-                size_bits: 12,
-            }))
-            .unwrap();
-        let threads = ThreadTable::new();
-        let scheduler = Scheduler::new(&[cpu(0), cpu(1)]).unwrap();
-        let mut state = KernelState::from_parts(cspace, ObjectTable::new(), threads, scheduler);
-
-        let outcome = state
-            .execute_invocation(
-                InvocationContext::new(thread(1), cpu(0)),
-                untyped,
-                Invocation::UntypedRetype {
-                    target: crate::cap::RetypeTarget::Untyped { size_bits: 10 },
-                },
-            )
-            .unwrap();
-        let ExecutionOutcome::Retyped { descriptor } = outcome else {
-            panic!("nested untyped retype must return a new capability descriptor");
-        };
-        let child_object = state.cspace().object_of(descriptor).unwrap();
-
-        assert_eq!(
-            state.cspace().lookup(descriptor).unwrap().capability,
-            Capability::Untyped(crate::cap::UntypedCap { size_bits: 10 })
-        );
-        assert_eq!(
-            state.objects().get(child_object),
-            Err(ObjectTableError::ObjectNotFound {
-                object: child_object
-            })
         );
     }
 

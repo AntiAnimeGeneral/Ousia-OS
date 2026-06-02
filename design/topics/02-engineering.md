@@ -37,12 +37,17 @@
 
 LLVM 工具链（rustc + clang + lld）。用 Bazel/Buck2 做多语言内容寻址构建。交叉编译目标：`aarch64-unknown-Ousia OS`、`x86_64-unknown-Ousia OS`。QEMU 作为第一阶段运行平台。
 
-## 测试策略（四级）
+## 测试策略
 
-1. **内核单元测试**：宿主系统上直接运行内核逻辑测试（不依赖硬件）
-2. **用户态集成测试**：QEMU 中运行完整内核 + 基础服务栈
-3. **驱动模拟测试**：录制设备 PCI/MMIO/doorbell/中断交互 → 回放验证，用于厂商驱动和通用队列原语的回归测试
-4. **形式化模型检查**：能力传递不越权、IOMMU 映射不重叠、缺页处理不泄漏。工具候选：TLA+, Verus
+Ousia 的测试目标不是追求行覆盖率，而是证明内核语义、失败无副作用和平台路径没有漂移。测试按职责分层：
+
+1. **宿主单元测试**：在宿主 Rust test harness 下验证单一 owner 的本地语义，例如 capability rights、object type、badge preservation、retype size guard、状态 enum 转换和稳定 ABI 编号。它不依赖硬件，也不声称覆盖真实 boot 或 no_std 环境。
+2. **宿主集成测试**：在 `kernel/tests/*.rs` 中通过真实 kernel 边界验证跨 owner 协作，例如 `KernelState::execute_invocation` 触发 CSpace、ObjectTable、ThreadTable 和 Scheduler 的事务性变化。失败路径必须比较相关状态，证明 slot/object/thread/queue 没有部分提交。
+3. **QEMU 冒烟测试**：通过 `tools/qemu-runner` 验证 kernel-bin、OSTD、linker、早期堆、串口和异常路径能启动并输出预期 marker。它是 boot/platform 健康检查，不替代 capability、IPC 或 scheduler 语义测试。
+4. **驱动与设备模拟测试**：录制设备 PCI/MMIO/doorbell/中断交互并回放，用于厂商驱动、通用队列原语和 reset/revoke 场景的回归验证。该层后续应和 Driver Host、IOQueue/IOBuffer 与 registered memory 语义绑定。
+5. **模型和形式化检查**：能力传递不越权、IPC 不重复/不丢失、IOMMU 映射不重叠、缺页处理不泄漏。工具候选包括 TLA+ 和 Verus；第一阶段先形成可机检规约，不追求全系统证明。
+
+每个非平凡测试都应能说明目标语义、测试层级和失败后保持不变的状态。无法说明这些内容的测试优先被视为实现复述，而不是可靠覆盖。
 
 ## 内核更新：A/B 启动分区
 

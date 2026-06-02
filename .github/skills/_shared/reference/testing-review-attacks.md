@@ -20,6 +20,22 @@ Testing reference 用于把 Ousia-specific review 从“有无测试”推进到
 - 测试夹具是否表达领域语义，还是复制实现内部结构导致重构时一起漂移。
 - 验证命令是否覆盖实际改动目标，例如 bare-metal target、doc checker、runner smoke 或 targeted Rust tests。
 
+## Layer Projection
+
+- Capability rights、object type、badge preservation、retype size guard 和 public error code ordering 通常先由 unit test 证明；如果测试需要 CSpace/ObjectTable/ThreadTable 同时成立，应升级为 host integration。
+- Retype transaction、IPC call/reply、Notification wakeup、TCB configure/resume 和 Scheduler placement 通常需要 host integration，因为它们要证明多个 owner 的状态一起改变或一起不变。
+- Boot marker、exception marker、early heap、serial、target triple、linker script 和 QEMU runner drift 属于 QEMU smoke；这些测试只证明平台路径未断，不证明 kernel 语义完整。
+- Page table、FrameMap、address space、driver MMIO/PCI replay 和基础服务协作在对应 harness 成熟前只能作为 residual risk；不要用 host unit test 冒充 platform integration。
+
+## State Comparison Checklist
+
+- CSpace：slot 是否新增、删除、复用或 generation 变化，lineage 是否仍指向正确 parent。
+- ObjectTable：object presence、kind、TCB binding、Frame metadata、Endpoint/Notification/Reply runtime state 是否保持预期。
+- ThreadTable：TCB state、affinity、bound notification 和 blocked reason 是否在失败后未漂移。
+- Scheduler：per-CPU current、ready queue、placement 和重复 enqueue/dequeue 语义是否保持一致。
+- IPC objects：Endpoint queue、Notification badge/waiters、Reply pending caller 是否没有被失败路径提前消费。
+- Future memory objects：page table entry、mapping owner、FrameMap metadata 和 Untyped capacity/watermark 应在实现后进入同一类状态对比。
+
 ## Review Attacks
 
 - 测试是否只断言 error variant，不检查失败后的状态不变性。
@@ -42,6 +58,7 @@ Testing reference 用于把 Ousia-specific review 从“有无测试”推进到
 ## Evidence To Seek
 
 - Test names and comments that state protected semantics。
+- Test contract 是否说明 Goal、Scope 和 Semantics，或 table case 是否有语义 label。
 - Assertions comparing state before and after failure。
 - Boundary-path tests or integration smoke tests。
 - Negative tests for black-team inputs relevant to the diff。
