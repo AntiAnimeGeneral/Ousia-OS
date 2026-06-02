@@ -256,10 +256,13 @@ impl KernelState {
             .map_err(InvocationError::Cap)?;
 
         match &target {
-            RetypeTarget::Endpoint | RetypeTarget::Notification | RetypeTarget::Tcb { .. } => {
+            RetypeTarget::Endpoint
+            | RetypeTarget::CNode { .. }
+            | RetypeTarget::Notification
+            | RetypeTarget::Tcb { .. } => {
                 self.objects.validate_unbound(object)?;
             }
-            RetypeTarget::Frame { .. } | RetypeTarget::CNode { .. } => {
+            RetypeTarget::Frame { .. } => {
                 return Ok(ExecutionOutcome::Unsupported(
                     UnsupportedInvocation::UntypedRetype,
                 ));
@@ -276,6 +279,10 @@ impl KernelState {
                 .objects
                 .insert_endpoint(object, Endpoint::new())
                 .expect("prevalidated endpoint object insertion must succeed"),
+            RetypeTarget::CNode { .. } => self
+                .objects
+                .insert_cnode(object)
+                .expect("prevalidated CNode object insertion must succeed"),
             RetypeTarget::Notification => self
                 .objects
                 .insert_notification(object, Notification::new())
@@ -285,7 +292,7 @@ impl KernelState {
                 .insert_tcb(object)
                 .expect("prevalidated TCB object insertion must succeed"),
             RetypeTarget::Untyped { .. } => {}
-            RetypeTarget::Frame { .. } | RetypeTarget::CNode { .. } => {
+            RetypeTarget::Frame { .. } => {
                 unreachable!("unsupported retype target returned before commit")
             }
         }
@@ -665,6 +672,7 @@ mod tests {
         cap::{Capability, EndpointCap, NotificationCap, ReplyCap, Rights},
         ipc::Endpoint,
         notification::{Notification, NotificationState},
+        object::KernelObjectRef,
         reply::{Reply, ReplyCaller},
         scheduler::{Scheduler, SchedulerAction},
         tcb::{Tcb, ThreadState},
@@ -1529,6 +1537,37 @@ mod tests {
     }
 
     #[test]
+    fn untyped_retype_cnode_creates_object_and_capability() {
+        let mut cspace = CapabilitySpace::new();
+        let untyped = cspace
+            .insert_initial_capability(Capability::Untyped(crate::cap::UntypedCap {
+                size_bits: 12,
+            }))
+            .unwrap();
+        let threads = ThreadTable::new();
+        let scheduler = Scheduler::new(&[cpu(0), cpu(1)]).unwrap();
+        let mut state = KernelState::from_parts(cspace, ObjectTable::new(), threads, scheduler);
+
+        let outcome = state
+            .execute_invocation(
+                InvocationContext::new(thread(1), cpu(0)),
+                untyped,
+                Invocation::UntypedRetype {
+                    target: crate::cap::RetypeTarget::CNode {
+                        rights: Rights::MANAGE,
+                    },
+                },
+            )
+            .unwrap();
+        let ExecutionOutcome::Retyped { descriptor } = outcome else {
+            panic!("CNode retype must return a new capability descriptor");
+        };
+        let object = state.cspace().object_of(descriptor).unwrap();
+
+        assert_eq!(state.objects().get(object), Ok(KernelObjectRef::CNode));
+    }
+
+    #[test]
     fn untyped_retype_object_table_conflict_does_not_commit_cspace() {
         let mut cspace = CapabilitySpace::new();
         let untyped = cspace
@@ -1554,6 +1593,45 @@ mod tests {
                 Invocation::UntypedRetype {
                     target: crate::cap::RetypeTarget::Endpoint,
                 },
+            ),
+            Err(KernelExecutionError::Object(
+                ObjectTableError::ObjectIdAlreadyBound {
+                    object: predicted_object,
+                }
+            ))
+        );
+
+        let endpoint = state
+            .cspace_mut()
+            .retype_untyped(untyped, crate::cap::RetypeTarget::Endpoint)
+            .unwrap();
+        assert_eq!(endpoint.slot.raw(), untyped.slot.raw() + 1);
+        assert_eq!(state.cspace().object_of(endpoint), Ok(predicted_object));
+    }
+
+    #[test]
+    fn untyped_retype_cnode_object_table_conflict_does_not_commit_cspace() {
+        let mut cspace = CapabilitySpace::new();
+        let untyped = cspace
+            .insert_initial_capability(Capability::Untyped(crate::cap::UntypedCap {
+                size_bits: 12,
+            }))
+            .unwrap();
+        let target = crate::cap::RetypeTarget::CNode {
+            rights: Rights::MANAGE,
+        };
+        let predicted_object = cspace.preview_retype_untyped(untyped, &target).unwrap();
+        let mut objects = ObjectTable::new();
+        objects.insert_cnode(predicted_object).unwrap();
+        let threads = ThreadTable::new();
+        let scheduler = Scheduler::new(&[cpu(0), cpu(1)]).unwrap();
+        let mut state = KernelState::from_parts(cspace, objects, threads, scheduler);
+
+        assert_eq!(
+            state.execute_invocation(
+                InvocationContext::new(thread(1), cpu(0)),
+                untyped,
+                Invocation::UntypedRetype { target },
             ),
             Err(KernelExecutionError::Object(
                 ObjectTableError::ObjectIdAlreadyBound {

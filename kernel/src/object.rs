@@ -11,6 +11,7 @@ use crate::{
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum KernelObjectKind {
     Endpoint,
+    CNode,
     Notification,
     Reply,
     Tcb,
@@ -19,6 +20,7 @@ pub enum KernelObjectKind {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum KernelObjectRef {
     Endpoint,
+    CNode,
     Notification,
     Reply,
     Tcb { thread: Option<ThreadId> },
@@ -51,6 +53,7 @@ pub enum ObjectTableError {
 #[derive(Debug, Default)]
 pub struct ObjectTable {
     endpoints: BTreeMap<ObjectId, Endpoint>,
+    cnodes: BTreeMap<ObjectId, ()>,
     notifications: BTreeMap<ObjectId, Notification>,
     replies: BTreeMap<ObjectId, Reply>,
     tcbs: BTreeMap<ObjectId, Option<ThreadId>>,
@@ -60,10 +63,11 @@ impl KernelObjectKind {
     pub const fn from_cap_object_kind(kind: ObjectKind) -> Option<Self> {
         match kind {
             ObjectKind::Endpoint => Some(Self::Endpoint),
+            ObjectKind::CNode => Some(Self::CNode),
             ObjectKind::Notification => Some(Self::Notification),
             ObjectKind::Reply => Some(Self::Reply),
             ObjectKind::Tcb => Some(Self::Tcb),
-            ObjectKind::Frame | ObjectKind::CNode | ObjectKind::Untyped => None,
+            ObjectKind::Frame | ObjectKind::Untyped => None,
         }
     }
 }
@@ -72,6 +76,7 @@ impl KernelObjectRef {
     pub const fn kind(self) -> KernelObjectKind {
         match self {
             Self::Endpoint => KernelObjectKind::Endpoint,
+            Self::CNode => KernelObjectKind::CNode,
             Self::Notification => KernelObjectKind::Notification,
             Self::Reply => KernelObjectKind::Reply,
             Self::Tcb { .. } => KernelObjectKind::Tcb,
@@ -96,6 +101,12 @@ impl ObjectTable {
 
     pub fn validate_unbound(&self, object: ObjectId) -> Result<(), ObjectTableError> {
         self.ensure_unbound(object)
+    }
+
+    pub fn insert_cnode(&mut self, object: ObjectId) -> Result<(), ObjectTableError> {
+        self.ensure_unbound(object)?;
+        self.cnodes.insert(object, ());
+        Ok(())
     }
 
     pub fn insert_notification(
@@ -138,6 +149,9 @@ impl ObjectTable {
     pub fn get(&self, object: ObjectId) -> Result<KernelObjectRef, ObjectTableError> {
         if self.endpoints.contains_key(&object) {
             return Ok(KernelObjectRef::Endpoint);
+        }
+        if self.cnodes.contains_key(&object) {
+            return Ok(KernelObjectRef::CNode);
         }
         if self.notifications.contains_key(&object) {
             return Ok(KernelObjectRef::Notification);
@@ -251,7 +265,10 @@ impl ObjectTable {
             KernelObjectRef::Tcb { thread: None } => {
                 Err(ObjectTableError::TcbObjectUnbound { object })
             }
-            KernelObjectRef::Endpoint | KernelObjectRef::Notification | KernelObjectRef::Reply => {
+            KernelObjectRef::Endpoint
+            | KernelObjectRef::CNode
+            | KernelObjectRef::Notification
+            | KernelObjectRef::Reply => {
                 unreachable!("expect_kind returned a non-TCB object for TCB expectation")
             }
         }
@@ -266,6 +283,7 @@ impl ObjectTable {
 
     fn ensure_unbound(&self, object: ObjectId) -> Result<(), ObjectTableError> {
         if self.endpoints.contains_key(&object)
+            || self.cnodes.contains_key(&object)
             || self.notifications.contains_key(&object)
             || self.replies.contains_key(&object)
             || self.tcbs.contains_key(&object)
@@ -308,6 +326,22 @@ mod tests {
         assert_eq!(
             table.insert_notification(object(1), Notification::new()),
             Err(ObjectTableError::ObjectIdAlreadyBound { object: object(1) })
+        );
+    }
+
+    #[test]
+    fn cnode_object_is_tracked_as_kernel_object() {
+        let mut table = ObjectTable::new();
+        table.insert_cnode(object(2)).unwrap();
+
+        assert_eq!(table.get(object(2)), Ok(KernelObjectRef::CNode));
+        assert_eq!(
+            table.endpoint(object(2)).map(|_| ()),
+            Err(ObjectTableError::WrongObjectType {
+                object: object(2),
+                expected: KernelObjectKind::Endpoint,
+                actual: KernelObjectKind::CNode,
+            })
         );
     }
 
