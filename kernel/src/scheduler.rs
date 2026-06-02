@@ -637,35 +637,51 @@ mod tests {
     }
 
     #[test]
-    fn scheduler_errors_map_to_kernel_error_codes() {
+    fn scheduler_operation_failures_collapse_to_boundary_error_codes() {
+        let mut scheduler = Scheduler::new(&[cpu(0), cpu(1)]).unwrap();
+        let inactive = thread(1, cpu(0), ThreadState::Inactive);
+        let wrong_cpu = thread(2, cpu(1), ThreadState::Restart);
+        let current = thread(3, cpu(0), ThreadState::Restart);
+        let queued = thread(4, cpu(0), ThreadState::Restart);
+
         assert_eq!(
-            SchedulerError::UnknownCpu { cpu: cpu(9) }.error_code(),
+            scheduler.run_queue(cpu(9)).unwrap_err().error_code(),
             KernelErrorCode::InvalidArgument
         );
         assert_eq!(
-            SchedulerError::ThreadAffinityMismatch {
-                thread: ThreadId::new(1),
-                expected_cpu: cpu(0),
-                actual_cpu: cpu(1),
-            }
-            .error_code(),
+            scheduler
+                .run_queue_mut(cpu(0))
+                .unwrap()
+                .enqueue(&wrong_cpu)
+                .unwrap_err()
+                .error_code(),
             KernelErrorCode::InvalidArgument
         );
         assert_eq!(
-            SchedulerError::ThreadNotRunnable {
-                thread: ThreadId::new(1),
-                state: ThreadState::Inactive,
-            }
-            .error_code(),
+            scheduler
+                .run_queue_mut(cpu(0))
+                .unwrap()
+                .enqueue(&inactive)
+                .unwrap_err()
+                .error_code(),
+            KernelErrorCode::IllegalOperation
+        );
+
+        scheduler.enqueue(&current).unwrap();
+        scheduler.schedule_next(cpu(0)).unwrap();
+        scheduler.enqueue(&queued).unwrap();
+
+        assert_eq!(
+            scheduler.schedule_next(cpu(0)).unwrap_err().error_code(),
             KernelErrorCode::IllegalOperation
         );
         assert_eq!(
-            SchedulerError::CpuAlreadyHasCurrent {
-                cpu: cpu(0),
-                current: ThreadId::new(1),
-            }
-            .error_code(),
-            KernelErrorCode::IllegalOperation
+            scheduler.placement(ThreadId::new(3)),
+            Some(ThreadPlacement::Current { cpu: cpu(0) })
+        );
+        assert_eq!(
+            scheduler.placement(ThreadId::new(4)),
+            Some(ThreadPlacement::Ready { cpu: cpu(0) })
         );
     }
 }

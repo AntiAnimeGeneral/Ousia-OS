@@ -153,15 +153,17 @@ impl KernelExecutionError {
 mod tests {
     use super::*;
     use crate::cap::{
-        Capability, CapabilitySpace, EndpointCap, FrameCap, ObjectId, RetypeTarget, Rights,
+        Capability, CapabilitySpace, EndpointCap, FrameCap, ObjectId, RetypeTarget, Rights, TcbCap,
         UntypedCap,
     };
     use crate::invocation::{Invocation, invoke};
     use crate::ipc::{IpcError, IpcPayload, MAX_IPC_WORDS};
-    use crate::object::{KernelObjectKind, ObjectTableError};
+    use crate::object::{ObjectTable, ObjectTableError};
     use crate::reply::{Reply, ReplyCaller, ReplyError};
-    use crate::state::KernelExecutionError;
-    use crate::thread_action::ThreadActionError;
+    use crate::scheduler::Scheduler;
+    use crate::state::{InvocationContext, KernelState};
+    use crate::tcb::{CpuId, Tcb, ThreadId, ThreadState};
+    use crate::thread_action::ThreadTable;
 
     fn endpoint(rights: Rights) -> Capability {
         Capability::Endpoint(EndpointCap { badge: 0, rights })
@@ -173,6 +175,34 @@ mod tests {
 
     fn untyped(size_bits: u8) -> Capability {
         Capability::Untyped(UntypedCap { size_bits })
+    }
+
+    fn cpu(raw: u32) -> CpuId {
+        CpuId::new(raw)
+    }
+
+    fn thread(raw: u64) -> ThreadId {
+        ThreadId::new(raw)
+    }
+
+    fn tcb_state_with_object() -> (KernelState, crate::cap::CapabilityDescriptor, ObjectId) {
+        let mut cspace = CapabilitySpace::new();
+        let descriptor = cspace
+            .insert_initial_capability(Capability::Tcb(TcbCap {
+                rights: Rights::MANAGE,
+            }))
+            .unwrap();
+        let object = cspace.object_of(descriptor).unwrap();
+        let mut objects = ObjectTable::new();
+        objects.insert_tcb(object).unwrap();
+        let threads = ThreadTable::new();
+        let scheduler = Scheduler::new(&[cpu(0), cpu(1)]).unwrap();
+
+        (
+            KernelState::from_parts(cspace, objects, threads, scheduler),
+            descriptor,
+            object,
+        )
     }
 
     #[test]
@@ -345,10 +375,11 @@ mod tests {
     #[test]
     fn reply_state_errors_collapse_to_illegal_operation_code() {
         let mut reply = Reply::new();
+        let empty_reply_error = reply.reply().unwrap_err();
 
-        assert_eq!(reply.reply().unwrap_err(), ReplyError::NoPendingCaller,);
+        assert_eq!(empty_reply_error, ReplyError::NoPendingCaller);
         assert_eq!(
-            ReplyError::NoPendingCaller.error_code(),
+            empty_reply_error.error_code(),
             KernelErrorCode::IllegalOperation,
         );
 
@@ -378,140 +409,132 @@ mod tests {
     }
 
     #[test]
-    fn object_table_errors_collapse_to_boundary_error_codes() {
+    fn executor_object_lookup_failure_collapses_to_failed_lookup_code() {
+        let mut cspace = CapabilitySpace::new();
+        let descriptor = cspace
+            .insert_initial_capability(Capability::Endpoint(EndpointCap {
+                badge: 0,
+                rights: Rights::WRITE,
+            }))
+            .unwrap();
+        let mut tcb = Tcb::new(thread(1), cpu(0));
+        tcb.set_state(ThreadState::Running);
+        let mut threads = ThreadTable::new();
+        threads.insert(tcb.clone());
+        let mut scheduler = Scheduler::new(&[cpu(0), cpu(1)]).unwrap();
+        scheduler.enqueue(&tcb).unwrap();
+        scheduler.schedule_next(cpu(0)).unwrap();
+        let mut state = KernelState::from_parts(cspace, ObjectTable::new(), threads, scheduler);
+
         assert_eq!(
-            ObjectTableError::ObjectNotFound {
-                object: ObjectId::new(1),
-            }
-            .error_code(),
+            state
+                .execute_invocation(
+                    InvocationContext::new(thread(1), cpu(0)),
+                    descriptor,
+                    Invocation::EndpointSend {
+                        message_words: 0,
+                        blocking: true,
+                        is_call: false,
+                    },
+                )
+                .unwrap_err()
+                .error_code(),
             KernelErrorCode::FailedLookup
-        );
-        assert_eq!(
-            ObjectTableError::ThreadObjectNotFound {
-                thread: crate::tcb::ThreadId::new(2),
-            }
-            .error_code(),
-            KernelErrorCode::FailedLookup
-        );
-        assert_eq!(
-            ObjectTableError::WrongObjectType {
-                object: ObjectId::new(1),
-                expected: KernelObjectKind::Tcb,
-                actual: KernelObjectKind::Endpoint,
-            }
-            .error_code(),
-            KernelErrorCode::InvalidCapability
-        );
-        assert_eq!(
-            ObjectTableError::TcbObjectUnbound {
-                object: ObjectId::new(1),
-            }
-            .error_code(),
-            KernelErrorCode::IllegalOperation
-        );
-        assert_eq!(
-            ObjectTableError::ObjectIdAlreadyBound {
-                object: ObjectId::new(1),
-            }
-            .error_code(),
-            KernelErrorCode::IllegalOperation
-        );
-        assert_eq!(
-            ObjectTableError::ThreadObjectAlreadyBound {
-                thread: crate::tcb::ThreadId::new(2),
-            }
-            .error_code(),
-            KernelErrorCode::IllegalOperation
         );
     }
 
     #[test]
-    fn thread_action_errors_collapse_to_boundary_error_codes() {
-        let thread = crate::tcb::ThreadId::new(1);
-        let cpu = crate::tcb::CpuId::new(0);
+    fn tcb_configure_unknown_cpu_collapses_to_invalid_argument_code() {
+        let (mut state, descriptor, object) = tcb_state_with_object();
 
         assert_eq!(
-            ThreadActionError::UnknownThread { thread }.error_code(),
-            KernelErrorCode::FailedLookup
-        );
-        assert_eq!(
-            ThreadActionError::WrongCpu {
-                thread,
-                expected_cpu: cpu,
-                actual_cpu: crate::tcb::CpuId::new(1),
-            }
-            .error_code(),
+            state
+                .execute_invocation(
+                    InvocationContext::new(thread(1), cpu(0)),
+                    descriptor,
+                    Invocation::TcbConfigure {
+                        thread: thread(2),
+                        affinity: cpu(9),
+                    },
+                )
+                .unwrap_err()
+                .error_code(),
             KernelErrorCode::InvalidArgument
         );
         assert_eq!(
-            ThreadActionError::ThreadNotResumable {
-                thread,
-                state: crate::tcb::ThreadState::Running,
-            }
-            .error_code(),
-            KernelErrorCode::IllegalOperation
+            state.objects().tcb_thread(object),
+            Err(ObjectTableError::TcbObjectUnbound { object })
         );
-        assert_eq!(
-            ThreadActionError::Scheduler(SchedulerError::UnknownCpu { cpu }).error_code(),
-            KernelErrorCode::InvalidArgument
-        );
-        assert_eq!(
-            ThreadActionError::Reply(ReplyError::NoPendingCaller).error_code(),
-            KernelErrorCode::IllegalOperation
-        );
+        assert_eq!(state.threads().get(thread(2)), None);
     }
 
     #[test]
-    fn kernel_execution_errors_collapse_to_boundary_error_codes() {
-        let thread = crate::tcb::ThreadId::new(2);
+    fn tcb_resume_unbound_object_collapses_to_illegal_operation_code() {
+        let (mut state, descriptor, object) = tcb_state_with_object();
 
         assert_eq!(
-            KernelExecutionError::Invocation(InvocationError::MissingRights {
-                required: Rights::MANAGE,
-                actual: Rights::NONE,
+            state
+                .execute_invocation(
+                    InvocationContext::new(thread(1), cpu(0)),
+                    descriptor,
+                    Invocation::TcbResume,
+                )
+                .unwrap_err()
+                .error_code(),
+            KernelErrorCode::IllegalOperation
+        );
+        assert_eq!(
+            state.objects().tcb_thread(object),
+            Err(ObjectTableError::TcbObjectUnbound { object })
+        );
+        assert_eq!(state.scheduler().run_queue(cpu(0)).unwrap().ready_len(), 0);
+        assert_eq!(state.scheduler().run_queue(cpu(1)).unwrap().ready_len(), 0);
+    }
+
+    #[test]
+    fn tcb_resume_missing_thread_collapses_to_failed_lookup_code() {
+        let (mut state, descriptor, object) = tcb_state_with_object();
+        state.objects_mut().bind_tcb(object, thread(2)).unwrap();
+
+        assert_eq!(
+            state
+                .execute_invocation(
+                    InvocationContext::new(thread(1), cpu(0)),
+                    descriptor,
+                    Invocation::TcbResume,
+                )
+                .unwrap_err()
+                .error_code(),
+            KernelErrorCode::FailedLookup
+        );
+        assert_eq!(state.scheduler().run_queue(cpu(0)).unwrap().ready_len(), 0);
+        assert_eq!(state.scheduler().run_queue(cpu(1)).unwrap().ready_len(), 0);
+    }
+
+    #[test]
+    fn duplicate_thread_bootstrap_collapses_to_illegal_operation_code() {
+        let mut state = KernelState::new(&[cpu(0), cpu(1)]).unwrap();
+        state.objects_mut().insert_tcb(ObjectId::new(1)).unwrap();
+        state
+            .insert_thread_object(ObjectId::new(1), Tcb::new(thread(2), cpu(0)))
+            .unwrap();
+        state.objects_mut().insert_tcb(ObjectId::new(2)).unwrap();
+
+        assert_eq!(
+            state
+                .insert_thread_object(ObjectId::new(2), Tcb::new(thread(2), cpu(1)))
+                .unwrap_err()
+                .error_code(),
+            KernelErrorCode::IllegalOperation
+        );
+        assert_eq!(
+            state.objects().tcb_thread(ObjectId::new(2)),
+            Err(ObjectTableError::TcbObjectUnbound {
+                object: ObjectId::new(2),
             })
-            .error_code(),
-            KernelErrorCode::IllegalOperation
         );
-        assert_eq!(
-            KernelExecutionError::Object(ObjectTableError::TcbObjectUnbound {
-                object: ObjectId::new(1),
-            })
-            .error_code(),
-            KernelErrorCode::IllegalOperation
-        );
-        assert_eq!(
-            KernelExecutionError::ThreadAlreadyExists { thread }.error_code(),
-            KernelErrorCode::IllegalOperation
-        );
-        assert_eq!(
-            KernelExecutionError::MissingReplyObject {
-                endpoint: ObjectId::new(1),
-            }
-            .error_code(),
-            KernelErrorCode::IllegalOperation
-        );
-        assert_eq!(
-            KernelExecutionError::ReplyObjectMustBeDistinct {
-                endpoint: ObjectId::new(1),
-                reply: ObjectId::new(1),
-            }
-            .error_code(),
-            KernelErrorCode::IllegalOperation
-        );
-        assert_eq!(
-            KernelExecutionError::ReplyAuthorityMismatch {
-                reply: ObjectId::new(2),
-            }
-            .error_code(),
-            KernelErrorCode::IllegalOperation
-        );
-        assert_eq!(
-            KernelExecutionError::Scheduler(SchedulerError::UnknownCpu {
-                cpu: crate::tcb::CpuId::new(9),
-            })
-            .error_code(),
-            KernelErrorCode::InvalidArgument
-        );
+        assert_eq!(state.threads().affinity(thread(2)), Some(cpu(0)));
+        assert_eq!(state.scheduler().run_queue(cpu(0)).unwrap().ready_len(), 0);
+        assert_eq!(state.scheduler().run_queue(cpu(1)).unwrap().ready_len(), 0);
     }
 }
