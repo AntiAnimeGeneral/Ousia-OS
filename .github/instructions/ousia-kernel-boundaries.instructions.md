@@ -20,6 +20,7 @@ description: "Ousia OS 内核边界：kernel/OSTD/tooling 职责归属、seL4 ba
 - OSTD 拥有架构差异、bare-metal entry、exception vectors、early serial、CPU halt/wait、FPU/SIMD 初始化、page tables、frame allocator、MMIO 和 boot memory-map normalization。
 - 当 `kernel` 需要某个平台能力时，应通过架构无关的 OSTD API 请求，例如“如果当前平台支持则触发诊断异常”；不要在 `kernel` 里写 architecture cfg。
 - `ostd::mm::heap` 只是 early heap，用于早期 `alloc` 和 smoke tests。不要把 `linked_list_allocator` 演进成最终 kernel heap。真正的内存路径应先围绕 boot memory map、typed frame metadata、page table ownership 和 seL4-style Untyped/retype 建立，再考虑 slab 或 per-CPU cache。
+- `kernel` core 不使用 FP。SIMD 可作为 OSTD/arch-owned 的加速能力，用于 copy、checksum、crypto、compression 等明确热点；入口应由 OSTD 管理 FPU/SIMD ownership、preemption/interrupt 约束和寄存器保存恢复。`kernel` 只通过架构无关 OSTD API 请求这些能力，不直接持有或污染 FP/SIMD 状态。
 
 ## Reference-First 内核工作
 

@@ -7,8 +7,11 @@
 use crate::cap::CapError;
 use crate::invocation::InvocationError;
 use crate::ipc::IpcError;
+use crate::object::ObjectTableError;
 use crate::reply::ReplyError;
 use crate::scheduler::SchedulerError;
+use crate::state::KernelExecutionError;
+use crate::thread_action::ThreadActionError;
 
 #[repr(u32)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -98,6 +101,54 @@ impl SchedulerError {
     }
 }
 
+impl ObjectTableError {
+    pub fn error_code(&self) -> KernelErrorCode {
+        match self {
+            Self::ObjectNotFound { .. } | Self::ThreadObjectNotFound { .. } => {
+                KernelErrorCode::FailedLookup
+            }
+            Self::WrongObjectType { .. } => KernelErrorCode::InvalidCapability,
+            Self::ObjectIdAlreadyBound { .. }
+            | Self::TcbObjectUnbound { .. }
+            | Self::ThreadObjectAlreadyBound { .. } => KernelErrorCode::IllegalOperation,
+        }
+    }
+}
+
+impl ThreadActionError {
+    pub fn error_code(&self) -> KernelErrorCode {
+        match self {
+            Self::UnknownThread { .. } => KernelErrorCode::FailedLookup,
+            Self::WrongCpu { .. } => KernelErrorCode::InvalidArgument,
+            Self::ThreadNotCurrent { .. }
+            | Self::UnexpectedThreadState { .. }
+            | Self::NotWaitingOnBoundNotification { .. }
+            | Self::MissingReplyObject { .. }
+            | Self::MissingCallerObject { .. }
+            | Self::ReceiveCallTransactionUnsupported { .. }
+            | Self::ReplyAlreadyPending
+            | Self::ThreadNotResumable { .. } => KernelErrorCode::IllegalOperation,
+            Self::Reply(error) => error.error_code(),
+            Self::Scheduler(error) => error.error_code(),
+        }
+    }
+}
+
+impl KernelExecutionError {
+    pub fn error_code(&self) -> KernelErrorCode {
+        match self {
+            Self::Invocation(error) => error.error_code(),
+            Self::Object(error) => error.error_code(),
+            Self::Thread(error) => error.error_code(),
+            Self::Scheduler(error) => error.error_code(),
+            Self::MissingReplyObject { .. }
+            | Self::ReplyObjectMustBeDistinct { .. }
+            | Self::ReplyAuthorityMismatch { .. }
+            | Self::ThreadAlreadyExists { .. } => KernelErrorCode::IllegalOperation,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -107,7 +158,10 @@ mod tests {
     };
     use crate::invocation::{Invocation, invoke};
     use crate::ipc::{IpcError, IpcPayload, MAX_IPC_WORDS};
+    use crate::object::{KernelObjectKind, ObjectTableError};
     use crate::reply::{Reply, ReplyCaller, ReplyError};
+    use crate::state::KernelExecutionError;
+    use crate::thread_action::ThreadActionError;
 
     fn endpoint(rights: Rights) -> Capability {
         Capability::Endpoint(EndpointCap { badge: 0, rights })
@@ -320,6 +374,144 @@ mod tests {
                 .unwrap_err()
                 .error_code(),
             KernelErrorCode::IllegalOperation,
+        );
+    }
+
+    #[test]
+    fn object_table_errors_collapse_to_boundary_error_codes() {
+        assert_eq!(
+            ObjectTableError::ObjectNotFound {
+                object: ObjectId::new(1),
+            }
+            .error_code(),
+            KernelErrorCode::FailedLookup
+        );
+        assert_eq!(
+            ObjectTableError::ThreadObjectNotFound {
+                thread: crate::tcb::ThreadId::new(2),
+            }
+            .error_code(),
+            KernelErrorCode::FailedLookup
+        );
+        assert_eq!(
+            ObjectTableError::WrongObjectType {
+                object: ObjectId::new(1),
+                expected: KernelObjectKind::Tcb,
+                actual: KernelObjectKind::Endpoint,
+            }
+            .error_code(),
+            KernelErrorCode::InvalidCapability
+        );
+        assert_eq!(
+            ObjectTableError::TcbObjectUnbound {
+                object: ObjectId::new(1),
+            }
+            .error_code(),
+            KernelErrorCode::IllegalOperation
+        );
+        assert_eq!(
+            ObjectTableError::ObjectIdAlreadyBound {
+                object: ObjectId::new(1),
+            }
+            .error_code(),
+            KernelErrorCode::IllegalOperation
+        );
+        assert_eq!(
+            ObjectTableError::ThreadObjectAlreadyBound {
+                thread: crate::tcb::ThreadId::new(2),
+            }
+            .error_code(),
+            KernelErrorCode::IllegalOperation
+        );
+    }
+
+    #[test]
+    fn thread_action_errors_collapse_to_boundary_error_codes() {
+        let thread = crate::tcb::ThreadId::new(1);
+        let cpu = crate::tcb::CpuId::new(0);
+
+        assert_eq!(
+            ThreadActionError::UnknownThread { thread }.error_code(),
+            KernelErrorCode::FailedLookup
+        );
+        assert_eq!(
+            ThreadActionError::WrongCpu {
+                thread,
+                expected_cpu: cpu,
+                actual_cpu: crate::tcb::CpuId::new(1),
+            }
+            .error_code(),
+            KernelErrorCode::InvalidArgument
+        );
+        assert_eq!(
+            ThreadActionError::ThreadNotResumable {
+                thread,
+                state: crate::tcb::ThreadState::Running,
+            }
+            .error_code(),
+            KernelErrorCode::IllegalOperation
+        );
+        assert_eq!(
+            ThreadActionError::Scheduler(SchedulerError::UnknownCpu { cpu }).error_code(),
+            KernelErrorCode::InvalidArgument
+        );
+        assert_eq!(
+            ThreadActionError::Reply(ReplyError::NoPendingCaller).error_code(),
+            KernelErrorCode::IllegalOperation
+        );
+    }
+
+    #[test]
+    fn kernel_execution_errors_collapse_to_boundary_error_codes() {
+        let thread = crate::tcb::ThreadId::new(2);
+
+        assert_eq!(
+            KernelExecutionError::Invocation(InvocationError::MissingRights {
+                required: Rights::MANAGE,
+                actual: Rights::NONE,
+            })
+            .error_code(),
+            KernelErrorCode::IllegalOperation
+        );
+        assert_eq!(
+            KernelExecutionError::Object(ObjectTableError::TcbObjectUnbound {
+                object: ObjectId::new(1),
+            })
+            .error_code(),
+            KernelErrorCode::IllegalOperation
+        );
+        assert_eq!(
+            KernelExecutionError::ThreadAlreadyExists { thread }.error_code(),
+            KernelErrorCode::IllegalOperation
+        );
+        assert_eq!(
+            KernelExecutionError::MissingReplyObject {
+                endpoint: ObjectId::new(1),
+            }
+            .error_code(),
+            KernelErrorCode::IllegalOperation
+        );
+        assert_eq!(
+            KernelExecutionError::ReplyObjectMustBeDistinct {
+                endpoint: ObjectId::new(1),
+                reply: ObjectId::new(1),
+            }
+            .error_code(),
+            KernelErrorCode::IllegalOperation
+        );
+        assert_eq!(
+            KernelExecutionError::ReplyAuthorityMismatch {
+                reply: ObjectId::new(2),
+            }
+            .error_code(),
+            KernelErrorCode::IllegalOperation
+        );
+        assert_eq!(
+            KernelExecutionError::Scheduler(SchedulerError::UnknownCpu {
+                cpu: crate::tcb::CpuId::new(9),
+            })
+            .error_code(),
+            KernelErrorCode::InvalidArgument
         );
     }
 }
