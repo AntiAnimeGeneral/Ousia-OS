@@ -253,14 +253,12 @@ impl KernelState {
             RetypeTarget::Endpoint | RetypeTarget::Notification => {
                 self.objects.validate_unbound(object)?;
             }
-            RetypeTarget::Frame { .. }
-            | RetypeTarget::CNode { .. }
-            | RetypeTarget::Untyped { .. }
-            | RetypeTarget::Tcb { .. } => {
+            RetypeTarget::Frame { .. } | RetypeTarget::CNode { .. } | RetypeTarget::Tcb { .. } => {
                 return Ok(ExecutionOutcome::Unsupported(
                     UnsupportedInvocation::UntypedRetype,
                 ));
             }
+            RetypeTarget::Untyped { .. } => {}
         }
 
         let descriptor = self
@@ -276,10 +274,8 @@ impl KernelState {
                 .objects
                 .insert_notification(object, Notification::new())
                 .expect("prevalidated notification object insertion must succeed"),
-            RetypeTarget::Frame { .. }
-            | RetypeTarget::CNode { .. }
-            | RetypeTarget::Untyped { .. }
-            | RetypeTarget::Tcb { .. } => {
+            RetypeTarget::Untyped { .. } => {}
+            RetypeTarget::Frame { .. } | RetypeTarget::CNode { .. } | RetypeTarget::Tcb { .. } => {
                 unreachable!("unsupported retype target returned before commit")
             }
         }
@@ -1503,6 +1499,79 @@ mod tests {
             .unwrap();
         assert_eq!(endpoint.slot.raw(), untyped.slot.raw() + 1);
         assert_eq!(state.cspace().object_of(endpoint), Ok(predicted_object));
+    }
+
+    #[test]
+    fn untyped_retype_nested_untyped_commits_cspace_without_object_table_entry() {
+        let mut cspace = CapabilitySpace::new();
+        let untyped = cspace
+            .insert_initial_capability(Capability::Untyped(crate::cap::UntypedCap {
+                size_bits: 12,
+            }))
+            .unwrap();
+        let threads = ThreadTable::new();
+        let scheduler = Scheduler::new(&[cpu(0), cpu(1)]).unwrap();
+        let mut state = KernelState::from_parts(cspace, ObjectTable::new(), threads, scheduler);
+
+        let outcome = state
+            .execute_invocation(
+                InvocationContext::new(thread(1), cpu(0)),
+                untyped,
+                Invocation::UntypedRetype {
+                    target: crate::cap::RetypeTarget::Untyped { size_bits: 10 },
+                },
+            )
+            .unwrap();
+        let ExecutionOutcome::Retyped { descriptor } = outcome else {
+            panic!("nested untyped retype must return a new capability descriptor");
+        };
+        let child_object = state.cspace().object_of(descriptor).unwrap();
+
+        assert_eq!(
+            state.cspace().lookup(descriptor).unwrap().capability,
+            Capability::Untyped(crate::cap::UntypedCap { size_bits: 10 })
+        );
+        assert_eq!(
+            state.objects().get(child_object),
+            Err(ObjectTableError::ObjectNotFound {
+                object: child_object
+            })
+        );
+    }
+
+    #[test]
+    fn oversized_nested_untyped_retype_does_not_commit_cspace() {
+        let mut cspace = CapabilitySpace::new();
+        let untyped = cspace
+            .insert_initial_capability(Capability::Untyped(crate::cap::UntypedCap {
+                size_bits: 12,
+            }))
+            .unwrap();
+        let threads = ThreadTable::new();
+        let scheduler = Scheduler::new(&[cpu(0), cpu(1)]).unwrap();
+        let mut state = KernelState::from_parts(cspace, ObjectTable::new(), threads, scheduler);
+
+        assert_eq!(
+            state.execute_invocation(
+                InvocationContext::new(thread(1), cpu(0)),
+                untyped,
+                Invocation::UntypedRetype {
+                    target: crate::cap::RetypeTarget::Untyped { size_bits: 13 },
+                },
+            ),
+            Err(KernelExecutionError::Invocation(
+                InvocationError::InvalidRetypeSize {
+                    requested: 13,
+                    source: 12,
+                }
+            ))
+        );
+
+        let endpoint = state
+            .cspace_mut()
+            .retype_untyped(untyped, crate::cap::RetypeTarget::Endpoint)
+            .unwrap();
+        assert_eq!(endpoint.slot.raw(), untyped.slot.raw() + 1);
     }
 
     #[test]
