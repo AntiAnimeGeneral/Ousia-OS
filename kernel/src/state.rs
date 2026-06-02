@@ -1,5 +1,7 @@
 use crate::{
-    cap::{CapabilityDescriptor, CapabilitySpace, ObjectId, ReplyCap, RetypeTarget},
+    cap::{
+        CapabilityDescriptor, CapabilitySpace, MintParams, ObjectId, ReplyCap, RetypeTarget, Rights,
+    },
     invocation::{Invocation, InvocationError, InvocationOutcome, invoke},
     ipc::{Endpoint, IpcPayload, IpcReceiveOptions, IpcSendOptions},
     notification::Notification,
@@ -28,6 +30,10 @@ pub enum ExecutionOutcome {
         thread: ThreadAction,
         reply: CapabilityDescriptor,
     },
+    Capability {
+        descriptor: CapabilityDescriptor,
+    },
+    CapabilityMutation,
     Retyped {
         descriptor: CapabilityDescriptor,
     },
@@ -235,6 +241,22 @@ impl KernelState {
             InvocationOutcome::UntypedRetypeAuthorized { target, .. } => {
                 self.execute_untyped_retype(descriptor, target)
             }
+            InvocationOutcome::CNodeCopyAuthorized {
+                source,
+                requested_rights,
+            } => self.execute_cnode_copy(source, requested_rights),
+            InvocationOutcome::CNodeMintAuthorized {
+                source,
+                requested_rights,
+                params,
+            } => self.execute_cnode_mint(source, requested_rights, params),
+            InvocationOutcome::CNodeMoveAuthorized { source } => self.execute_cnode_move(source),
+            InvocationOutcome::CNodeDeleteAuthorized { target } => {
+                self.execute_cnode_delete(target)
+            }
+            InvocationOutcome::CNodeRevokeAuthorized { target } => {
+                self.execute_cnode_revoke(target)
+            }
             InvocationOutcome::TcbResumeAuthorized { tcb } => self.execute_tcb_resume(tcb),
             InvocationOutcome::TcbConfigureAuthorized {
                 tcb,
@@ -294,6 +316,60 @@ impl KernelState {
         }
 
         Ok(ExecutionOutcome::Retyped { descriptor })
+    }
+
+    fn execute_cnode_copy(
+        &mut self,
+        source: CapabilityDescriptor,
+        requested_rights: Rights,
+    ) -> Result<ExecutionOutcome, KernelExecutionError> {
+        let descriptor = self
+            .cspace
+            .copy(source, requested_rights)
+            .map_err(InvocationError::Cap)?;
+        Ok(ExecutionOutcome::Capability { descriptor })
+    }
+
+    fn execute_cnode_mint(
+        &mut self,
+        source: CapabilityDescriptor,
+        requested_rights: Rights,
+        params: MintParams,
+    ) -> Result<ExecutionOutcome, KernelExecutionError> {
+        let descriptor = self
+            .cspace
+            .mint(source, requested_rights, params)
+            .map_err(InvocationError::Cap)?;
+        Ok(ExecutionOutcome::Capability { descriptor })
+    }
+
+    fn execute_cnode_move(
+        &mut self,
+        source: CapabilityDescriptor,
+    ) -> Result<ExecutionOutcome, KernelExecutionError> {
+        let descriptor = self
+            .cspace
+            .move_capability(source)
+            .map_err(InvocationError::Cap)?;
+        Ok(ExecutionOutcome::Capability { descriptor })
+    }
+
+    fn execute_cnode_delete(
+        &mut self,
+        target: CapabilityDescriptor,
+    ) -> Result<ExecutionOutcome, KernelExecutionError> {
+        self.cspace.delete(target).map_err(InvocationError::Cap)?;
+        Ok(ExecutionOutcome::CapabilityMutation)
+    }
+
+    fn execute_cnode_revoke(
+        &mut self,
+        target: CapabilityDescriptor,
+    ) -> Result<ExecutionOutcome, KernelExecutionError> {
+        self.cspace
+            .revoke_descendants(target)
+            .map_err(InvocationError::Cap)?;
+        Ok(ExecutionOutcome::CapabilityMutation)
     }
 
     fn execute_endpoint_send(

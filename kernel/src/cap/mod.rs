@@ -596,13 +596,13 @@ impl CapabilitySpace {
     }
 
     #[cfg(test)]
-    pub(crate) fn object_of(&self, descriptor: CapabilityDescriptor) -> Result<ObjectId, CapError> {
+    pub fn object_of(&self, descriptor: CapabilityDescriptor) -> Result<ObjectId, CapError> {
         let (slot, _) = self.validated_slot(descriptor)?;
         Ok(slot.object)
     }
 
     #[cfg(test)]
-    pub(crate) fn slot_exists(&self, slot: SlotId) -> bool {
+    pub fn slot_exists(&self, slot: SlotId) -> bool {
         self.slots.get(&slot).is_some_and(|slot| slot.alive)
     }
 

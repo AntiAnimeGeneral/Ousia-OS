@@ -15,6 +15,7 @@ pub fn thread(raw: u64) -> ThreadId {
     ThreadId::new(raw)
 }
 
+#[allow(dead_code)]
 pub fn state_with_untyped(size_bits: u8) -> (KernelState, CapabilityDescriptor) {
     let mut cspace = CapabilitySpace::new();
     let untyped = cspace
