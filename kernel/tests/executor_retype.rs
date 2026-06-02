@@ -279,7 +279,7 @@ fn untyped_retype_cnode_object_table_conflict_does_not_commit_cspace() {
     // Goal: object-table conflicts fail before CSpace consumes the next slot/object.
     // Scope: host integration of executor precheck ordering for CNode retype.
     // Semantics: after failure, a later retype observes the same predicted child object.
-    let (mut state, untyped) = state_with_untyped(12);
+    let (mut state, untyped) = state_with_untyped(13);
     let target = RetypeTarget::CNode {
         rights: Rights::MANAGE,
     };
@@ -318,7 +318,7 @@ fn untyped_retype_frame_object_table_conflict_does_not_commit_cspace() {
     // Goal: Frame conflicts share the same failure-before-side-effect contract.
     // Scope: host integration of Frame retype precheck before CSpace commit.
     // Semantics: failed Frame retype leaves slot allocation and object lineage unchanged.
-    let (mut state, untyped) = state_with_untyped(12);
+    let (mut state, untyped) = state_with_untyped(13);
     let target = RetypeTarget::Frame {
         rights: Rights::READ,
     };

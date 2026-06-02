@@ -70,10 +70,10 @@ bitflags! {
 }
 
 const MIN_FRAME_SIZE_BITS: u8 = 12;
-const PLACEHOLDER_ENDPOINT_SIZE_BITS: u8 = 0;
-const PLACEHOLDER_CNODE_SIZE_BITS: u8 = 0;
-const PLACEHOLDER_TCB_SIZE_BITS: u8 = 0;
-const PLACEHOLDER_NOTIFICATION_SIZE_BITS: u8 = 0;
+const MODEL_ENDPOINT_SIZE_BITS: u8 = 4;
+const MODEL_CNODE_SIZE_BITS: u8 = 6;
+const MODEL_TCB_SIZE_BITS: u8 = 10;
+const MODEL_NOTIFICATION_SIZE_BITS: u8 = 5;
 const ENDPOINT_ALLOWED_RIGHTS: Rights = Rights::READ
     .union(Rights::WRITE)
     .union(Rights::GRANT)
@@ -84,7 +84,7 @@ const UNTYPED_ALLOWED_RIGHTS: Rights = Rights::NONE;
 const TCB_ALLOWED_RIGHTS: Rights = Rights::MANAGE;
 const NOTIFICATION_ALLOWED_RIGHTS: Rights = Rights::READ.union(Rights::WRITE);
 const REPLY_ALLOWED_RIGHTS: Rights = Rights::NONE;
-const ZERO_SIZE_RETYPE_BYTES: u128 = 1;
+const MIN_RETYPE_BYTES: u128 = 1;
 
 impl Rights {
     pub const fn is_subset_of(self, allowed: Self) -> bool {
@@ -206,12 +206,12 @@ pub enum RetypeTarget {
 impl RetypeTarget {
     pub(crate) const fn minimum_size_bits(&self) -> u8 {
         match self {
-            Self::Endpoint => PLACEHOLDER_ENDPOINT_SIZE_BITS,
+            Self::Endpoint => MODEL_ENDPOINT_SIZE_BITS,
             Self::Frame { .. } => MIN_FRAME_SIZE_BITS,
-            Self::CNode { .. } => PLACEHOLDER_CNODE_SIZE_BITS,
+            Self::CNode { .. } => MODEL_CNODE_SIZE_BITS,
             Self::Untyped { size_bits } => *size_bits,
-            Self::Tcb { .. } => PLACEHOLDER_TCB_SIZE_BITS,
-            Self::Notification => PLACEHOLDER_NOTIFICATION_SIZE_BITS,
+            Self::Tcb { .. } => MODEL_TCB_SIZE_BITS,
+            Self::Notification => MODEL_NOTIFICATION_SIZE_BITS,
         }
     }
 
@@ -580,12 +580,20 @@ impl CapabilitySpace {
     }
 
     pub fn revoke_descendants(&mut self, descriptor: CapabilityDescriptor) -> Result<(), CapError> {
-        self.validate_descriptor(descriptor)?;
-
+        let target_object = self.validated_slot(descriptor)?.0.object;
         let descendants = self.collect_descendants(descriptor.slot);
+        let revoked_object_ids: Vec<_> = descendants
+            .iter()
+            .filter_map(|slot| self.slots.get(slot).map(|slot| slot.object))
+            .filter(|object| *object != target_object)
+            .collect();
         for slot in descendants {
             self.delete_slot(slot);
         }
+        for object in revoked_object_ids {
+            self.untyped_allocations.remove(&object);
+        }
+        self.reset_untyped_allocation(descriptor.slot);
 
         Ok(())
     }
@@ -939,6 +947,19 @@ impl CapabilitySpace {
             parent.children.remove(&slot);
         }
     }
+
+    fn reset_untyped_allocation(&mut self, slot: SlotId) {
+        let Some(slot_ref) = self.slots.get(&slot) else {
+            return;
+        };
+        if !matches!(slot_ref.capability, Capability::Untyped(_)) || slot_ref.parent.is_some() {
+            return;
+        };
+
+        if let Some(allocation) = self.untyped_allocations.get_mut(&slot_ref.object) {
+            allocation.watermark = 0;
+        }
+    }
 }
 
 impl UntypedAllocation {
@@ -984,7 +1005,7 @@ impl UntypedAllocation {
 
 fn bytes_for_size_bits(size_bits: u8) -> Option<u128> {
     if size_bits == 0 {
-        return Some(ZERO_SIZE_RETYPE_BYTES);
+        return Some(MIN_RETYPE_BYTES);
     }
 
     1u128.checked_shl(size_bits.into())
@@ -1502,6 +1523,194 @@ mod tests {
         assert_eq!(
             cspace.lookup(frame),
             Err(CapError::SlotNotFound(frame.slot))
+        );
+    }
+
+    #[test]
+    fn revoke_untyped_descendants_resets_parent_capacity() {
+        let mut cspace = CapabilitySpace::new();
+        let root = cspace.insert_initial_capability(untyped(12)).unwrap();
+        let frame = cspace
+            .retype_untyped(
+                root,
+                RetypeTarget::Frame {
+                    rights: Rights::READ,
+                },
+            )
+            .unwrap();
+
+        assert_eq!(
+            cspace.retype_untyped(root, RetypeTarget::Endpoint),
+            Err(CapError::UntypedCapacityExhausted {
+                parent: root.slot,
+                requested: 4,
+                source: 12,
+            })
+        );
+
+        cspace.revoke_descendants(root).unwrap();
+        assert_eq!(
+            cspace.lookup(frame),
+            Err(CapError::SlotNotFound(frame.slot))
+        );
+
+        let recycled = cspace
+            .retype_untyped(
+                root,
+                RetypeTarget::Frame {
+                    rights: Rights::READ,
+                },
+            )
+            .unwrap();
+
+        assert!(matches!(
+            cspace.lookup(frame),
+            Err(CapError::SlotNotFound(_)) | Err(CapError::StaleDescriptor { .. })
+        ));
+        assert_eq!(
+            cspace.lookup(recycled).unwrap().object_kind,
+            ObjectKind::Frame
+        );
+    }
+
+    #[test]
+    fn revoke_copied_untyped_cap_does_not_remove_parent_allocation_state() {
+        let mut cspace = CapabilitySpace::new();
+        let root = cspace.insert_initial_capability(untyped(12)).unwrap();
+        let copied = cspace.copy(root, Rights::NONE).unwrap();
+
+        cspace.revoke_descendants(root).unwrap();
+
+        assert_eq!(
+            cspace.lookup(copied),
+            Err(CapError::SlotNotFound(copied.slot))
+        );
+        assert!(
+            cspace
+                .retype_untyped(
+                    root,
+                    RetypeTarget::Frame {
+                        rights: Rights::READ,
+                    },
+                )
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn revoke_copied_untyped_alias_does_not_reset_shared_capacity() {
+        let mut cspace = CapabilitySpace::new();
+        let root = cspace.insert_initial_capability(untyped(12)).unwrap();
+        let frame = cspace
+            .retype_untyped(
+                root,
+                RetypeTarget::Frame {
+                    rights: Rights::READ,
+                },
+            )
+            .unwrap();
+        let alias = cspace.copy(root, Rights::NONE).unwrap();
+
+        cspace.revoke_descendants(alias).unwrap();
+
+        assert!(cspace.lookup(frame).is_ok());
+        assert_eq!(
+            cspace.retype_untyped(root, RetypeTarget::Endpoint),
+            Err(CapError::UntypedCapacityExhausted {
+                parent: root.slot,
+                requested: 4,
+                source: 12,
+            })
+        );
+    }
+
+    #[test]
+    fn revoke_nested_untyped_removes_child_allocation_state() {
+        let mut cspace = CapabilitySpace::new();
+        let root = cspace.insert_initial_capability(untyped(12)).unwrap();
+        let child = cspace
+            .retype_untyped(root, RetypeTarget::Untyped { size_bits: 10 })
+            .unwrap();
+        cspace
+            .retype_untyped(child, RetypeTarget::Notification)
+            .unwrap();
+
+        cspace.revoke_descendants(root).unwrap();
+
+        assert_eq!(
+            cspace.retype_untyped(child, RetypeTarget::Notification),
+            Err(CapError::SlotNotFound(child.slot))
+        );
+        assert!(
+            cspace
+                .retype_untyped(root, RetypeTarget::Untyped { size_bits: 12 })
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn untyped_retype_uses_model_object_size_and_alignment() {
+        let mut cspace = CapabilitySpace::new();
+        let root = cspace.insert_initial_capability(untyped(12)).unwrap();
+
+        cspace.retype_untyped(root, RetypeTarget::Endpoint).unwrap();
+
+        assert_eq!(
+            cspace.retype_untyped(
+                root,
+                RetypeTarget::Frame {
+                    rights: Rights::READ,
+                },
+            ),
+            Err(CapError::UntypedCapacityExhausted {
+                parent: root.slot,
+                requested: 12,
+                source: 12,
+            })
+        );
+    }
+
+    #[test]
+    fn model_sized_kernel_objects_consume_untyped_capacity() {
+        let mut cspace = CapabilitySpace::new();
+        let root = cspace.insert_initial_capability(untyped(10)).unwrap();
+
+        cspace
+            .retype_untyped(
+                root,
+                RetypeTarget::Tcb {
+                    rights: Rights::MANAGE,
+                },
+            )
+            .unwrap();
+
+        assert_eq!(
+            cspace.retype_untyped(root, RetypeTarget::Notification),
+            Err(CapError::UntypedCapacityExhausted {
+                parent: root.slot,
+                requested: 5,
+                source: 10,
+            })
+        );
+
+        let mut cspace = CapabilitySpace::new();
+        let root = cspace.insert_initial_capability(untyped(6)).unwrap();
+        cspace
+            .retype_untyped(
+                root,
+                RetypeTarget::CNode {
+                    rights: Rights::MANAGE,
+                },
+            )
+            .unwrap();
+
+        assert_eq!(
+            cspace.retype_untyped(root, RetypeTarget::Notification),
+            Err(CapError::UntypedCapacityExhausted {
+                parent: root.slot,
+                requested: 5,
+                source: 6,
+            })
         );
     }
 

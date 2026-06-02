@@ -1,7 +1,10 @@
 mod support;
 
 use kernel::{
-    cap::{CNodeCap, CapError, Capability, CapabilityDescriptor, EndpointCap, MintParams, Rights},
+    cap::{
+        CNodeCap, CapError, Capability, CapabilityDescriptor, EndpointCap, FrameCap, MintParams,
+        RetypeTarget, Rights, UntypedCap,
+    },
     invocation::Invocation,
     state::{ExecutionOutcome, InvocationContext, KernelExecutionError},
 };
@@ -13,6 +16,10 @@ fn cnode(rights: Rights) -> Capability {
 
 fn endpoint(rights: Rights, badge: u64) -> Capability {
     Capability::Endpoint(EndpointCap { badge, rights })
+}
+
+fn untyped(size_bits: u8) -> Capability {
+    Capability::Untyped(UntypedCap { size_bits })
 }
 
 fn cnode_state() -> (kernel::state::KernelState, CapabilityDescriptor) {
@@ -191,6 +198,111 @@ fn cnode_revoke_removes_descendants_but_keeps_target() {
         state.cspace().lookup(grandchild),
         Err(CapError::SlotNotFound(_))
     ));
+}
+
+#[test]
+fn cnode_revoke_untyped_descendants_recovers_capacity() {
+    // Goal: CNode revoke reaches Untyped capacity reset through the executor.
+    // Scope: host integration for CSpace lineage and Untyped watermark mutation.
+    // Semantics: revoked descendants disappear and the parent Untyped can retype again.
+    let (mut state, cnode) = cnode_state();
+    let root = state
+        .cspace_mut()
+        .insert_initial_capability(untyped(12))
+        .unwrap();
+    let frame = state
+        .cspace_mut()
+        .retype_untyped(
+            root,
+            RetypeTarget::Frame {
+                rights: Rights::READ,
+            },
+        )
+        .unwrap();
+
+    assert_eq!(
+        state.execute_invocation(
+            InvocationContext::new(thread(1), cpu(0)),
+            cnode,
+            Invocation::CNodeRevoke { target: root },
+        ),
+        Ok(ExecutionOutcome::CapabilityMutation)
+    );
+
+    assert!(matches!(
+        state.cspace().lookup(frame),
+        Err(CapError::SlotNotFound(_))
+    ));
+    let recycled = state
+        .cspace_mut()
+        .retype_untyped(
+            root,
+            RetypeTarget::Frame {
+                rights: Rights::READ,
+            },
+        )
+        .unwrap();
+    assert_eq!(
+        state.cspace().lookup(recycled).unwrap().capability,
+        Capability::Frame(FrameCap {
+            rights: Rights::READ,
+        })
+    );
+}
+
+#[test]
+fn cnode_revoke_copied_untyped_alias_does_not_recover_shared_capacity() {
+    // Goal: executor revoke cannot use a copied Untyped alias as a reset boundary.
+    // Scope: host integration across CNode copy, CNode revoke, and Untyped retype.
+    // Semantics: alias revoke leaves root-owned allocations and capacity unchanged.
+    let (mut state, cnode) = cnode_state();
+    let root = state
+        .cspace_mut()
+        .insert_initial_capability(untyped(12))
+        .unwrap();
+    let frame = state
+        .cspace_mut()
+        .retype_untyped(
+            root,
+            RetypeTarget::Frame {
+                rights: Rights::READ,
+            },
+        )
+        .unwrap();
+    let alias = capability_descriptor(
+        state
+            .execute_invocation(
+                InvocationContext::new(thread(1), cpu(0)),
+                cnode,
+                Invocation::CNodeCopy {
+                    source: root,
+                    requested_rights: Rights::NONE,
+                },
+            )
+            .unwrap(),
+        "Untyped alias copy",
+    );
+
+    assert_eq!(
+        state.execute_invocation(
+            InvocationContext::new(thread(1), cpu(0)),
+            cnode,
+            Invocation::CNodeRevoke { target: alias },
+        ),
+        Ok(ExecutionOutcome::CapabilityMutation)
+    );
+
+    assert!(state.cspace().lookup(frame).is_ok());
+    assert_eq!(
+        state
+            .cspace_mut()
+            .retype_untyped(root, RetypeTarget::Endpoint),
+        Err(CapError::UntypedCapacityExhausted {
+            parent: root.slot,
+            requested: 4,
+            source: 12,
+        })
+    );
 }
 
 #[test]
