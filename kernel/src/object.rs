@@ -11,6 +11,7 @@ use crate::{
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum KernelObjectKind {
     Endpoint,
+    Frame,
     CNode,
     Notification,
     Reply,
@@ -20,6 +21,7 @@ pub enum KernelObjectKind {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum KernelObjectRef {
     Endpoint,
+    Frame { size_bits: u8 },
     CNode,
     Notification,
     Reply,
@@ -50,9 +52,25 @@ pub enum ObjectTableError {
     },
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct FrameObject {
+    size_bits: u8,
+}
+
+impl FrameObject {
+    pub const fn new(size_bits: u8) -> Self {
+        Self { size_bits }
+    }
+
+    pub const fn size_bits(self) -> u8 {
+        self.size_bits
+    }
+}
+
 #[derive(Debug, Default)]
 pub struct ObjectTable {
     endpoints: BTreeMap<ObjectId, Endpoint>,
+    frames: BTreeMap<ObjectId, FrameObject>,
     cnodes: BTreeMap<ObjectId, ()>,
     notifications: BTreeMap<ObjectId, Notification>,
     replies: BTreeMap<ObjectId, Reply>,
@@ -63,11 +81,12 @@ impl KernelObjectKind {
     pub const fn from_cap_object_kind(kind: ObjectKind) -> Option<Self> {
         match kind {
             ObjectKind::Endpoint => Some(Self::Endpoint),
+            ObjectKind::Frame => Some(Self::Frame),
             ObjectKind::CNode => Some(Self::CNode),
             ObjectKind::Notification => Some(Self::Notification),
             ObjectKind::Reply => Some(Self::Reply),
             ObjectKind::Tcb => Some(Self::Tcb),
-            ObjectKind::Frame | ObjectKind::Untyped => None,
+            ObjectKind::Untyped => None,
         }
     }
 }
@@ -76,6 +95,7 @@ impl KernelObjectRef {
     pub const fn kind(self) -> KernelObjectKind {
         match self {
             Self::Endpoint => KernelObjectKind::Endpoint,
+            Self::Frame { .. } => KernelObjectKind::Frame,
             Self::CNode => KernelObjectKind::CNode,
             Self::Notification => KernelObjectKind::Notification,
             Self::Reply => KernelObjectKind::Reply,
@@ -101,6 +121,16 @@ impl ObjectTable {
 
     pub fn validate_unbound(&self, object: ObjectId) -> Result<(), ObjectTableError> {
         self.ensure_unbound(object)
+    }
+
+    pub fn insert_frame(
+        &mut self,
+        object: ObjectId,
+        frame: FrameObject,
+    ) -> Result<(), ObjectTableError> {
+        self.ensure_unbound(object)?;
+        self.frames.insert(object, frame);
+        Ok(())
     }
 
     pub fn insert_cnode(&mut self, object: ObjectId) -> Result<(), ObjectTableError> {
@@ -150,6 +180,11 @@ impl ObjectTable {
         if self.endpoints.contains_key(&object) {
             return Ok(KernelObjectRef::Endpoint);
         }
+        if let Some(frame) = self.frames.get(&object) {
+            return Ok(KernelObjectRef::Frame {
+                size_bits: frame.size_bits(),
+            });
+        }
         if self.cnodes.contains_key(&object) {
             return Ok(KernelObjectRef::CNode);
         }
@@ -197,6 +232,13 @@ impl ObjectTable {
             .endpoints
             .get_mut(&object)
             .expect("checked endpoint object must exist"))
+    }
+
+    pub fn frame(&self, object: ObjectId) -> Result<FrameObject, ObjectTableError> {
+        self.frames
+            .get(&object)
+            .copied()
+            .ok_or_else(|| self.missing_or_wrong(object, KernelObjectKind::Frame))
     }
 
     pub fn notification(&self, object: ObjectId) -> Result<&Notification, ObjectTableError> {
@@ -266,6 +308,7 @@ impl ObjectTable {
                 Err(ObjectTableError::TcbObjectUnbound { object })
             }
             KernelObjectRef::Endpoint
+            | KernelObjectRef::Frame { .. }
             | KernelObjectRef::CNode
             | KernelObjectRef::Notification
             | KernelObjectRef::Reply => {
@@ -283,6 +326,7 @@ impl ObjectTable {
 
     fn ensure_unbound(&self, object: ObjectId) -> Result<(), ObjectTableError> {
         if self.endpoints.contains_key(&object)
+            || self.frames.contains_key(&object)
             || self.cnodes.contains_key(&object)
             || self.notifications.contains_key(&object)
             || self.replies.contains_key(&object)
@@ -341,6 +385,26 @@ mod tests {
                 object: object(2),
                 expected: KernelObjectKind::Endpoint,
                 actual: KernelObjectKind::CNode,
+            })
+        );
+    }
+
+    #[test]
+    fn frame_object_is_tracked_as_kernel_object() {
+        let mut table = ObjectTable::new();
+        table.insert_frame(object(3), FrameObject::new(12)).unwrap();
+
+        assert_eq!(table.frame(object(3)), Ok(FrameObject::new(12)));
+        assert_eq!(
+            table.get(object(3)),
+            Ok(KernelObjectRef::Frame { size_bits: 12 })
+        );
+        assert_eq!(
+            table.endpoint(object(3)).map(|_| ()),
+            Err(ObjectTableError::WrongObjectType {
+                object: object(3),
+                expected: KernelObjectKind::Endpoint,
+                actual: KernelObjectKind::Frame,
             })
         );
     }

@@ -1,11 +1,11 @@
 mod support;
 
 use kernel::{
-    cap::{Capability, EndpointCap, RetypeTarget, Rights, TcbCap},
+    cap::{Capability, EndpointCap, FrameCap, RetypeTarget, Rights, TcbCap},
     invocation::Invocation,
     notification::NotificationState,
-    object::{KernelObjectRef, ObjectTableError},
-    state::{ExecutionOutcome, InvocationContext, KernelExecutionError, UnsupportedInvocation},
+    object::{FrameObject, KernelObjectRef, ObjectTableError},
+    state::{ExecutionOutcome, InvocationContext, KernelExecutionError},
 };
 use support::{cpu, state_with_untyped, thread};
 
@@ -79,35 +79,35 @@ fn untyped_retype_notification_creates_object_and_can_signal() {
 }
 
 #[test]
-fn unsupported_frame_retype_does_not_commit_cspace_or_objects() {
+fn untyped_retype_frame_creates_object_and_capability() {
     let (mut state, untyped) = state_with_untyped(12);
 
-    assert_eq!(
-        state.execute_invocation(
+    let outcome = state
+        .execute_invocation(
             InvocationContext::new(thread(1), cpu(0)),
             untyped,
             Invocation::UntypedRetype {
                 target: RetypeTarget::Frame {
-                    rights: Rights::READ,
+                    rights: Rights::READ | Rights::WRITE,
                 },
             },
-        ),
-        Ok(ExecutionOutcome::Unsupported(
-            UnsupportedInvocation::UntypedRetype
-        ))
-    );
-
-    let endpoint = state
-        .cspace_mut()
-        .retype_untyped(untyped, RetypeTarget::Endpoint)
+        )
         .unwrap();
-    let endpoint_object = state.cspace().lookup(endpoint).unwrap().object;
-    assert_eq!(endpoint.slot.raw(), untyped.slot.raw() + 1);
+    let ExecutionOutcome::Retyped { descriptor } = outcome else {
+        panic!("frame retype must return a new capability descriptor");
+    };
+    let view = state.cspace().lookup(descriptor).unwrap();
+
     assert_eq!(
-        state.objects().get(endpoint_object),
-        Err(ObjectTableError::ObjectNotFound {
-            object: endpoint_object,
+        view.capability,
+        Capability::Frame(FrameCap {
+            rights: Rights::READ | Rights::WRITE,
         })
+    );
+    assert_eq!(state.objects().frame(view.object), Ok(FrameObject::new(12)));
+    assert_eq!(
+        state.objects().get(view.object),
+        Ok(KernelObjectRef::Frame { size_bits: 12 })
     );
 }
 
@@ -145,6 +145,45 @@ fn untyped_retype_cnode_object_table_conflict_does_not_commit_cspace() {
         .preview_retype_untyped(untyped, &target)
         .unwrap();
     state.objects_mut().insert_cnode(predicted_object).unwrap();
+
+    assert_eq!(
+        state.execute_invocation(
+            InvocationContext::new(thread(1), cpu(0)),
+            untyped,
+            Invocation::UntypedRetype { target },
+        ),
+        Err(KernelExecutionError::Object(
+            ObjectTableError::ObjectIdAlreadyBound {
+                object: predicted_object,
+            }
+        ))
+    );
+
+    let endpoint = state
+        .cspace_mut()
+        .retype_untyped(untyped, RetypeTarget::Endpoint)
+        .unwrap();
+    assert_eq!(endpoint.slot.raw(), untyped.slot.raw() + 1);
+    assert_eq!(
+        state.cspace().lookup(endpoint).map(|view| view.object),
+        Ok(predicted_object)
+    );
+}
+
+#[test]
+fn untyped_retype_frame_object_table_conflict_does_not_commit_cspace() {
+    let (mut state, untyped) = state_with_untyped(12);
+    let target = RetypeTarget::Frame {
+        rights: Rights::READ,
+    };
+    let predicted_object = state
+        .cspace()
+        .preview_retype_untyped(untyped, &target)
+        .unwrap();
+    state
+        .objects_mut()
+        .insert_frame(predicted_object, FrameObject::new(12))
+        .unwrap();
 
     assert_eq!(
         state.execute_invocation(

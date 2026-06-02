@@ -3,7 +3,7 @@ use crate::{
     invocation::{Invocation, InvocationError, InvocationOutcome, invoke},
     ipc::{Endpoint, IpcPayload, IpcReceiveOptions, IpcSendOptions},
     notification::Notification,
-    object::{KernelObjectKind, ObjectTable, ObjectTableError},
+    object::{FrameObject, KernelObjectKind, ObjectTable, ObjectTableError},
     reply::ReplyState,
     scheduler::{Scheduler, SchedulerError},
     tcb::{CpuId, Tcb, ThreadId, ThreadState},
@@ -37,7 +37,6 @@ pub enum ExecutionOutcome {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum UnsupportedInvocation {
     FrameMap,
-    UntypedRetype,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -257,15 +256,11 @@ impl KernelState {
 
         match &target {
             RetypeTarget::Endpoint
+            | RetypeTarget::Frame { .. }
             | RetypeTarget::CNode { .. }
             | RetypeTarget::Notification
             | RetypeTarget::Tcb { .. } => {
                 self.objects.validate_unbound(object)?;
-            }
-            RetypeTarget::Frame { .. } => {
-                return Ok(ExecutionOutcome::Unsupported(
-                    UnsupportedInvocation::UntypedRetype,
-                ));
             }
             RetypeTarget::Untyped { .. } => {}
         }
@@ -279,6 +274,10 @@ impl KernelState {
                 .objects
                 .insert_endpoint(object, Endpoint::new())
                 .expect("prevalidated endpoint object insertion must succeed"),
+            RetypeTarget::Frame { .. } => self
+                .objects
+                .insert_frame(object, FrameObject::new(target.minimum_size_bits()))
+                .expect("prevalidated frame object insertion must succeed"),
             RetypeTarget::CNode { .. } => self
                 .objects
                 .insert_cnode(object)
@@ -292,9 +291,6 @@ impl KernelState {
                 .insert_tcb(object)
                 .expect("prevalidated TCB object insertion must succeed"),
             RetypeTarget::Untyped { .. } => {}
-            RetypeTarget::Frame { .. } => {
-                unreachable!("unsupported retype target returned before commit")
-            }
         }
 
         Ok(ExecutionOutcome::Retyped { descriptor })

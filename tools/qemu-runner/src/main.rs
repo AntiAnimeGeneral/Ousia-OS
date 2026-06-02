@@ -33,9 +33,13 @@ fn main() -> ExitCode {
 
     eprintln!("building aarch64 kernel...");
     let mut build_command = Command::new("cargo");
-    build_command
-        .current_dir(&workspace_root)
-        .args(["build", "-p", "kernel-bin", "--target", TARGET]);
+    build_command.current_dir(&workspace_root).args([
+        "build",
+        "-p",
+        "kernel-bin",
+        "--target",
+        TARGET,
+    ]);
     if args.exception_smoke {
         build_command.args(["--features", "exception-smoke"]);
     }
