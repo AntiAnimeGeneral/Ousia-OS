@@ -16,6 +16,7 @@ Memory reference 用于防止 Ousia 的内存路径过早落入 allocator 细节
 - 当前方案的内存真相源是什么：boot memory map、typed frame metadata、page table，还是 VMA tree。
 - VMA tree 和 page table 的关系是否明确：谁承载 policy，谁承载 committed hardware mapping。
 - Frame metadata 是否能表达 ownership、type、derivation、pinning、mapping count 或 future revoke 需要的信息。
+- Untyped/retype、typed frame metadata 和 page-table ownership 是否先服从 seL4 baseline，再讨论 Ousia MemoryObject、Pager 或 Object Store 扩展。
 - Page-table ownership 是否有明确 owner；跨 address space 或跨 CPU mutation 如何被串行化或延期设计。
 - Early heap 是否只是早期 alloc/smoke-test 设施，没有被误认为最终 kernel heap。
 - Multi-core-only 假设是否影响 allocator、TLB shootdown、page table locking 和 per-CPU cache 的第一版边界。
@@ -25,6 +26,7 @@ Memory reference 用于防止 Ousia 的内存路径过早落入 allocator 细节
 - Diff 是否把 linked-list early heap 演进成最终 kernel heap，而没有 typed frame metadata 或 page-table ownership。
 - Boot memory map 是否被多个模块各自解析或默认补齐，导致 reserved range 语义不一致。
 - VMA 和 page table 是否都试图成为 mapping truth source。
+- MemoryObject、Frame allocator、Pager 或 ObjectTable 是否提前替代 seL4 Untyped/retype baseline，导致 Phase 1 无法映射到 seL4 object creation 和 revoke 语义。
 - Page table mutation 是否在权限、range、alignment、frame availability 全部检查前提交。
 - Mapping failure 后，frame metadata、VMA tree、page table entry、refcount 或 TLB state 是否可能部分改变。
 - Single-core assumption 是否隐含在 allocator lock、TLB invalidation、per-CPU state 或 frame ownership 里。
@@ -34,6 +36,7 @@ Memory reference 用于防止 Ousia 的内存路径过早落入 allocator 细节
 
 - Boot memory map parsing/normalization owner。
 - Frame metadata、Untyped/retype、page-table object 和 address-space owner 的代码或 design docs。
+- 本地 seL4 reference 中 Untyped、retype、frame object 和 address-space/page-table 相关路径；以及 Ousia 暂不采用或后置的理由。
 - Mapping/unmapping 测试是否覆盖失败后状态不变性。
 - Asterinas/CortenMM reference 中对应 memory object、VM area、page table 或 frame allocator 路径。
 - Multi-core implications：TLB shootdown、locking、per-CPU allocator/cache 的 deferred decision 或边界说明。

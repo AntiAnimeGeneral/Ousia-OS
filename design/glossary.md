@@ -7,11 +7,11 @@
 | 术语                 | 含义                                                                                                                          | 备注                                                                                    |
 | -------------------- | ----------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------- |
 | Communication Fabric | Ousia OS 的统一通信基座，覆盖同步 RPC、异步请求、事件等待、共享队列、旁路数据面和跨队列同步。                                 | 项目设计术语，不指代现有产品。                                                          |
-| Portal               | 服务入口能力。持有 Portal Capability 的 Capsule 才能向对应服务提交 Operation。                                                | 类似“服务入口 + 能力句柄”，不是 Fuchsia Channel 或 seL4 Endpoint 的同义词。             |
-| Operation            | 一次请求的系统级生命周期对象，包含消息、Capability、deadline、cancel、completion target、调度上下文等。                       | 同步调用和异步请求都可以表示为 Operation。                                              |
-| Continuation         | 一次受限回复权，用于完成某个 Operation。支持 reply-once、超时、取消、late reply 错误和 pending quota。                        | 可 save 成 `SaveHandle`；受 seL4 SaveCaller / reply cap 启发。                          |
+| Portal               | 服务入口能力。持有 Portal Capability 的 Capsule 才能向对应服务提交 Operation。                                                | Ousia 后续通信抽象，不是 Fuchsia Channel 或 seL4 Endpoint 的同义词，也不是 Phase 1 kernel baseline 对象。 |
+| Operation            | 一次请求的系统级生命周期对象，包含消息、Capability、deadline、cancel、completion target、调度上下文等。                       | Ousia 后续通信抽象；同步调用和异步请求都可以表示为 Operation。                          |
+| Continuation         | 一次受限回复权，用于完成某个 Operation。支持 reply-once、超时、取消、late reply 错误和 pending quota。                        | 后续 Ousia 回复权抽象，可 save 成 `SaveHandle`；受 seL4 SaveCaller / reply cap 启发。    |
 | SaveHandle           | 由同步调用的隐式 Continuation 保存出来的一次性回复 Capability，可跨线程移动后稍后 `reply` 或 `reply_yield`。                  | move-only、reply-once；不是可复制 channel，也不是业务 txid。                            |
-| EventPort / WaitSet  | 统一等待聚合器，可等待 Operation completion、timer、cancel、MemoryObject lost、queue event、device lost、Fence 等。           | 不是内核消息队列，而是事件等待入口。                                                    |
+| EventPort / WaitSet  | 统一等待聚合器，可等待 Operation completion、timer、cancel、MemoryObject lost、queue event、device lost、Fence 等。           | Ousia 后续等待抽象；不是 Phase 1 seL4 Notification/Endpoint baseline 的替代品。          |
 | Control Path         | 通过 Portal、系统调用或受信服务完成的权威控制面，用于授权、映射、Capability 转移、对象创建、撤销、seal 和销毁。               | 慢但有权威；不承载高频 payload 数据面。                                                 |
 | KernelChannel        | 内核治理的队列式 IPC，提供内核强制的阻塞/唤醒、背压、配额、公平性、审计和 peer-lost 语义。                                    | 安全默认队列路径，不是最高吞吐 bypass 路径。                                            |
 | IPC SDK              | Ousia 用户态通信 SDK，生成或提供 sync stub、async stub、bypass session、buffer 管理、cancel/timeout 和 tracing glue。         | API 形态与传输路径解耦；不把 sync API 固定到某一种 IPC。                                |
@@ -55,7 +55,7 @@
 | WrappedKey                 | 用某个 recipient 公钥包装的 FS Master Key。                                                      | 支持 identity/device/recovery/organization 多 recipient 解封装。    |
 | Stream                     | 数据流动抽象，支持背压、取消、批量、优先级、多播等。                                             | 不替代对象元数据、设备控制或服务发现。                              |
 | Pager-backed Memory Object | 在纯用户态 FS 方案中由用户态 Pager 供页、失效、回写并与内核 VM 协作的内存对象。                  | 文件映射、共享映射和用户态 FS 的关键原语。                          |
-| MemoryObject               | 内核可授权和映射的内存对象，面向 VM、共享、CoW、缺页和回写语义。                                 | 属于权威对象；授权、转移、撤销和销毁走 Control Path。               |
+| MemoryObject               | 内核可授权和映射的内存对象，面向 VM、共享、CoW、缺页和回写语义。                                 | Ousia 后续内存抽象；Phase 1 kernel baseline 先对齐 seL4 Untyped、Frame 和 address-space 语义。 |
 | MemoryDescriptor           | 对 MemoryObject / IOBuffer 或其切片的权威描述与授权句柄。                                        | 可通过 Portal / Operation 转移；不在 bypass queue 热路径传递。      |
 | IOBuffer                   | 注册内存对象，面向 pin 生命周期、DMA 可达性、设备授权和零拷贝。                                  | 与 MemoryObject 可共享页框，但语义不同。                            |
 | IOQueue                    | 面向设备或高性能数据面的提交/完成队列。                                                          | 设备侧 SharedQueue，带 DMA、doorbell、irq、fence 等语义。           |

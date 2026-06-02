@@ -66,6 +66,7 @@ description: "项目元架构规范：边界性、正交可组合性、简约优
 
 - 用户指出体系问题时，先定位失效层：产品设计、代码实现、测试、instructions、entry skill、mode、reference、workflow、validation 或一次性任务说明。
 - 如果用户指出的是所有实现者、reviewer 或未来协作者都应遵守的项目规则，应写入仓库内的 owning instruction、design doc 或 workflow，而不是只写入单个 agent 的长期记忆。
+- 如果用户指出的是领域 baseline、reference 对齐或 review 攻击面缺失，应同步 owning instruction、reference corpus、review attacks 和 owning design docs；不要把领域长期目标偷放进通用入口 instruction 或 facade skill。
 - 能通过调整现有层解决时，不新增层。
 - 如果问题会反复出现，优先写入 instruction；如果只是 Ousia-specific 经验，写入 reference corpus；如果只是某个入口的输出协议，留在该 skill。
 - 每次修改 reference corpus 后，运行文档校验流程；每次修改 entry skill 或 workflow 后，检查 frontmatter、链接和 stale 旧路径。

@@ -16,7 +16,7 @@ Reference corpus 是快速变动的工程经验、reference 读取入口和 plan
 | Scope / Focus                                                                                              | Read                          |
 | ---------------------------------------------------------------------------------------------------------- | ----------------------------- |
 | 产品层、设计文档、owning docs、目标/非目标、稳定结论落点、reference 采用理由                               | `product-and-docs.md`         |
-| seL4 baseline、capability、CSpace、CNode、Untyped、retype、Endpoint、Notification、TCB、syscall/invocation | `kernel-baseline.md`          |
+| Phase 1 seL4 baseline、Rust-expression-only、baseline-vs-extension、capability、CSpace、CNode、Untyped、retype、Endpoint、Notification、TCB、syscall/invocation | `kernel-baseline.md`          |
 | `kernel`、OSTD、tooling、QEMU runner、host tooling、Cargo target、cfg 边界                                 | `kernel-ostd-tooling.md`      |
 | boot memory map、typed frame metadata、page table ownership、address space、VMA/page-table truth source    | `memory-and-address-space.md` |
 | IPC、reply handoff、notification、scheduler mutation、capability rights、object type 检查                  | `ipc-capability-scheduler.md` |

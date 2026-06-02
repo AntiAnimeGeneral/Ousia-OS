@@ -7,4 +7,4 @@
 ## 阅读顺序
 
 1. [00-sel4-like-rust-baseline.md](./00-sel4-like-rust-baseline.md)
-   说明近期内核实现先走 seL4-like Rust baseline，再在用户态系统服务上构建 Ousia 平台语义。
+   说明近期内核实现先在 Rust 中复刻 seL4 baseline，再在 baseline 闭环后评估 Ousia 平台语义扩展。

@@ -12,6 +12,8 @@
 
 Ousia 不追求为了“小内核”而把关键语义推给每个用户态 runtime 自行实现。相反，系统应把通信生命周期中会影响权限、安全、调度、公平性和生态一致性的部分做成统一 OS 原语；协议内容、IDL、服务框架、用户态队列布局和语言绑定留给用户态。
 
+阶段边界：本文定义的是 seL4 baseline 闭环之后的 Ousia Communication Fabric 设计。Phase 1 kernel baseline 仍先复刻 seL4 Endpoint、Notification、Reply、TCB、CSpace/CNode 和 IPC 调用语义；Portal、Operation、Continuation 和 EventPort 不能替代这些 baseline 对象，只能在 baseline 明确后作为映射或扩展方案进入实现评估。
+
 ---
 
 ## 1. 设计目标
@@ -44,7 +46,7 @@ Portal 负责：
 - 调用方执行等级、deadline、budget 的传播入口
 - 服务崩溃时的 `SERVICE_LOST` 传播
 
-Portal 不等于 Fuchsia Channel，也不等于 seL4 Endpoint。它是 Ousia 的服务入口抽象：可以支持同步 fast call，也可以支持异步 Operation submit。本文把通过 Portal、系统调用或受信服务完成的授权、映射、撤销、seal、对象创建和对象销毁统称为 **control path**。control path 是慢但有权威的路径；它不应承载高频 payload 数据面。
+Portal 不等于 Fuchsia Channel，也不等于 seL4 Endpoint，更不是 Phase 1 kernel baseline 的 Endpoint 替代品。它是 Ousia 的服务入口抽象：可以支持同步 fast call，也可以支持异步 Operation submit。本文把通过 Portal、系统调用或受信服务完成的授权、映射、撤销、seal、对象创建和对象销毁统称为 **control path**。control path 是慢但有权威的路径；它不应承载高频 payload 数据面。
 
 ### 2.2 Operation
 

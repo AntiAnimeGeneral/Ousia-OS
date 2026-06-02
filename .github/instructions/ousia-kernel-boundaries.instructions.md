@@ -38,10 +38,12 @@ description: "Ousia OS 内核边界：kernel/OSTD/tooling 职责归属、seL4 ba
 
 ## seL4 Baseline
 
-- 先把内核基础组件做成 Rust 风味的 seL4 baseline。
-- Capability、CSpace/CNode、Untyped/retype、Endpoint、Notification、TCB、IPC、syscall/invocation 和 scheduling 语义应先对齐 seL4，再发明 Ousia-specific interface。
-- Rust 语言特性只用于更清楚地表达类型、不变量和错误；不要只为了风格改变 baseline 语义。
-- 只有等 baseline 组件形成闭环后，才集中评估 Ousia-specific 语义改动。
+- Phase 1 的内核目标是在 Rust 中复刻 seL4 baseline，而不是只做宽松的 seL4-like 启发实现。
+- Capability、CSpace/CNode、Untyped/retype、delete/revoke、Endpoint、Notification、Reply、TCB、IPC、syscall/invocation 和 scheduling 的算法、抽象、对象关系、权限语义和状态机必须先对齐 seL4 baseline。
+- Rust 语言特性只用于更清楚地表达类型、不变量、错误边界、状态机和测试；不得用“更 Rust”作为改变 seL4 baseline 语义的理由。
+- Ousia-specific interface、Portal/Operation/Continuation、Package Cell、Service Graph、lease、session、Device Service 和浏览器/用户授权语义都属于 baseline 闭环后的扩展层，不得提前混入 Phase 1 kernel baseline。
+- slot/object generation 可以作为 Rust model 中的 stale descriptor 检测、测试和诊断辅助；不得替代 seL4 authority、revoke、capability freshness 或授权语义。
+- 每个非平凡 kernel 语义实现或重构都应能指出本地 seL4 或 rust-sel4 reference 的对应路径；没有读取或无法映射 reference 时，应把 baseline drift 标为 residual risk，而不是凭概括性记忆放行。
 
 ## Kernel 错误模型
 

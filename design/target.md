@@ -2,7 +2,7 @@
 
 本文档是 Ousia OS 设计文档的总纲。它只回答五件事：现有系统哪里错了，Ousia OS 想建立什么秩序，第一阶段必须满足哪些硬需求，需求如何推出核心抽象，以及这些目标和抽象分别由哪些主线章节承接。完整文档地图见 [outline.md](./outline.md)，完整需求库和抽象推导见 [requirements.md](./requirements.md)。
 
-项目自造术语和重新定义过的设计术语见 [glossary.md](./glossary.md)。除非特别说明，Portal、Operation、Continuation、Communication Fabric 等词都是 Ousia OS 的设计术语，不指代某个现有系统的专有技术。
+项目自造术语和重新定义过的设计术语见 [glossary.md](./glossary.md)。除非特别说明，Portal、Operation、Continuation、Communication Fabric 等词都是 Ousia OS 的设计术语，不指代某个现有系统的专有技术，也不是 Phase 1 seL4 kernel baseline 的对象名。
 
 本文作为总纲入口，约束各专题文档的愿景边界、需求边界和抽象边界。随需求增长而扩展的内容应进入 [requirements.md](./requirements.md)，文档归属和查漏补缺规则由 [outline.md](./outline.md) 维护。
 
@@ -150,7 +150,7 @@ Ousia OS 的第一阶段分层如下，详细路线见 [06-roadmap.md](./topics/
 
 | 层级                    | 内容                                                                                                                                           |
 | ----------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
-| 第 0 层：微内核         | 调度、地址空间、能力句柄、Communication Fabric、IOMMU/DMA、MemoryObject、启动句柄注入；纯内核态 FS 方案还包含 Object Store 核心                |
+| 第 0 层：微内核         | Phase 1 先复刻 seL4 baseline：调度、地址空间基础、CSpace/CNode、Untyped/retype、Endpoint/Notification/Reply、TCB、启动能力注入；Ousia Communication Fabric 和 MemoryObject 在 baseline 后映射或扩展 |
 | 第 1 层：基础系统服务   | 名字服务、Object Namespace、Capsule 管理器、网络、设备管理、Driver Manager/Index/Host、日志与观测；纯用户态 FS 方案还包含对象存储与 Pager 监督 |
 | 第 2 层：平台服务       | Package Cell 管理器、图形与窗口系统、策略引擎、兼容域网关、身份与同步服务                                                                      |
 | 第 3 层：应用与兼容环境 | 原生应用、Linux 兼容域、开发者工具链                                                                                                           |
@@ -171,8 +171,8 @@ Ousia OS 的第一阶段分层如下，详细路线见 [06-roadmap.md](./topics/
 第一阶段应优先验证系统最核心的闭环：
 
 1. 能力核心合同：CapSlot/CSpace 等价结构、派生链、rights 单调性、delete/revoke/destroy/generation 语义。
-2. 微内核原语：任务、地址空间、能力句柄、Portal/Operation、抢占调度、启动句柄注入。
-3. Communication Fabric 最小闭环：Portal fast call、Continuation、EventPort/WaitSet、timeout、cancel、late reply。
+2. seL4 微内核 baseline：任务、地址空间基础、CSpace/CNode、Untyped/retype、Endpoint/Notification/Reply、TCB、抢占调度、启动能力注入。
+3. Communication Fabric 映射：在 baseline 闭环后评估 Portal fast call、Operation、Continuation、EventPort/WaitSet、timeout、cancel、late reply。
 4. Service Graph bootstrap 与 Capsule 生命周期。
 5. Object Namespace：路径解析、ProviderRoot、MountBinding、ObjectHandle 解析缓存和撤销。
 6. MemoryObject、缺页处理，以及纯用户态 Pager / 纯内核 Object Store 两条供页路径。
@@ -200,7 +200,7 @@ Ousia OS 的第一阶段分层如下，详细路线见 [06-roadmap.md](./topics/
 
 ## 8. 参考项目
 
-Ousia OS 受以下项目启发，但不复刻其中任何一个：
+Ousia OS 的长期平台语义受以下项目启发，但不复刻其中任何一个；Phase 1 kernel baseline 例外，它先按 Rust 表达复刻 seL4 的核心语义，再评估 Ousia 扩展：
 
 - Fuchsia：微内核、组件化、能力模型、用户态驱动框架。
 - seL4：能力系统和形式化验证经验。

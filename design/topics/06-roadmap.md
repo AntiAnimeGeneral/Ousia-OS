@@ -6,7 +6,7 @@
 
 第一阶段实现遵循 [工程化复用策略](./02-engineering.md)：积极复用成熟库和现有内核 SDK 经验来降低工程风险，但所有复用都必须服从 Ousia 自己的 capability、通信、pager、驱动和 Package Cell 语义边界。
 
-近期阶段性目标是先做一个 [seL4-like Rust baseline](../implementation/00-sel4-like-rust-baseline.md)。它不追求形式化验证，但必须用类型边界、不变量、测试和 review 纪律保证足够的工程正确性；Ousia 的浏览器权限、服务授权、lease、session、Package Cell 和 Device Service 语义应建立在用户态系统服务层。
+近期阶段性目标是先做一个 [Phase 1 seL4 baseline Rust 复刻](../implementation/00-sel4-like-rust-baseline.md)。它不追求形式化验证，但必须用类型边界、不变量、测试和 review 纪律保证足够的工程正确性；Ousia 的 Portal、Operation、Communication Fabric、浏览器权限、服务授权、lease、session、Package Cell 和 Device Service 语义应在 baseline 闭环后映射或扩展。
 
 ## 非目标（第一阶段绝对不做）
 
@@ -50,8 +50,8 @@
 | Phase                 | 需求               | 目标                                                                                     | 核心验证                                                    |
 | --------------------- | ------------------ | ---------------------------------------------------------------------------------------- | ----------------------------------------------------------- |
 | 0.5: 能力核心合同     | R7                 | CapSlot/CSpace 等价结构 + 派生链 + rights 单调性 + delete/revoke/destroy/generation 语义 | 派生 READ-only 后撤销父句柄后代；stale descriptor 明确失败  |
-| 1a: 微内核原语        | R5, R7             | QEMU 中启动内核，任务+Portal/Operation+能力句柄+抢占调度+启动句柄注入                    | 两个任务通过 Portal fast call 传递能力句柄并验证撤销语义    |
-| 1a.5: 异步通信原语    | R5, R6             | Continuation + EventPort/WaitSet + timeout/cancel/late reply                             | 一个任务提交异步 Operation，另一个任务延迟完成并唤醒 Future |
+| 1a: seL4 微内核 baseline | R5, R7             | QEMU 中启动内核，任务、CSpace/CNode、Untyped/retype、Endpoint/Notification/Reply、TCB、抢占调度和启动能力注入 | 两个任务通过 seL4 baseline IPC 传递能力并验证撤销语义        |
+| 1a.5: Ousia 通信映射  | R5, R6             | 在 seL4 baseline 闭环后评估 Portal/Operation/Continuation/EventPort/WaitSet 的映射与扩展 | 一个任务提交 Ousia Operation，另一个任务延迟完成并唤醒 Future |
 | 1b: 名字服务+Capsule  | R7, R10            | Service Graph bootstrap + Capsule 生命周期                                               | Capsule 通过名字服务发现并调用另一个 Capsule                |
 | 1c: Object Namespace  | R1, R2, R7, R8, R9 | 路径解析 + ProviderRoot + MountBinding + ObjectHandle 缓存与撤销                         | native 目录挂载 remote provider；应用拿到统一 ObjectHandle  |
 | 1d: MemoryObject      | R3, R4, R9         | 缺页处理 + 纯用户态 Pager / 纯内核 Object Store 两条供页路径                             | mmap 缺页正常供页；故障按所选 FS 放置方案处理               |

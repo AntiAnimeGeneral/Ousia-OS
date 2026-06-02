@@ -19,6 +19,7 @@ IPC/capability/scheduler reference 用于攻击 invocation 路径中的状态机
 - Reply handoff 的状态转换是否显式：caller blocked、callee running、reply cap/object state、scheduler queue。
 - Notification signal/wait 是否与 endpoint IPC 分开表达，避免共享一个模糊 queue abstraction。
 - Scheduler 第一版是否已经按 multi-core-only 建模，即使实现很小。
+- Portal、Operation、Continuation 或 EventPort 是否被后置为 Ousia 扩展层，而不是替代 Phase 1 seL4 Endpoint、Notification、Reply 和 TCB baseline。
 
 ## Review Attacks
 
@@ -28,6 +29,8 @@ IPC/capability/scheduler reference 用于攻击 invocation 路径中的状态机
 - Scheduler enqueue/dequeue 是否被 IPC 内部直接乱改，缺少单一 mutation owner。
 - Cross-CPU wakeup、timer routing 或 run queue ownership 是否被 single-core happy path 偷偷假设。
 - Invocation label match 是否有 `_` fallback，吞掉未来 IPC/capability operation。
+- Diff 是否用 Portal/Operation happy path 代替 seL4 Endpoint/Reply/Notification baseline，导致 Phase 1 无法映射到 seL4 IPC 语义。
+- Rust-side IPC helper 是否改变 seL4 send/receive/call/reply 的 blocking、badge、grant/grant-reply、reply object 或 TCB blocked state 语义。
 - Tests 是否只检查返回错误，没有检查 endpoint queue、TCB state、reply object 或 run queue 不变。
 
 ## Evidence To Seek

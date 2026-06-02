@@ -19,6 +19,7 @@ Testing reference 用于把 Ousia-specific review 从“有无测试”推进到
 - 是否需要模型测试、table test、property-like input、fake OSTD boundary 或 integration smoke test。
 - 测试夹具是否表达领域语义，还是复制实现内部结构导致重构时一起漂移。
 - 验证命令是否覆盖实际改动目标，例如 bare-metal target、doc checker、runner smoke 或 targeted Rust tests。
+- Phase 1 kernel 测试是否证明 seL4 baseline alignment，而不是只证明 Ousia-specific 抽象或 Rust helper 跑通。
 
 ## Layer Projection
 
@@ -42,6 +43,8 @@ Testing reference 用于把 Ousia-specific review 从“有无测试”推进到
 - 测试是否绕过真实 invocation/syscall/API path，直接调用内部 function 后声称覆盖外部语义。
 - 测试是否复制 match table、rights mapping 或 default logic，导致和实现同错。
 - Happy path 是否只证明“跑通”，没有覆盖错误权限、错误对象类型、stale descriptor、重复提交、乱序调用或跨 owner 输入。
+- 测试是否把 Portal/Operation、MemoryObject、Service Graph 或 Package Cell 当成 Phase 1 kernel baseline，而没有覆盖对应 seL4 Endpoint/Notification/Reply/TCB/Untyped 语义。
+- 测试是否声称 baseline 对齐，却没有通过真实 invocation path 或本地 seL4 reference 映射说明受保护的语义。
 - 测试夹具是否维护自己的事实源，和 production state owner 不一致。
 - Mock/fake 是否过宽，掩盖 OSTD/tooling/kernel 边界问题。
 - Proposal 的验证策略是否只列命令，没有说明每个命令覆盖什么风险。
@@ -61,6 +64,7 @@ Testing reference 用于把 Ousia-specific review 从“有无测试”推进到
 - Test contract 是否说明 Goal、Scope 和 Semantics，或 table case 是否有语义 label。
 - Assertions comparing state before and after failure。
 - Boundary-path tests or integration smoke tests。
+- 测试名或注释是否说明对应的 seL4 baseline 语义，以及 Ousia extension 是否明确后置。
 - Negative tests for black-team inputs relevant to the diff。
 - Verification output and why it covers the changed files。
 - Residual risk notes when hardware/reference/runner coverage is not available。

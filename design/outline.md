@@ -77,6 +77,7 @@
 | 术语定义                                                                                          | [glossary.md](./glossary.md)                                                 | 使用同一术语，不在章节内重新定义。               |
 | Capsule、Capability、能力转移与撤销                                                               | [core/01-capsule-and-capability.md](./core/01-capsule-and-capability.md)     | 其他章节说明所需能力，不定义能力模型。           |
 | Portal、Operation、Continuation、EventPort、SharedQueue、bypass session                           | [core/02-communication-fabric.md](./core/02-communication-fabric.md)         | 其他章节说明调用形态，不定义通信原语。           |
+| Phase 1 seL4 baseline Rust 复刻、短期 kernel 实现路线和 reviewer 入口                             | [implementation/00-sel4-like-rust-baseline.md](./implementation/00-sel4-like-rust-baseline.md) | core 文档只说明长期 Ousia 抽象，不把 Portal/Operation 写成 Phase 1 kernel baseline。 |
 | MemoryObject、Pager、缺页、映射和回写边界                                                         | [core/03-pager-and-memory.md](./core/03-pager-and-memory.md)                 | FS/VM 深挖只讨论方案和取舍。                     |
 | Hardware Core、Driver Host、IOQueue、IOBuffer、Doorbell、Fence、IOMMU 授权                        | [core/04-driver-and-kernel.md](./core/04-driver-and-kernel.md)               | reference 文档只保留背景和草案。                 |
 | Compute Domain、Execution Class、调度和功耗预算                                                   | [core/05-compute-and-scheduling.md](./core/05-compute-and-scheduling.md)     | 其他章节只声明资源需求和优先级传播。             |
