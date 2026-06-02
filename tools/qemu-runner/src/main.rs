@@ -8,6 +8,7 @@ use std::{
 };
 
 const TARGET: &str = "aarch64-unknown-none";
+const QEMU_CPUS: &str = "2";
 const BOOT_MARKER: &str = "Ousia kernel booted on aarch64";
 const EXCEPTION_MARKER: &str = "Ousia AArch64 exception";
 const SMOKE_TIMEOUT: Duration = Duration::from_secs(5);
@@ -141,7 +142,7 @@ fn qemu_command(kernel_path: &Path) -> Command {
         .arg("-m")
         .arg("1G")
         .arg("-smp")
-        .arg("1")
+        .arg(QEMU_CPUS)
         .arg("-kernel")
         .arg(kernel_path)
         .arg("-monitor")
@@ -175,5 +176,25 @@ fn run_command(command: &mut Command) -> bool {
             eprintln!("failed to run command {command:?}: {error}");
             false
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn qemu_command_uses_multicore_topology() {
+        let command = qemu_command(Path::new("target/aarch64-unknown-none/debug/kernel"));
+        let args = command
+            .get_args()
+            .map(|arg| arg.to_string_lossy())
+            .collect::<Vec<_>>();
+
+        let smp = args
+            .windows(2)
+            .find(|window| window[0] == "-smp")
+            .expect("qemu command should include -smp");
+        assert_eq!(smp[1], QEMU_CPUS);
     }
 }

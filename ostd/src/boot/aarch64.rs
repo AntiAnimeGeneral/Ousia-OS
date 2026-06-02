@@ -5,6 +5,13 @@ global_asm!(
     .section .text.boot, "ax"
     .global _start
 _start:
+    mrs x0, MPIDR_EL1
+    and x1, x0, #0xffffff
+    lsr x0, x0, #32
+    and x0, x0, #0xff
+    orr x0, x0, x1
+    cbnz x0, __ousia_secondary_hold
+
     bl __ousia_enable_fp_simd
     ldr x1, =__ousia_boot_stack_end
     mov sp, x1
@@ -14,6 +21,10 @@ _start:
 1:
     wfe
     b 1b
+
+__ousia_secondary_hold:
+    wfe
+    b __ousia_secondary_hold
 
 __ousia_enable_fp_simd:
     mrs x0, CurrentEL
