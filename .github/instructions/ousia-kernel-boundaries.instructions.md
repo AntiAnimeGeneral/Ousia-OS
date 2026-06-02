@@ -45,10 +45,10 @@ description: "Ousia OS 内核边界：kernel/OSTD/tooling 职责归属、seL4 ba
 
 ## Kernel 错误模型
 
-- `kernel` 的错误设计应先区分三类事实：外部可恢复错误、内部不变量破坏、诊断/测试上下文。不要用一个大而全的错误类型同时承担这三类职责。
-- 外部可恢复错误只应来自 descriptor/syscall/invocation/capability rights/retype request 等边界。边界检查完成后，内部 object graph、slot linkage、TCB/reply/notification 状态转换应信任已经建立的不变量。
-- 可恢复错误返回前不得产生部分副作用。capability 派生、retype、IPC enqueue/dequeue、reply handoff、scheduler mutation 和内存对象创建都必须先完成全部可失败检查，再提交状态修改。
-- 内部不变量破坏应使用带语义说明的 `expect`、assertion 或 panic 路径暴露为实现错误；不要把它伪装成用户可恢复的 `CapError`、`InvocationError` 或 syscall error。
+- 通用错误边界以 `.github/instructions/implementation-quality.instructions.md` 为权威。本节只规定这些规则在 Ousia `kernel` 中的领域投影。
+- `kernel` 的外部可恢复错误只应来自 descriptor/syscall/invocation/capability rights/retype request 等边界。边界检查完成后，内部 object graph、slot linkage、TCB/reply/notification 状态转换应信任已经建立的不变量。
+- 在 `kernel` 中，可恢复错误返回前不得产生部分副作用。capability 派生、retype、IPC enqueue/dequeue、reply handoff、scheduler mutation 和内存对象创建都必须先完成全部可失败检查，再提交状态修改。
+- `kernel` 的内部不变量破坏应使用带语义说明的 `expect`、assertion 或 panic 路径暴露为实现错误；不要把它伪装成用户可恢复的 `CapError`、`InvocationError` 或 syscall error。
 - 参考 Asterinas 时，注意它的 kernel 主要使用自定义 errno-style `Error` 和局部 subsystem error，OSTD 使用小型 enum error；没有把 `thiserror`、`anyhow`、`eyre`、`snafu` 作为 kernel/OSTD 错误模型核心。
 - Ousia `kernel` 默认不引入 derive-heavy 或 std-oriented 错误框架。只有当库能在 `no_std`、边界语义、代码尺寸和长期 ABI 上给出明确收益时，才考虑引入。host tooling 可以按普通 Rust 工具项目另行评估 `thiserror` 或 `anyhow`。
 - Capability 和 invocation 的局部 typed error 可以保留为模型开发和测试工具，但长期 public/syscall-facing 错误应收敛到少量稳定语义类别。slot、object、expected/actual、rights 等细节只有在调用方行为、测试、trace 或诊断确实消费时才保留在公开结构中。
