@@ -91,6 +91,10 @@ impl ObjectTable {
         Ok(())
     }
 
+    pub fn validate_unbound(&self, object: ObjectId) -> Result<(), ObjectTableError> {
+        self.ensure_unbound(object)
+    }
+
     pub fn insert_notification(
         &mut self,
         object: ObjectId,

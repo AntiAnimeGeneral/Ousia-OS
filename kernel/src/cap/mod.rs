@@ -427,29 +427,18 @@ impl CapabilitySpace {
         source: CapabilityDescriptor,
         target: RetypeTarget,
     ) -> Result<CapabilityDescriptor, CapError> {
-        let source_size = {
-            let (parent_slot, _) = self.validated_slot(source)?;
-            let Capability::Untyped(parent_cap) = &parent_slot.capability else {
-                return Err(CapError::WrongCapability {
-                    expected: ObjectKind::Untyped,
-                    actual: capability_kind(&parent_slot.capability),
-                });
-            };
-            parent_cap.size_bits
-        };
-
-        let requested_size = target.minimum_size_bits();
-        if requested_size > source_size {
-            return Err(CapError::InvalidRetypeSize {
-                parent: source.slot,
-                requested: requested_size,
-                source: source_size,
-            });
-        }
-
-        target.validate_rights()?;
+        self.validate_retype_untyped(source, &target)?;
         let capability = target.into_capability();
         Ok(self.insert_retyped_capability(source.slot, capability))
+    }
+
+    pub fn preview_retype_untyped(
+        &self,
+        source: CapabilityDescriptor,
+        target: &RetypeTarget,
+    ) -> Result<ObjectId, CapError> {
+        self.validate_retype_untyped(source, target)?;
+        Ok(ObjectId(self.next_object))
     }
 
     pub fn validate_reply_capability(
@@ -702,6 +691,34 @@ impl CapabilitySpace {
             slot,
             slot_generation,
         }
+    }
+
+    fn validate_retype_untyped(
+        &self,
+        source: CapabilityDescriptor,
+        target: &RetypeTarget,
+    ) -> Result<(), CapError> {
+        let source_size = {
+            let (parent_slot, _) = self.validated_slot(source)?;
+            let Capability::Untyped(parent_cap) = &parent_slot.capability else {
+                return Err(CapError::WrongCapability {
+                    expected: ObjectKind::Untyped,
+                    actual: capability_kind(&parent_slot.capability),
+                });
+            };
+            parent_cap.size_bits
+        };
+
+        let requested_size = target.minimum_size_bits();
+        if requested_size > source_size {
+            return Err(CapError::InvalidRetypeSize {
+                parent: source.slot,
+                requested: requested_size,
+                source: source_size,
+            });
+        }
+
+        target.validate_rights()
     }
 
     fn alloc_object(&mut self, kind: ObjectKind) -> (ObjectId, u64) {
