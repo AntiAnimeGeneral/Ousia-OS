@@ -52,6 +52,7 @@ impl CapError {
             Self::InvalidInitialCapability { .. } => KernelErrorCode::InvalidArgument,
             Self::WrongCapability { .. } => KernelErrorCode::InvalidCapability,
             Self::InvalidRetypeSize { .. } => KernelErrorCode::RangeError,
+            Self::UntypedCapacityExhausted { .. } => KernelErrorCode::NotEnoughMemory,
         }
     }
 }
@@ -296,6 +297,33 @@ mod tests {
                 .unwrap_err()
                 .error_code(),
             KernelErrorCode::RangeError
+        );
+    }
+
+    #[test]
+    fn cap_retype_capacity_failure_collapses_to_not_enough_memory_code() {
+        let mut cspace = CapabilitySpace::new();
+        let cap = cspace.insert_initial_capability(untyped(12)).unwrap();
+        cspace
+            .retype_untyped(
+                cap,
+                RetypeTarget::Frame {
+                    rights: Rights::READ,
+                },
+            )
+            .unwrap();
+
+        assert_eq!(
+            cspace
+                .retype_untyped(
+                    cap,
+                    RetypeTarget::Frame {
+                        rights: Rights::READ,
+                    },
+                )
+                .unwrap_err()
+                .error_code(),
+            KernelErrorCode::NotEnoughMemory
         );
     }
 

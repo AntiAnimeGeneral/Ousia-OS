@@ -84,6 +84,7 @@ const UNTYPED_ALLOWED_RIGHTS: Rights = Rights::NONE;
 const TCB_ALLOWED_RIGHTS: Rights = Rights::MANAGE;
 const NOTIFICATION_ALLOWED_RIGHTS: Rights = Rights::READ.union(Rights::WRITE);
 const REPLY_ALLOWED_RIGHTS: Rights = Rights::NONE;
+const ZERO_SIZE_RETYPE_BYTES: u128 = 1;
 
 impl Rights {
     pub const fn is_subset_of(self, allowed: Self) -> bool {
@@ -312,6 +313,11 @@ pub enum CapError {
         requested: u8,
         source: u8,
     },
+    UntypedCapacityExhausted {
+        parent: SlotId,
+        requested: u8,
+        source: u8,
+    },
     InvalidRights {
         object: ObjectKind,
         requested_rights: Rights,
@@ -338,12 +344,25 @@ struct CapabilitySlot {
     alive: bool,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct UntypedAllocation {
+    size_bits: u8,
+    watermark: u128,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct UntypedAllocationPlan {
+    parent_object: ObjectId,
+    next_watermark: u128,
+}
+
 #[derive(Debug, Default)]
 pub struct CapabilitySpace {
     next_object: u64,
     next_slot: u64,
     free_slots: Vec<SlotId>,
     objects: BTreeMap<ObjectId, KernelObject>,
+    untyped_allocations: BTreeMap<ObjectId, UntypedAllocation>,
     slots: BTreeMap<SlotId, CapabilitySlot>,
 }
 
@@ -354,6 +373,7 @@ impl CapabilitySpace {
             next_slot: 1,
             free_slots: Vec::new(),
             objects: BTreeMap::new(),
+            untyped_allocations: BTreeMap::new(),
             slots: BTreeMap::new(),
         }
     }
@@ -427,9 +447,9 @@ impl CapabilitySpace {
         source: CapabilityDescriptor,
         target: RetypeTarget,
     ) -> Result<CapabilityDescriptor, CapError> {
-        self.validate_retype_untyped(source, &target)?;
+        let allocation = self.validate_retype_untyped(source, &target)?;
         let capability = target.into_capability();
-        Ok(self.insert_retyped_capability(source.slot, capability))
+        Ok(self.insert_retyped_capability(source.slot, capability, allocation))
     }
 
     pub fn preview_retype_untyped(
@@ -662,9 +682,27 @@ impl CapabilitySpace {
         &mut self,
         parent: SlotId,
         capability: Capability,
+        allocation: UntypedAllocationPlan,
     ) -> CapabilityDescriptor {
         let kind = capability_kind(&capability);
+        let child_untyped_size = match &capability {
+            Capability::Untyped(capability) => Some(capability.size_bits),
+            _ => None,
+        };
         let (object, object_generation) = self.alloc_object(kind);
+        self.untyped_allocations
+            .get_mut(&allocation.parent_object)
+            .expect("validated parent untyped allocation must remain in CSpace")
+            .watermark = allocation.next_watermark;
+        if let Some(size_bits) = child_untyped_size {
+            self.untyped_allocations.insert(
+                object,
+                UntypedAllocation {
+                    size_bits,
+                    watermark: 0,
+                },
+            );
+        }
         let slot = self.alloc_slot_id();
         let slot_generation = self.slot_generation_for_insert(slot);
         self.detach_reused_slot(slot);
@@ -697,8 +735,8 @@ impl CapabilitySpace {
         &self,
         source: CapabilityDescriptor,
         target: &RetypeTarget,
-    ) -> Result<(), CapError> {
-        let source_size = {
+    ) -> Result<UntypedAllocationPlan, CapError> {
+        let (source_size, source_object) = {
             let (parent_slot, _) = self.validated_slot(source)?;
             let Capability::Untyped(parent_cap) = &parent_slot.capability else {
                 return Err(CapError::WrongCapability {
@@ -706,7 +744,7 @@ impl CapabilitySpace {
                     actual: capability_kind(&parent_slot.capability),
                 });
             };
-            parent_cap.size_bits
+            (parent_cap.size_bits, parent_slot.object)
         };
 
         let requested_size = target.minimum_size_bits();
@@ -718,7 +756,17 @@ impl CapabilitySpace {
             });
         }
 
-        target.validate_rights()
+        target.validate_rights()?;
+
+        let allocation = self
+            .untyped_allocations
+            .get(&source_object)
+            .expect("validated Untyped cap must have allocation metadata");
+        let next_watermark = allocation.next_watermark(source.slot, requested_size)?;
+        Ok(UntypedAllocationPlan {
+            parent_object: source_object,
+            next_watermark,
+        })
     }
 
     fn alloc_object(&mut self, kind: ObjectKind) -> (ObjectId, u64) {
@@ -742,6 +790,10 @@ impl CapabilitySpace {
         capability: Capability,
         generation: u64,
     ) -> CapabilityDescriptor {
+        let untyped_size = match &capability {
+            Capability::Untyped(capability) => Some(capability.size_bits),
+            _ => None,
+        };
         let slot = self.alloc_slot_id();
         let slot_generation = self.slot_generation_for_insert(slot);
         self.detach_reused_slot(slot);
@@ -758,6 +810,15 @@ impl CapabilitySpace {
                 alive: true,
             },
         );
+        if let Some(size_bits) = untyped_size {
+            self.untyped_allocations.insert(
+                object,
+                UntypedAllocation {
+                    size_bits,
+                    watermark: 0,
+                },
+            );
+        }
 
         CapabilityDescriptor {
             slot,
@@ -878,6 +939,60 @@ impl CapabilitySpace {
             parent.children.remove(&slot);
         }
     }
+}
+
+impl UntypedAllocation {
+    fn next_watermark(self, parent: SlotId, requested_size_bits: u8) -> Result<u128, CapError> {
+        let source_bytes =
+            bytes_for_size_bits(self.size_bits).ok_or(CapError::UntypedCapacityExhausted {
+                parent,
+                requested: requested_size_bits,
+                source: self.size_bits,
+            })?;
+        let requested_bytes =
+            bytes_for_size_bits(requested_size_bits).ok_or(CapError::UntypedCapacityExhausted {
+                parent,
+                requested: requested_size_bits,
+                source: self.size_bits,
+            })?;
+        let aligned_watermark = align_up(self.watermark, requested_bytes).ok_or(
+            CapError::UntypedCapacityExhausted {
+                parent,
+                requested: requested_size_bits,
+                source: self.size_bits,
+            },
+        )?;
+        let next_watermark = aligned_watermark.checked_add(requested_bytes).ok_or(
+            CapError::UntypedCapacityExhausted {
+                parent,
+                requested: requested_size_bits,
+                source: self.size_bits,
+            },
+        )?;
+
+        if next_watermark <= source_bytes {
+            return Ok(next_watermark);
+        }
+
+        Err(CapError::UntypedCapacityExhausted {
+            parent,
+            requested: requested_size_bits,
+            source: self.size_bits,
+        })
+    }
+}
+
+fn bytes_for_size_bits(size_bits: u8) -> Option<u128> {
+    if size_bits == 0 {
+        return Some(ZERO_SIZE_RETYPE_BYTES);
+    }
+
+    1u128.checked_shl(size_bits.into())
+}
+
+fn align_up(value: u128, alignment: u128) -> Option<u128> {
+    let mask = alignment.checked_sub(1)?;
+    value.checked_add(mask).map(|value| value & !mask)
 }
 
 fn capability_kind(capability: &Capability) -> ObjectKind {
@@ -1366,7 +1481,7 @@ mod tests {
     #[test]
     fn revoke_untyped_descendants_removes_retyped_objects() {
         let mut cspace = CapabilitySpace::new();
-        let root = cspace.insert_initial_capability(untyped(12)).unwrap();
+        let root = cspace.insert_initial_capability(untyped(13)).unwrap();
         let endpoint = cspace.retype_untyped(root, RetypeTarget::Endpoint).unwrap();
         let frame = cspace
             .retype_untyped(
