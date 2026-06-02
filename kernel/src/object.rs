@@ -1,4 +1,4 @@
-use alloc::collections::BTreeMap;
+use hashbrown::HashMap;
 
 use crate::{
     cap::{ObjectId, ObjectKind},
@@ -69,12 +69,18 @@ impl FrameObject {
 
 #[derive(Debug, Default)]
 pub struct ObjectTable {
-    endpoints: BTreeMap<ObjectId, Endpoint>,
-    frames: BTreeMap<ObjectId, FrameObject>,
-    cnodes: BTreeMap<ObjectId, ()>,
-    notifications: BTreeMap<ObjectId, Notification>,
-    replies: BTreeMap<ObjectId, Reply>,
-    tcbs: BTreeMap<ObjectId, Option<ThreadId>>,
+    objects: HashMap<ObjectId, KernelObject>,
+    tcb_index: HashMap<ThreadId, ObjectId>,
+}
+
+#[derive(Debug)]
+enum KernelObject {
+    Endpoint(Endpoint),
+    Frame(FrameObject),
+    CNode,
+    Notification(Notification),
+    Reply(Reply),
+    Tcb { thread: Option<ThreadId> },
 }
 
 impl KernelObjectKind {
@@ -104,6 +110,25 @@ impl KernelObjectRef {
     }
 }
 
+impl KernelObject {
+    const fn as_ref(&self) -> KernelObjectRef {
+        match self {
+            Self::Endpoint(_) => KernelObjectRef::Endpoint,
+            Self::Frame(frame) => KernelObjectRef::Frame {
+                size_bits: frame.size_bits(),
+            },
+            Self::CNode => KernelObjectRef::CNode,
+            Self::Notification(_) => KernelObjectRef::Notification,
+            Self::Reply(_) => KernelObjectRef::Reply,
+            Self::Tcb { thread } => KernelObjectRef::Tcb { thread: *thread },
+        }
+    }
+
+    const fn kind(&self) -> KernelObjectKind {
+        self.as_ref().kind()
+    }
+}
+
 impl ObjectTable {
     pub fn new() -> Self {
         Self::default()
@@ -115,7 +140,8 @@ impl ObjectTable {
         endpoint: Endpoint,
     ) -> Result<(), ObjectTableError> {
         self.ensure_unbound(object)?;
-        self.endpoints.insert(object, endpoint);
+        self.objects
+            .insert(object, KernelObject::Endpoint(endpoint));
         Ok(())
     }
 
@@ -129,13 +155,13 @@ impl ObjectTable {
         frame: FrameObject,
     ) -> Result<(), ObjectTableError> {
         self.ensure_unbound(object)?;
-        self.frames.insert(object, frame);
+        self.objects.insert(object, KernelObject::Frame(frame));
         Ok(())
     }
 
     pub fn insert_cnode(&mut self, object: ObjectId) -> Result<(), ObjectTableError> {
         self.ensure_unbound(object)?;
-        self.cnodes.insert(object, ());
+        self.objects.insert(object, KernelObject::CNode);
         Ok(())
     }
 
@@ -145,60 +171,51 @@ impl ObjectTable {
         notification: Notification,
     ) -> Result<(), ObjectTableError> {
         self.ensure_unbound(object)?;
-        self.notifications.insert(object, notification);
+        self.objects
+            .insert(object, KernelObject::Notification(notification));
         Ok(())
     }
 
     pub fn insert_reply(&mut self, object: ObjectId, reply: Reply) -> Result<(), ObjectTableError> {
         self.ensure_unbound(object)?;
-        self.replies.insert(object, reply);
+        self.objects.insert(object, KernelObject::Reply(reply));
         Ok(())
     }
 
     pub fn insert_tcb(&mut self, object: ObjectId) -> Result<(), ObjectTableError> {
         self.ensure_unbound(object)?;
-        self.tcbs.insert(object, None);
+        self.objects
+            .insert(object, KernelObject::Tcb { thread: None });
         Ok(())
     }
 
     pub fn bind_tcb(&mut self, object: ObjectId, thread: ThreadId) -> Result<(), ObjectTableError> {
-        if self.tcbs.values().any(|bound| *bound == Some(thread)) {
+        if self.tcb_index.contains_key(&thread) {
             return Err(ObjectTableError::ThreadObjectAlreadyBound { thread });
         }
-        let binding = self
-            .tcbs
-            .get_mut(&object)
-            .ok_or(ObjectTableError::ObjectNotFound { object })?;
-        if binding.is_some() {
-            return Err(ObjectTableError::ObjectIdAlreadyBound { object });
+        match self.objects.get_mut(&object) {
+            Some(KernelObject::Tcb { thread: binding }) => {
+                if binding.is_some() {
+                    return Err(ObjectTableError::ObjectIdAlreadyBound { object });
+                }
+                *binding = Some(thread);
+                self.tcb_index.insert(thread, object);
+                Ok(())
+            }
+            Some(object_ref) => Err(ObjectTableError::WrongObjectType {
+                object,
+                expected: KernelObjectKind::Tcb,
+                actual: object_ref.kind(),
+            }),
+            None => Err(ObjectTableError::ObjectNotFound { object }),
         }
-        *binding = Some(thread);
-        Ok(())
     }
 
     pub fn get(&self, object: ObjectId) -> Result<KernelObjectRef, ObjectTableError> {
-        if self.endpoints.contains_key(&object) {
-            return Ok(KernelObjectRef::Endpoint);
-        }
-        if let Some(frame) = self.frames.get(&object) {
-            return Ok(KernelObjectRef::Frame {
-                size_bits: frame.size_bits(),
-            });
-        }
-        if self.cnodes.contains_key(&object) {
-            return Ok(KernelObjectRef::CNode);
-        }
-        if self.notifications.contains_key(&object) {
-            return Ok(KernelObjectRef::Notification);
-        }
-        if self.replies.contains_key(&object) {
-            return Ok(KernelObjectRef::Reply);
-        }
-        if let Some(thread) = self.tcbs.get(&object) {
-            return Ok(KernelObjectRef::Tcb { thread: *thread });
-        }
-
-        Err(ObjectTableError::ObjectNotFound { object })
+        self.objects
+            .get(&object)
+            .map(KernelObject::as_ref)
+            .ok_or(ObjectTableError::ObjectNotFound { object })
     }
 
     pub fn expect_kind(
@@ -219,84 +236,126 @@ impl ObjectTable {
     }
 
     pub fn endpoint(&self, object: ObjectId) -> Result<&Endpoint, ObjectTableError> {
-        self.endpoints
-            .get(&object)
-            .ok_or_else(|| self.missing_or_wrong(object, KernelObjectKind::Endpoint))
+        match self.objects.get(&object) {
+            Some(KernelObject::Endpoint(endpoint)) => Ok(endpoint),
+            Some(object_ref) => Err(Self::wrong_type(
+                object,
+                KernelObjectKind::Endpoint,
+                object_ref.kind(),
+            )),
+            None => Err(ObjectTableError::ObjectNotFound { object }),
+        }
     }
 
     pub fn endpoint_mut(&mut self, object: ObjectId) -> Result<&mut Endpoint, ObjectTableError> {
-        if !self.endpoints.contains_key(&object) {
-            return Err(self.missing_or_wrong(object, KernelObjectKind::Endpoint));
+        match self.objects.get_mut(&object) {
+            Some(KernelObject::Endpoint(endpoint)) => Ok(endpoint),
+            Some(object_ref) => Err(Self::wrong_type(
+                object,
+                KernelObjectKind::Endpoint,
+                object_ref.kind(),
+            )),
+            None => Err(ObjectTableError::ObjectNotFound { object }),
         }
-        Ok(self
-            .endpoints
-            .get_mut(&object)
-            .expect("checked endpoint object must exist"))
     }
 
     pub fn frame(&self, object: ObjectId) -> Result<FrameObject, ObjectTableError> {
-        self.frames
-            .get(&object)
-            .copied()
-            .ok_or_else(|| self.missing_or_wrong(object, KernelObjectKind::Frame))
+        match self.objects.get(&object) {
+            Some(KernelObject::Frame(frame)) => Ok(*frame),
+            Some(object_ref) => Err(Self::wrong_type(
+                object,
+                KernelObjectKind::Frame,
+                object_ref.kind(),
+            )),
+            None => Err(ObjectTableError::ObjectNotFound { object }),
+        }
     }
 
     pub fn notification(&self, object: ObjectId) -> Result<&Notification, ObjectTableError> {
-        self.notifications
-            .get(&object)
-            .ok_or_else(|| self.missing_or_wrong(object, KernelObjectKind::Notification))
+        match self.objects.get(&object) {
+            Some(KernelObject::Notification(notification)) => Ok(notification),
+            Some(object_ref) => Err(Self::wrong_type(
+                object,
+                KernelObjectKind::Notification,
+                object_ref.kind(),
+            )),
+            None => Err(ObjectTableError::ObjectNotFound { object }),
+        }
     }
 
     pub fn notification_mut(
         &mut self,
         object: ObjectId,
     ) -> Result<&mut Notification, ObjectTableError> {
-        if !self.notifications.contains_key(&object) {
-            return Err(self.missing_or_wrong(object, KernelObjectKind::Notification));
+        match self.objects.get_mut(&object) {
+            Some(KernelObject::Notification(notification)) => Ok(notification),
+            Some(object_ref) => Err(Self::wrong_type(
+                object,
+                KernelObjectKind::Notification,
+                object_ref.kind(),
+            )),
+            None => Err(ObjectTableError::ObjectNotFound { object }),
         }
-        Ok(self
-            .notifications
-            .get_mut(&object)
-            .expect("checked notification object must exist"))
     }
 
     pub fn reply(&self, object: ObjectId) -> Result<&Reply, ObjectTableError> {
-        self.replies
-            .get(&object)
-            .ok_or_else(|| self.missing_or_wrong(object, KernelObjectKind::Reply))
+        match self.objects.get(&object) {
+            Some(KernelObject::Reply(reply)) => Ok(reply),
+            Some(object_ref) => Err(Self::wrong_type(
+                object,
+                KernelObjectKind::Reply,
+                object_ref.kind(),
+            )),
+            None => Err(ObjectTableError::ObjectNotFound { object }),
+        }
     }
 
     pub fn reply_mut(&mut self, object: ObjectId) -> Result<&mut Reply, ObjectTableError> {
-        if !self.replies.contains_key(&object) {
-            return Err(self.missing_or_wrong(object, KernelObjectKind::Reply));
+        match self.objects.get_mut(&object) {
+            Some(KernelObject::Reply(reply)) => Ok(reply),
+            Some(object_ref) => Err(Self::wrong_type(
+                object,
+                KernelObjectKind::Reply,
+                object_ref.kind(),
+            )),
+            None => Err(ObjectTableError::ObjectNotFound { object }),
         }
-        Ok(self
-            .replies
-            .get_mut(&object)
-            .expect("checked reply object must exist"))
     }
 
-    pub fn endpoint_and_reply_mut(
+    pub fn with_endpoint_and_reply_mut<T>(
         &mut self,
         endpoint: ObjectId,
         reply: ObjectId,
-    ) -> Result<(&mut Endpoint, &mut Reply), ObjectTableError> {
-        if !self.endpoints.contains_key(&endpoint) {
-            return Err(self.missing_or_wrong(endpoint, KernelObjectKind::Endpoint));
-        }
-        if !self.replies.contains_key(&reply) {
-            return Err(self.missing_or_wrong(reply, KernelObjectKind::Reply));
-        }
+        f: impl FnOnce(&mut Endpoint, &mut Reply) -> T,
+    ) -> Result<T, ObjectTableError> {
+        self.expect_kind(endpoint, KernelObjectKind::Endpoint)?;
+        self.expect_kind(reply, KernelObjectKind::Reply)?;
 
-        let endpoint = self
-            .endpoints
-            .get_mut(&endpoint)
-            .expect("checked endpoint object must exist");
-        let reply = self
-            .replies
-            .get_mut(&reply)
-            .expect("checked reply object must exist");
-        Ok((endpoint, reply))
+        let reply_object = self
+            .objects
+            .remove(&reply)
+            .ok_or(ObjectTableError::ObjectNotFound { object: reply })?;
+        let mut reply_ref = match reply_object {
+            KernelObject::Reply(reply_ref) => reply_ref,
+            object_ref => {
+                let actual = object_ref.kind();
+                self.objects.insert(reply, object_ref);
+                return Err(Self::wrong_type(reply, KernelObjectKind::Reply, actual));
+            }
+        };
+
+        let result = match self.objects.get_mut(&endpoint) {
+            Some(KernelObject::Endpoint(endpoint_ref)) => Ok(f(endpoint_ref, &mut reply_ref)),
+            Some(object_ref) => Err(Self::wrong_type(
+                endpoint,
+                KernelObjectKind::Endpoint,
+                object_ref.kind(),
+            )),
+            None => Err(ObjectTableError::ObjectNotFound { object: endpoint }),
+        };
+
+        self.objects.insert(reply, KernelObject::Reply(reply_ref));
+        result
     }
 
     pub fn tcb_thread(&self, object: ObjectId) -> Result<ThreadId, ObjectTableError> {
@@ -318,34 +377,29 @@ impl ObjectTable {
     }
 
     pub fn tcb_object_for_thread(&self, thread: ThreadId) -> Result<ObjectId, ObjectTableError> {
-        self.tcbs
-            .iter()
-            .find_map(|(object, bound)| (*bound == Some(thread)).then_some(*object))
+        self.tcb_index
+            .get(&thread)
+            .copied()
             .ok_or(ObjectTableError::ThreadObjectNotFound { thread })
     }
 
     fn ensure_unbound(&self, object: ObjectId) -> Result<(), ObjectTableError> {
-        if self.endpoints.contains_key(&object)
-            || self.frames.contains_key(&object)
-            || self.cnodes.contains_key(&object)
-            || self.notifications.contains_key(&object)
-            || self.replies.contains_key(&object)
-            || self.tcbs.contains_key(&object)
-        {
+        if self.objects.contains_key(&object) {
             return Err(ObjectTableError::ObjectIdAlreadyBound { object });
         }
 
         Ok(())
     }
 
-    fn missing_or_wrong(&self, object: ObjectId, expected: KernelObjectKind) -> ObjectTableError {
-        match self.get(object) {
-            Ok(object_ref) => ObjectTableError::WrongObjectType {
-                object,
-                expected,
-                actual: object_ref.kind(),
-            },
-            Err(error) => error,
+    const fn wrong_type(
+        object: ObjectId,
+        expected: KernelObjectKind,
+        actual: KernelObjectKind,
+    ) -> ObjectTableError {
+        ObjectTableError::WrongObjectType {
+            object,
+            expected,
+            actual,
         }
     }
 }
@@ -436,6 +490,29 @@ mod tests {
         assert_eq!(
             table.tcb_thread(object(10)),
             Err(ObjectTableError::TcbObjectUnbound { object: object(10) })
+        );
+    }
+
+    #[test]
+    fn tcb_thread_binding_is_unique_and_lookupable_by_thread() {
+        // Goal: preserve the one-to-one TCB object/thread binding contract.
+        // Scope: ObjectTable binding boundary and reverse lookup API.
+        // Semantics: a bound thread resolves to its TCB object; duplicate thread
+        // binding and unknown thread lookup fail without rebinding another TCB.
+        let mut table = ObjectTable::new();
+        table.insert_tcb(object(10)).unwrap();
+        table.insert_tcb(object(11)).unwrap();
+
+        table.bind_tcb(object(10), thread(1)).unwrap();
+
+        assert_eq!(table.tcb_object_for_thread(thread(1)), Ok(object(10)));
+        assert_eq!(
+            table.bind_tcb(object(11), thread(1)),
+            Err(ObjectTableError::ThreadObjectAlreadyBound { thread: thread(1) })
+        );
+        assert_eq!(
+            table.tcb_object_for_thread(thread(2)),
+            Err(ObjectTableError::ThreadObjectNotFound { thread: thread(2) })
         );
     }
 

@@ -333,23 +333,25 @@ impl KernelState {
         }
 
         let action = match reply {
-            Some(reply) => {
-                let (endpoint_ref, reply_ref) =
-                    self.objects.endpoint_and_reply_mut(endpoint, reply)?;
-                send_ipc(
-                    &mut self.threads,
-                    &mut self.scheduler,
-                    endpoint_ref,
-                    Some(reply_ref),
-                    endpoint,
-                    caller_object,
-                    context.current(),
-                    context.cpu(),
-                    badge,
-                    options,
-                    context.payload(),
-                )?
-            }
+            Some(reply) => self.objects.with_endpoint_and_reply_mut(
+                endpoint,
+                reply,
+                |endpoint_ref, reply_ref| {
+                    send_ipc(
+                        &mut self.threads,
+                        &mut self.scheduler,
+                        endpoint_ref,
+                        Some(reply_ref),
+                        endpoint,
+                        caller_object,
+                        context.current(),
+                        context.cpu(),
+                        badge,
+                        options,
+                        context.payload(),
+                    )
+                },
+            )??,
             None => {
                 let endpoint_ref = self.objects.endpoint_mut(endpoint)?;
                 send_ipc(
@@ -423,22 +425,24 @@ impl KernelState {
         };
 
         let action = match reply {
-            Some(reply) => {
-                let (endpoint_ref, reply_ref) =
-                    self.objects.endpoint_and_reply_mut(endpoint, reply)?;
-                recv_ipc(
-                    &mut self.threads,
-                    &mut self.scheduler,
-                    endpoint_ref,
-                    Some(reply_ref),
-                    endpoint,
-                    caller_object,
-                    context.reply(),
-                    context.current(),
-                    context.cpu(),
-                    options,
-                )?
-            }
+            Some(reply) => self.objects.with_endpoint_and_reply_mut(
+                endpoint,
+                reply,
+                |endpoint_ref, reply_ref| {
+                    recv_ipc(
+                        &mut self.threads,
+                        &mut self.scheduler,
+                        endpoint_ref,
+                        Some(reply_ref),
+                        endpoint,
+                        caller_object,
+                        context.reply(),
+                        context.current(),
+                        context.cpu(),
+                        options,
+                    )
+                },
+            )??,
             None => {
                 let endpoint_ref = self.objects.endpoint_mut(endpoint)?;
                 recv_ipc(
