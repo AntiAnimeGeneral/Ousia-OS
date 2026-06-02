@@ -1,6 +1,7 @@
 use crate::cap::{
     CapError, Capability, CapabilityDescriptor, CapabilitySpace, ObjectId, RetypeTarget, Rights,
 };
+use crate::tcb::{CpuId, ThreadId};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Invocation {
@@ -20,6 +21,10 @@ pub enum Invocation {
         target: RetypeTarget,
     },
     TcbResume,
+    TcbConfigure {
+        thread: ThreadId,
+        affinity: CpuId,
+    },
     NotificationSignal,
     NotificationWait {
         blocking: bool,
@@ -56,6 +61,11 @@ pub enum InvocationOutcome {
     },
     TcbResumeAuthorized {
         tcb: ObjectId,
+    },
+    TcbConfigureAuthorized {
+        tcb: ObjectId,
+        thread: ThreadId,
+        affinity: CpuId,
     },
     NotificationSignalAuthorized {
         notification: ObjectId,
@@ -200,6 +210,17 @@ pub fn invoke(
             Capability::Tcb(_) => {
                 require_rights(view.rights, Rights::MANAGE)?;
                 Ok(InvocationOutcome::TcbResumeAuthorized { tcb: view.object })
+            }
+            actual => Err(wrong_capability(InvocationTarget::Tcb, actual)),
+        },
+        Invocation::TcbConfigure { thread, affinity } => match view.capability {
+            Capability::Tcb(_) => {
+                require_rights(view.rights, Rights::MANAGE)?;
+                Ok(InvocationOutcome::TcbConfigureAuthorized {
+                    tcb: view.object,
+                    thread,
+                    affinity,
+                })
             }
             actual => Err(wrong_capability(InvocationTarget::Tcb, actual)),
         },
@@ -582,6 +603,47 @@ mod tests {
 
         assert_eq!(
             invoke(&cspace, cap, Invocation::TcbResume),
+            Err(InvocationError::MissingRights {
+                required: Rights::MANAGE,
+                actual: Rights::NONE,
+            })
+        );
+    }
+
+    #[test]
+    fn tcb_configure_requires_manage_rights_and_exports_configuration() {
+        let mut cspace = CapabilitySpace::new();
+        let cap = cspace
+            .insert_initial_capability(tcb(Rights::MANAGE))
+            .unwrap();
+        let object = cspace.object_of(cap).unwrap();
+
+        assert_eq!(
+            invoke(
+                &cspace,
+                cap,
+                Invocation::TcbConfigure {
+                    thread: ThreadId::new(10),
+                    affinity: CpuId::new(1),
+                },
+            ),
+            Ok(InvocationOutcome::TcbConfigureAuthorized {
+                tcb: object,
+                thread: ThreadId::new(10),
+                affinity: CpuId::new(1),
+            })
+        );
+
+        let read_only = cspace.insert_initial_capability(tcb(Rights::NONE)).unwrap();
+        assert_eq!(
+            invoke(
+                &cspace,
+                read_only,
+                Invocation::TcbConfigure {
+                    thread: ThreadId::new(10),
+                    affinity: CpuId::new(1),
+                },
+            ),
             Err(InvocationError::MissingRights {
                 required: Rights::MANAGE,
                 actual: Rights::NONE,

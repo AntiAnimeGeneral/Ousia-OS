@@ -21,7 +21,7 @@ pub enum KernelObjectRef {
     Endpoint,
     Notification,
     Reply,
-    Tcb { thread: ThreadId },
+    Tcb { thread: Option<ThreadId> },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -40,6 +40,9 @@ pub enum ObjectTableError {
     ThreadObjectNotFound {
         thread: ThreadId,
     },
+    TcbObjectUnbound {
+        object: ObjectId,
+    },
     ThreadObjectAlreadyBound {
         thread: ThreadId,
     },
@@ -50,7 +53,7 @@ pub struct ObjectTable {
     endpoints: BTreeMap<ObjectId, Endpoint>,
     notifications: BTreeMap<ObjectId, Notification>,
     replies: BTreeMap<ObjectId, Reply>,
-    tcbs: BTreeMap<ObjectId, ThreadId>,
+    tcbs: BTreeMap<ObjectId, Option<ThreadId>>,
 }
 
 impl KernelObjectKind {
@@ -111,12 +114,24 @@ impl ObjectTable {
         Ok(())
     }
 
-    pub fn bind_tcb(&mut self, object: ObjectId, thread: ThreadId) -> Result<(), ObjectTableError> {
+    pub fn insert_tcb(&mut self, object: ObjectId) -> Result<(), ObjectTableError> {
         self.ensure_unbound(object)?;
-        if self.tcbs.values().any(|bound| *bound == thread) {
+        self.tcbs.insert(object, None);
+        Ok(())
+    }
+
+    pub fn bind_tcb(&mut self, object: ObjectId, thread: ThreadId) -> Result<(), ObjectTableError> {
+        if self.tcbs.values().any(|bound| *bound == Some(thread)) {
             return Err(ObjectTableError::ThreadObjectAlreadyBound { thread });
         }
-        self.tcbs.insert(object, thread);
+        let binding = self
+            .tcbs
+            .get_mut(&object)
+            .ok_or(ObjectTableError::ObjectNotFound { object })?;
+        if binding.is_some() {
+            return Err(ObjectTableError::ObjectIdAlreadyBound { object });
+        }
+        *binding = Some(thread);
         Ok(())
     }
 
@@ -230,7 +245,12 @@ impl ObjectTable {
 
     pub fn tcb_thread(&self, object: ObjectId) -> Result<ThreadId, ObjectTableError> {
         match self.expect_kind(object, KernelObjectKind::Tcb)? {
-            KernelObjectRef::Tcb { thread } => Ok(thread),
+            KernelObjectRef::Tcb {
+                thread: Some(thread),
+            } => Ok(thread),
+            KernelObjectRef::Tcb { thread: None } => {
+                Err(ObjectTableError::TcbObjectUnbound { object })
+            }
             KernelObjectRef::Endpoint | KernelObjectRef::Notification | KernelObjectRef::Reply => {
                 unreachable!("expect_kind returned a non-TCB object for TCB expectation")
             }
@@ -240,7 +260,7 @@ impl ObjectTable {
     pub fn tcb_object_for_thread(&self, thread: ThreadId) -> Result<ObjectId, ObjectTableError> {
         self.tcbs
             .iter()
-            .find_map(|(object, bound)| (*bound == thread).then_some(*object))
+            .find_map(|(object, bound)| (*bound == Some(thread)).then_some(*object))
             .ok_or(ObjectTableError::ThreadObjectNotFound { thread })
     }
 
@@ -294,12 +314,30 @@ mod tests {
     #[test]
     fn tcb_binding_keeps_thread_state_outside_object_table() {
         let mut table = ObjectTable::new();
+        table.insert_tcb(object(10)).unwrap();
         table.bind_tcb(object(10), thread(1)).unwrap();
 
         assert_eq!(table.tcb_thread(object(10)), Ok(thread(1)));
         assert_eq!(
             table.get(object(10)),
-            Ok(KernelObjectRef::Tcb { thread: thread(1) })
+            Ok(KernelObjectRef::Tcb {
+                thread: Some(thread(1))
+            })
+        );
+    }
+
+    #[test]
+    fn unbound_tcb_object_has_no_thread_binding() {
+        let mut table = ObjectTable::new();
+        table.insert_tcb(object(10)).unwrap();
+
+        assert_eq!(
+            table.get(object(10)),
+            Ok(KernelObjectRef::Tcb { thread: None })
+        );
+        assert_eq!(
+            table.tcb_thread(object(10)),
+            Err(ObjectTableError::TcbObjectUnbound { object: object(10) })
         );
     }
 
