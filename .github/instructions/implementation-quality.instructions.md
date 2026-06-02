@@ -27,6 +27,7 @@ description: "实现质量和错误边界规范：主路径清晰、单一权威
 
 - Rust 状态机、权限判断、capability 类型、对象类型和架构分支应优先使用显式 enum match。不要用 `_` 或 wildcard fallback 吞掉未来新增状态，除非该 fallback 本身就是经过设计的兼容语义，并且有测试覆盖。
 - Rust 中有语义的 magic number 应使用常量。
-- 只有失败不可能发生时才使用 `unwrap`，并用短注释说明原因。
-- 内部不变量已经由边界建立且外部输入不能触发失败时，使用带语义说明的 `expect` 或 invariant assertion。
+- 只有失败完全不可能发生、且该假设未来可以自然替换为 unchecked assumption 时，才使用 `unwrap`；必要时用短注释说明不可失败原因。
+- 只有错误的内部调用、错误的 API 使用或内部 invariant 破坏才会触发，而正确调用不会触发时，才使用带语义说明的 `expect` 或 invariant assertion。
+- 如果校验函数已经建立 invariant 并返回后续需要的数据，应直接消费该返回值；不要再次 lookup 后用 `expect` 取同一个事实。
 - 可能由外部输入触发的失败不能靠 `expect` 处理。
