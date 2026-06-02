@@ -331,31 +331,33 @@ impl ObjectTable {
         self.expect_kind(endpoint, KernelObjectKind::Endpoint)?;
         self.expect_kind(reply, KernelObjectKind::Reply)?;
 
-        let reply_object = self
-            .objects
-            .remove(&reply)
-            .ok_or(ObjectTableError::ObjectNotFound { object: reply })?;
-        let mut reply_ref = match reply_object {
-            KernelObject::Reply(reply_ref) => reply_ref,
-            object_ref => {
-                let actual = object_ref.kind();
-                self.objects.insert(reply, object_ref);
-                return Err(Self::wrong_type(reply, KernelObjectKind::Reply, actual));
+        let [endpoint_ref, reply_ref] = self.objects.get_many_mut([&endpoint, &reply]);
+        match (endpoint_ref, reply_ref) {
+            (Some(KernelObject::Endpoint(endpoint_ref)), Some(KernelObject::Reply(reply_ref))) => {
+                Ok(f(endpoint_ref, reply_ref))
             }
-        };
-
-        let result = match self.objects.get_mut(&endpoint) {
-            Some(KernelObject::Endpoint(endpoint_ref)) => Ok(f(endpoint_ref, &mut reply_ref)),
-            Some(object_ref) => Err(Self::wrong_type(
+            (Some(object_ref), Some(KernelObject::Reply(_))) => Err(Self::wrong_type(
                 endpoint,
                 KernelObjectKind::Endpoint,
                 object_ref.kind(),
             )),
-            None => Err(ObjectTableError::ObjectNotFound { object: endpoint }),
-        };
-
-        self.objects.insert(reply, KernelObject::Reply(reply_ref));
-        result
+            (Some(KernelObject::Endpoint(_)), Some(object_ref)) => Err(Self::wrong_type(
+                reply,
+                KernelObjectKind::Reply,
+                object_ref.kind(),
+            )),
+            (Some(object_ref), _) => Err(Self::wrong_type(
+                endpoint,
+                KernelObjectKind::Endpoint,
+                object_ref.kind(),
+            )),
+            (_, Some(object_ref)) => Err(Self::wrong_type(
+                reply,
+                KernelObjectKind::Reply,
+                object_ref.kind(),
+            )),
+            (None, _) => Err(ObjectTableError::ObjectNotFound { object: endpoint }),
+        }
     }
 
     pub fn tcb_thread(&self, object: ObjectId) -> Result<ThreadId, ObjectTableError> {
@@ -513,6 +515,49 @@ mod tests {
         assert_eq!(
             table.tcb_object_for_thread(thread(2)),
             Err(ObjectTableError::ThreadObjectNotFound { thread: thread(2) })
+        );
+        assert_eq!(
+            table.tcb_thread(object(11)),
+            Err(ObjectTableError::TcbObjectUnbound { object: object(11) })
+        );
+    }
+
+    #[test]
+    fn endpoint_reply_mutation_keeps_reply_on_closure_error() {
+        // Goal: keep ObjectTable ownership stable when a caller reports an error
+        // after receiving mutable endpoint and reply references.
+        // Scope: dual-object mutable access API used by endpoint IPC paths.
+        // Semantics: closure failure is not an ObjectTable failure and must not
+        // remove either object from the table.
+        let mut table = ObjectTable::new();
+        table.insert_endpoint(object(1), Endpoint::new()).unwrap();
+        table.insert_reply(object(2), Reply::new()).unwrap();
+
+        let result = table.with_endpoint_and_reply_mut(object(1), object(2), |_, _| {
+            Err::<(), &'static str>("caller failed")
+        });
+
+        assert_eq!(result, Ok(Err("caller failed")));
+        assert!(table.endpoint(object(1)).is_ok());
+        assert!(table.reply(object(2)).is_ok());
+    }
+
+    #[test]
+    fn endpoint_reply_mutation_rejects_same_object_before_dual_lookup() {
+        // Goal: prevent duplicate-key dual lookup from becoming a panic path.
+        // Scope: ObjectTable dual-object mutable access boundary.
+        // Semantics: one object cannot satisfy both endpoint and reply roles, so
+        // same-object input fails as wrong type before requesting two references.
+        let mut table = ObjectTable::new();
+        table.insert_endpoint(object(1), Endpoint::new()).unwrap();
+
+        assert_eq!(
+            table.with_endpoint_and_reply_mut(object(1), object(1), |_, _| ()),
+            Err(ObjectTableError::WrongObjectType {
+                object: object(1),
+                expected: KernelObjectKind::Reply,
+                actual: KernelObjectKind::Endpoint,
+            })
         );
     }
 
