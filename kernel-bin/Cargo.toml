@@ -1,0 +1,20 @@
+[package]
+name = "kernel-bin"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+autobins = false
+
+[[bin]]
+name = "kernel"
+path = "src/main.rs"
+test = false
+doctest = false
+bench = false
+
+[dependencies]
+kernel = { path = "../kernel" }
+ostd = { path = "../ostd" }
+
+[features]
+exception-smoke = ["ostd/exception-smoke"]

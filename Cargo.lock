@@ -34,6 +34,13 @@ name = "kernel"
 version = "0.0.1"
 dependencies = [
  "bitflags",
+]
+
+[[package]]
+name = "kernel-bin"
+version = "0.0.1"
+dependencies = [
+ "kernel",
  "ostd",
 ]
 

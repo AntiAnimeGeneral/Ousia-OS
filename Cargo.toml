@@ -1,6 +1,6 @@
 [workspace]
 # 指定工作区包含哪些子项目
-members = ["kernel", "ostd"]
+members = ["kernel", "kernel-bin", "ostd"]
 resolver = "3"
 
 # 可选：指定默认运行/构建的项目（当直接运行 cargo run 时）
