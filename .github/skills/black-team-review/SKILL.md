@@ -29,7 +29,7 @@ argument-hint: "subject, mode, scope, user goal, inputs, validation results, and
 
 不要一次性加载 `_shared/modes/**`。只有 `_shared/index.md` 选中的 mode 才进入本次 review 上下文。
 
-规范来源由 instructions 提供。根据 subject 和 scope 读取目标文件、相邻模块、owning docs、测试、reference notes 或验证结果。涉及 Ousia OS 语义防偏移时，先读取 `.github/skills/_shared/reference/ousia-os.md` 索引，再按索引选择 1 到 3 个 reference 正文。
+规范来源由 instructions 提供。根据 subject 和 scope 读取目标文件、相邻模块、owning docs、测试、reference notes 或验证结果。涉及 Ousia OS 语义防偏移时，先读取 `.github/skills/_shared/reference/index.md` 索引，再按索引选择 1 到 3 个 reference 正文。
 
 ## Mode 映射
 
@@ -46,7 +46,7 @@ Review 前尽量收集：
 - 真实 diff、proposal packet、扫描范围或目标文件列表。
 - 已运行检查、测试结果、失败信息和已知 residual risks。
 - 目标区域的 owning docs、相邻模块、调用方和测试。
-- 项目专用语义或外部 baseline 的 reference 证据；Ousia OS 场景按 `.github/skills/_shared/reference/ousia-os.md` 索引选择正文后收集。
+- 项目专用语义或外部 baseline 的 reference 证据；Ousia OS 场景按 `.github/skills/_shared/reference/index.md` 索引选择正文后收集。
 
 证据不足时，把无法证明的部分列为 residual risk 或输入不匹配 finding；不要补假设后放行。
 
@@ -60,7 +60,7 @@ Review 前尽量收集：
 - 产品层落点、代码落点或 owning docs 是否明确。
 - 迁移、兼容性、回滚和验证策略是否可执行。
 - Assumptions、open questions 和 residual risks 是否足以阻止误实施。
-- Ousia OS 专用漂移风险按 `.github/skills/_shared/reference/ousia-os.md` 索引选择正文后追加攻击。
+- Ousia OS 专用漂移风险按 `.github/skills/_shared/reference/index.md` 索引选择正文后追加攻击。
 
 `subject: 代码实现` 重点攻击：
 
@@ -70,7 +70,7 @@ Review 前尽量收集：
 - 内部 invariant 是否被边界建立后仍层层重复防御，或被包装成 public recoverable error。
 - 抽象是否只是透传 helper、薄 service、空泛 adapter 或私有小框架。
 - 测试是否约束使用语义、失败无副作用和边界状态，而不是复述实现或只覆盖 happy path。
-- Ousia OS 专用边界、reference 和实现偏好按 `.github/skills/_shared/reference/ousia-os.md` 索引选择正文后追加攻击。
+- Ousia OS 专用边界、reference 和实现偏好按 `.github/skills/_shared/reference/index.md` 索引选择正文后追加攻击。
 
 `mode: 全局启发扫描` 只能报告风险和代表性证据；不能把扫描 finding 当成已验证修复方案。结构性问题应 handoff 给 architecture planner。
 

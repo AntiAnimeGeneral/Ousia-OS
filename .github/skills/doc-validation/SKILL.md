@@ -28,6 +28,7 @@ deno task --cwd .github/skills/doc-validation check:docs --config ../../../desig
    - `design/check-docs.config.json`: documentation project validation config.
    - `.github/skills/doc-validation/scripts/**/*.ts`: documentation checker implementation or tests.
    - `.github/instructions/**/*.instructions.md` or `.github/skills/**/SKILL.md`: agent customization workflow files.
+   - `.github/skills/_shared/reference/**/*.md`: reference corpus entries.
    - `kernel/**/*.rs`, `**/Cargo.toml`, or `Cargo.lock`: Rust code or Cargo metadata.
 3. Run only the checks relevant to those changed files.
 4. If a deterministic check fails, fix the cause and rerun the affected check.
@@ -40,6 +41,7 @@ deno task --cwd .github/skills/doc-validation check:docs --config ../../../desig
 | `design/**/*.md`                                                                   | `deno task --cwd .github/skills/doc-validation check:docs --config ../../../design/check-docs.config.json`                                                                                                                                                                                                                                                                      |
 | `.github/skills/doc-validation/scripts/**/*.ts` or `design/check-docs.config.json` | `deno task --cwd .github/skills/doc-validation fmt:docs-checker --check`, `deno task --cwd .github/skills/doc-validation check:types`, `deno task --cwd .github/skills/doc-validation lint:docs-checker`, `deno task --cwd .github/skills/doc-validation test:docs`, `deno task --cwd .github/skills/doc-validation check:docs --config ../../../design/check-docs.config.json` |
 | `.github/instructions/**/*.instructions.md`, `.github/skills/**/SKILL.md`          | Check YAML frontmatter, ensure `description` is meaningful, then run `deno task --cwd .github/skills/doc-validation check:docs --config ../../../design/check-docs.config.json` if design links or docs changed                                                                                                                                                                 |
+| `.github/skills/_shared/reference/**/*.md`                                          | `deno task --cwd .github/skills/doc-validation check:docs --config ../../../design/check-docs.config.json`, plus confirm the reference index routes to existing entries                                                                                                                                                                                                            |
 | Rust source or Cargo metadata                                                      | `cargo fmt --check`, `cargo check`, and targeted tests when behavior changed or tests exist                                                                                                                                                                                                                                                                                     |
 
 ## Documentation Hygiene

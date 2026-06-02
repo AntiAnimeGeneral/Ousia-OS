@@ -2,7 +2,7 @@
 
 这个文件只做入口 skill 的路由表。规范内容由 `.github/instructions/**` 提供；本 index 不复述产品设计规范、代码规范、kernel 约束或文档规范。
 
-Ousia-specific 经验、reference 读取入口和 checklist 放在 `.github/skills/_shared/reference/**`。入口 skill 先读取 `.github/skills/_shared/reference/ousia-os.md` 索引，再按 scope 选择少量正文；不要直接全量加载 reference corpus。
+Ousia-specific 经验、reference 读取入口和 checklist 放在 `.github/skills/_shared/reference/**`。入口 skill 先读取 `.github/skills/_shared/reference/index.md` 索引，再按 scope 选择少量正文；不要直接全量加载 reference corpus。
 
 ## Architecture Planner
 
@@ -51,7 +51,7 @@ Ousia-specific 经验、reference 读取入口和 checklist 放在 `.github/skil
 ## Shared Rules
 
 - Shared 组件只描述任务形状，不写具体产品/代码规范或输出协议。
-- `.github/skills/_shared/reference/ousia-os.md` 是项目专用 reference corpus 索引，不是入口界面、规范源或 trigger table。
+- `.github/skills/_shared/reference/index.md` 是项目专用 reference corpus 索引，不是入口界面、规范源或 trigger table。
 - `.github/skills/_shared/reference/*.md` 正文用于快速变动的工程经验和 checklist；硬规范仍应进入 `.github/instructions/**`。
 - 不要新增过多 mode、target 或 subject；优先把差异交给 instructions 和当前任务 scope。
 - Shared assets 不是外部入口，不应被当作 subagent skill 直接调用。

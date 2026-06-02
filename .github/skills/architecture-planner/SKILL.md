@@ -34,7 +34,7 @@ argument-hint: "mode, target, scope, user goal, inputs, validation expectations,
 
 不要一次性加载 `_shared/modes/**`。只有 `_shared/index.md` 选中的 mode 才进入本次 planning 上下文。
 
-规范来源由 instructions 提供。根据 target 和 scope 读取 owning docs、目标代码、相邻模块、测试、reference notes 或本地 third-party/reference source。涉及 Ousia OS 语义防偏移时，先读取 `.github/skills/_shared/reference/ousia-os.md` 索引，再按索引选择 1 到 3 个 reference 正文。
+规范来源由 instructions 提供。根据 target 和 scope 读取 owning docs、目标代码、相邻模块、测试、reference notes 或本地 third-party/reference source。涉及 Ousia OS 语义防偏移时，先读取 `.github/skills/_shared/reference/index.md` 索引，再按索引选择 1 到 3 个 reference 正文。
 
 ## 输入信息
 
@@ -46,7 +46,7 @@ argument-hint: "mode, target, scope, user goal, inputs, validation expectations,
 - 现有设计文档或 instruction 对该区域的约束。
 - 是否允许同步修改测试、文档、public API 或 workflow。
 
-涉及项目专用语义、kernel/OSTD/tooling 边界或成熟实现参考时，按 `.github/skills/_shared/reference/ousia-os.md` 选择正文并读取证据。资料不足时先输出受限假设和待确认问题，不凭感觉大拆。
+涉及项目专用语义、kernel/OSTD/tooling 边界或成熟实现参考时，按 `.github/skills/_shared/reference/index.md` 选择正文并读取证据。资料不足时先输出受限假设和待确认问题，不凭感觉大拆。
 
 ## 调用时机
 
@@ -77,14 +77,14 @@ argument-hint: "mode, target, scope, user goal, inputs, validation expectations,
 
 - 产品概念、目标/非目标、能力归属和稳定落点是否清楚。
 - 设计是否足以指导实现，而不是只给理念、口号或历史过程。
-- 项目专用归属、reference/adoption 规则按 `.github/skills/_shared/reference/ousia-os.md` 索引选择正文后判断。
+- 项目专用归属、reference/adoption 规则按 `.github/skills/_shared/reference/index.md` 索引选择正文后判断。
 
 `target: 代码` 重点判断：
 
 - 逻辑是否归属到正确边界。
 - 状态所有权、数据流、错误边界和副作用顺序是否能用一句话说明。
 - 校验、归一化、默认值和错误映射是否有单一权威位置。
-- 失败前检查、副作用顺序、状态机表达和项目专用边界按 `.github/skills/_shared/reference/ousia-os.md` 索引选择正文后判断。
+- 失败前检查、副作用顺序、状态机表达和项目专用边界按 `.github/skills/_shared/reference/index.md` 索引选择正文后判断。
 
 ## 规划原则
 
@@ -103,7 +103,7 @@ argument-hint: "mode, target, scope, user goal, inputs, validation expectations,
 - 为了沿用旧模式继续复制旧问题。
 - 在内部层层重复防御同一个已经由边界建立的不变量。
 
-项目专用偏好、经验和 checklist 集中维护在 `.github/skills/_shared/reference/**`；从 `.github/skills/_shared/reference/ousia-os.md` 索引进入。
+项目专用偏好、经验和 checklist 集中维护在 `.github/skills/_shared/reference/**`；从 `.github/skills/_shared/reference/index.md` 索引进入。
 
 ## Plan 必须说明
 

@@ -13,15 +13,15 @@ Reference corpus 是快速变动的工程经验、reference 读取入口和 plan
 
 ## Topic Routes
 
-| Scope / Focus | Read |
-|---------------|------|
-| 产品层、设计文档、owning docs、目标/非目标、稳定结论落点、reference 采用理由 | `product-and-docs.md` |
-| seL4 baseline、capability、CSpace、CNode、Untyped、retype、Endpoint、Notification、TCB、syscall/invocation | `kernel-baseline.md` |
-| `kernel`、OSTD、tooling、QEMU runner、host tooling、Cargo target、cfg 边界 | `kernel-ostd-tooling.md` |
-| boot memory map、typed frame metadata、page table ownership、address space、VMA/page-table truth source | `memory-and-address-space.md` |
-| IPC、reply handoff、notification、scheduler mutation、capability rights、object type 检查 | `ipc-capability-scheduler.md` |
-| platform bring-up、boot、QEMU machine、device tree、MMIO、exception level、driver framework | `platform-boot-driver.md` |
-| 测试策略、失败无副作用、黑队输入、真实调用路径、状态不变性 | `testing-review-attacks.md` |
+| Scope / Focus                                                                                              | Read                          |
+| ---------------------------------------------------------------------------------------------------------- | ----------------------------- |
+| 产品层、设计文档、owning docs、目标/非目标、稳定结论落点、reference 采用理由                               | `product-and-docs.md`         |
+| seL4 baseline、capability、CSpace、CNode、Untyped、retype、Endpoint、Notification、TCB、syscall/invocation | `kernel-baseline.md`          |
+| `kernel`、OSTD、tooling、QEMU runner、host tooling、Cargo target、cfg 边界                                 | `kernel-ostd-tooling.md`      |
+| boot memory map、typed frame metadata、page table ownership、address space、VMA/page-table truth source    | `memory-and-address-space.md` |
+| IPC、reply handoff、notification、scheduler mutation、capability rights、object type 检查                  | `ipc-capability-scheduler.md` |
+| platform bring-up、boot、QEMU machine、device tree、MMIO、exception level、driver framework                | `platform-boot-driver.md`     |
+| 测试策略、失败无副作用、黑队输入、真实调用路径、状态不变性                                                 | `testing-review-attacks.md`   |
 
 ## Planner Selection
 
