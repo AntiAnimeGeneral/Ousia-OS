@@ -1,6 +1,6 @@
 use crate::cap::{
     CapError, Capability, CapabilityDescriptor, CapabilitySpace, MintParams, ObjectId,
-    RetypeTarget, Rights,
+    RetypeDestination, RetypeTarget, Rights,
 };
 use crate::tcb::{CpuId, ThreadId};
 
@@ -20,6 +20,10 @@ pub enum Invocation {
     },
     UntypedRetype {
         target: RetypeTarget,
+    },
+    UntypedRetypeInto {
+        target: RetypeTarget,
+        destination: RetypeDestination,
     },
     CNodeCopy {
         source: CapabilityDescriptor,
@@ -77,6 +81,7 @@ pub enum InvocationOutcome {
     UntypedRetypeAuthorized {
         untyped: ObjectId,
         target: RetypeTarget,
+        destination: Option<RetypeDestination>,
     },
     CNodeCopyAuthorized {
         source: CapabilityDescriptor,
@@ -240,6 +245,28 @@ pub fn invoke(
                 Ok(InvocationOutcome::UntypedRetypeAuthorized {
                     untyped: view.object,
                     target,
+                    destination: None,
+                })
+            }
+            actual => Err(wrong_capability(InvocationTarget::Untyped, actual)),
+        },
+        Invocation::UntypedRetypeInto {
+            target,
+            destination,
+        } => match view.capability {
+            Capability::Untyped(cap) => {
+                target.validate_rights()?;
+                let requested_size = target.minimum_size_bits();
+                if requested_size > cap.size_bits {
+                    return Err(InvocationError::InvalidRetypeSize {
+                        requested: requested_size,
+                        source: cap.size_bits,
+                    });
+                }
+                Ok(InvocationOutcome::UntypedRetypeAuthorized {
+                    untyped: view.object,
+                    target,
+                    destination: Some(destination),
                 })
             }
             actual => Err(wrong_capability(InvocationTarget::Untyped, actual)),
@@ -248,13 +275,10 @@ pub fn invoke(
             source,
             requested_rights,
         } => match view.capability {
-            Capability::CNode(_) => {
-                require_rights(view.rights, Rights::MANAGE)?;
-                Ok(InvocationOutcome::CNodeCopyAuthorized {
-                    source,
-                    requested_rights,
-                })
-            }
+            Capability::CNode(_) => Ok(InvocationOutcome::CNodeCopyAuthorized {
+                source,
+                requested_rights,
+            }),
             actual => Err(wrong_capability(InvocationTarget::CNode, actual)),
         },
         Invocation::CNodeMint {
@@ -262,35 +286,23 @@ pub fn invoke(
             requested_rights,
             params,
         } => match view.capability {
-            Capability::CNode(_) => {
-                require_rights(view.rights, Rights::MANAGE)?;
-                Ok(InvocationOutcome::CNodeMintAuthorized {
-                    source,
-                    requested_rights,
-                    params,
-                })
-            }
+            Capability::CNode(_) => Ok(InvocationOutcome::CNodeMintAuthorized {
+                source,
+                requested_rights,
+                params,
+            }),
             actual => Err(wrong_capability(InvocationTarget::CNode, actual)),
         },
         Invocation::CNodeMove { source } => match view.capability {
-            Capability::CNode(_) => {
-                require_rights(view.rights, Rights::MANAGE)?;
-                Ok(InvocationOutcome::CNodeMoveAuthorized { source })
-            }
+            Capability::CNode(_) => Ok(InvocationOutcome::CNodeMoveAuthorized { source }),
             actual => Err(wrong_capability(InvocationTarget::CNode, actual)),
         },
         Invocation::CNodeDelete { target } => match view.capability {
-            Capability::CNode(_) => {
-                require_rights(view.rights, Rights::MANAGE)?;
-                Ok(InvocationOutcome::CNodeDeleteAuthorized { target })
-            }
+            Capability::CNode(_) => Ok(InvocationOutcome::CNodeDeleteAuthorized { target }),
             actual => Err(wrong_capability(InvocationTarget::CNode, actual)),
         },
         Invocation::CNodeRevoke { target } => match view.capability {
-            Capability::CNode(_) => {
-                require_rights(view.rights, Rights::MANAGE)?;
-                Ok(InvocationOutcome::CNodeRevokeAuthorized { target })
-            }
+            Capability::CNode(_) => Ok(InvocationOutcome::CNodeRevokeAuthorized { target }),
             actual => Err(wrong_capability(InvocationTarget::CNode, actual)),
         },
         Invocation::TcbResume => match view.capability {
@@ -400,8 +412,8 @@ mod tests {
         Capability::Notification(NotificationCap { badge, rights })
     }
 
-    fn cnode(rights: Rights) -> Capability {
-        Capability::CNode(CNodeCap { rights })
+    fn cnode() -> Capability {
+        Capability::CNode(CNodeCap::new(4))
     }
 
     #[test]
@@ -637,6 +649,7 @@ mod tests {
                 target: RetypeTarget::Frame {
                     rights: Rights::READ | Rights::WRITE,
                 },
+                destination: None,
             })
         );
     }
@@ -698,9 +711,7 @@ mod tests {
         // Scope: unit test for CNode invocation authorization before CSpace mutation.
         // Semantics: source slot mutation is owned by CapabilitySpace after authorization.
         let mut cspace = CapabilitySpace::new();
-        let cnode_cap = cspace
-            .insert_initial_capability(cnode(Rights::MANAGE))
-            .unwrap();
+        let cnode_cap = cspace.insert_initial_capability(cnode()).unwrap();
         let source = cspace
             .insert_initial_capability(endpoint(Rights::READ | Rights::WRITE, 0x55))
             .unwrap();
@@ -720,22 +731,16 @@ mod tests {
             })
         );
 
-        let read_only = cspace
-            .insert_initial_capability(cnode(Rights::NONE))
-            .unwrap();
-        assert_eq!(
+        assert!(
             invoke(
                 &cspace,
-                read_only,
+                cnode_cap,
                 Invocation::CNodeCopy {
                     source,
                     requested_rights: Rights::READ,
                 },
-            ),
-            Err(InvocationError::MissingRights {
-                required: Rights::MANAGE,
-                actual: Rights::NONE,
-            })
+            )
+            .is_ok()
         );
     }
 

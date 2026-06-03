@@ -1,7 +1,7 @@
 mod support;
 
 use kernel::{
-    cap::{CapError, CapabilityDescriptor},
+    cap::{CapError, CapabilityDescriptor, RetypeDestination},
     cap::{Capability, EndpointCap, FrameCap, RetypeTarget, Rights, TcbCap},
     invocation::Invocation,
     notification::NotificationState,
@@ -187,6 +187,72 @@ fn untyped_retype_capacity_allows_only_one_full_size_frame() {
 }
 
 #[test]
+fn untyped_retype_into_occupied_destination_fails_without_side_effects() {
+    // Goal: seL4-style UntypedRetype validates the destination slot window before mutation.
+    // Scope: host integration through explicit UntypedRetypeInto invocation.
+    // Semantics: an occupied destination slot fails before Untyped capacity or ObjectTable changes.
+    let (mut state, untyped) = state_with_untyped(13);
+    let occupied = state
+        .cspace_mut()
+        .insert_initial_capability(Capability::Endpoint(EndpointCap {
+            badge: 0,
+            rights: Rights::READ,
+        }))
+        .unwrap();
+    let predicted_object = state
+        .cspace()
+        .preview_retype_untyped(
+            untyped,
+            &RetypeTarget::Frame {
+                rights: Rights::READ,
+            },
+        )
+        .unwrap();
+
+    assert_eq!(
+        state.execute_invocation(
+            InvocationContext::new(thread(1), cpu(0)),
+            untyped,
+            Invocation::UntypedRetypeInto {
+                target: RetypeTarget::Frame {
+                    rights: Rights::READ,
+                },
+                destination: RetypeDestination::single(occupied.slot),
+            },
+        ),
+        Err(KernelExecutionError::Invocation(
+            kernel::invocation::InvocationError::Cap(CapError::SlotOccupied(occupied.slot))
+        ))
+    );
+    assert_eq!(
+        state.cspace().lookup(occupied).unwrap().capability,
+        Capability::Endpoint(EndpointCap {
+            badge: 0,
+            rights: Rights::READ,
+        })
+    );
+
+    let descriptor = retyped_descriptor(
+        state
+            .execute_invocation(
+                InvocationContext::new(thread(1), cpu(0)),
+                untyped,
+                Invocation::UntypedRetype {
+                    target: RetypeTarget::Frame {
+                        rights: Rights::READ,
+                    },
+                },
+            )
+            .unwrap(),
+        "frame retype after occupied destination failure",
+    );
+    assert_eq!(
+        state.cspace().lookup(descriptor).map(|view| view.object),
+        Ok(predicted_object)
+    );
+}
+
+#[test]
 fn untyped_capacity_failure_does_not_consume_next_object_or_watermark() {
     // Goal: capacity failures do not advance the CSpace allocation transaction.
     // Scope: host integration through executor preview, failure, and later commit.
@@ -261,9 +327,7 @@ fn untyped_retype_cnode_creates_object_and_capability() {
                 InvocationContext::new(thread(1), cpu(0)),
                 untyped,
                 Invocation::UntypedRetype {
-                    target: RetypeTarget::CNode {
-                        rights: Rights::MANAGE,
-                    },
+                    target: RetypeTarget::CNode { radix: 4 },
                 },
             )
             .unwrap(),
@@ -280,9 +344,7 @@ fn untyped_retype_cnode_object_table_conflict_does_not_commit_cspace() {
     // Scope: host integration of executor precheck ordering for CNode retype.
     // Semantics: after failure, a later retype observes the same predicted child object.
     let (mut state, untyped) = state_with_untyped(13);
-    let target = RetypeTarget::CNode {
-        rights: Rights::MANAGE,
-    };
+    let target = RetypeTarget::CNode { radix: 4 };
     let predicted_object = state
         .cspace()
         .preview_retype_untyped(untyped, &target)

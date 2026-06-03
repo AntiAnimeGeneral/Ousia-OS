@@ -238,9 +238,11 @@ impl KernelState {
             InvocationOutcome::FrameMapAuthorized { .. } => Ok(ExecutionOutcome::Unsupported(
                 UnsupportedInvocation::FrameMap,
             )),
-            InvocationOutcome::UntypedRetypeAuthorized { target, .. } => {
-                self.execute_untyped_retype(descriptor, target)
-            }
+            InvocationOutcome::UntypedRetypeAuthorized {
+                target,
+                destination,
+                ..
+            } => self.execute_untyped_retype(descriptor, target, destination),
             InvocationOutcome::CNodeCopyAuthorized {
                 source,
                 requested_rights,
@@ -270,6 +272,7 @@ impl KernelState {
         &mut self,
         source: CapabilityDescriptor,
         target: RetypeTarget,
+        destination: Option<crate::cap::RetypeDestination>,
     ) -> Result<ExecutionOutcome, KernelExecutionError> {
         let object = self
             .cspace
@@ -287,10 +290,20 @@ impl KernelState {
             RetypeTarget::Untyped { .. } => {}
         }
 
-        let descriptor = self
-            .cspace
-            .retype_untyped(source, target.clone())
-            .expect("prevalidated untyped retype must succeed");
+        let descriptor = match destination {
+            Some(destination) => self
+                .cspace
+                .retype_untyped_into(source, target.clone(), destination)
+                .map_err(InvocationError::Cap)?
+                .descriptors
+                .into_iter()
+                .next()
+                .expect("explicit untyped retype must yield a descriptor"),
+            None => self
+                .cspace
+                .retype_untyped(source, target.clone())
+                .expect("prevalidated untyped retype must succeed"),
+        };
         match target {
             RetypeTarget::Endpoint => self
                 .objects
@@ -358,13 +371,8 @@ impl KernelState {
         &mut self,
         target: CapabilityDescriptor,
     ) -> Result<ExecutionOutcome, KernelExecutionError> {
-        let object = self
-            .cspace
-            .lookup(target)
-            .map_err(InvocationError::Cap)?
-            .object;
-        self.cspace.delete(target).map_err(InvocationError::Cap)?;
-        if !self.cspace.object_has_live_cap(object) {
+        let deletion = self.cspace.delete(target).map_err(InvocationError::Cap)?;
+        if let Some(object) = deletion.final_object {
             self.finalise_unreferenced_object(object);
         }
         Ok(ExecutionOutcome::CapabilityMutation)
@@ -379,9 +387,7 @@ impl KernelState {
             .revoke_descendants(target)
             .map_err(InvocationError::Cap)?;
         for object in revocation.revoked_objects {
-            if !self.cspace.object_has_live_cap(object) {
-                self.finalise_unreferenced_object(object);
-            }
+            self.finalise_unreferenced_object(object);
         }
         Ok(ExecutionOutcome::CapabilityMutation)
     }
@@ -398,7 +404,9 @@ impl KernelState {
             KernelObjectRef::Frame { .. } | KernelObjectRef::CNode => {
                 self.objects.remove_finalised(object);
             }
-            KernelObjectRef::Reply => {}
+            KernelObjectRef::Reply => {
+                self.objects.remove_finalised(object);
+            }
         }
     }
 
@@ -1591,6 +1599,53 @@ mod tests {
         assert_eq!(
             state.cspace().lookup(reply_descriptor),
             Err(crate::cap::CapError::SlotNotFound(reply_descriptor.slot))
+        );
+    }
+
+    #[test]
+    fn cnode_delete_final_reply_cap_removes_reply_runtime_object() {
+        let mut cspace = CapabilitySpace::new();
+        let cnode_descriptor = cspace
+            .insert_initial_capability(Capability::CNode(crate::cap::CNodeCap::new(4)))
+            .unwrap();
+        let reply_descriptor = cspace
+            .insert_reply_capability_for_test(ReplyCap {
+                caller: object(1000),
+                target: object(1001),
+                can_grant: true,
+            })
+            .unwrap();
+        let reply_object = cspace.object_of(reply_descriptor).unwrap();
+        let mut objects = ObjectTable::new();
+        objects.insert_reply(reply_object, Reply::new()).unwrap();
+        let threads = ThreadTable::new();
+        let scheduler = Scheduler::new(&[cpu(0), cpu(1)]).unwrap();
+        let mut state = KernelState::from_parts(cspace, objects, threads, scheduler);
+
+        assert_eq!(
+            state.objects().get(reply_object),
+            Ok(KernelObjectRef::Reply)
+        );
+        assert_eq!(
+            state.execute_invocation(
+                InvocationContext::new(thread(1), cpu(0)),
+                cnode_descriptor,
+                Invocation::CNodeDelete {
+                    target: reply_descriptor,
+                },
+            ),
+            Ok(ExecutionOutcome::CapabilityMutation)
+        );
+
+        assert_eq!(
+            state.cspace().lookup(reply_descriptor),
+            Err(crate::cap::CapError::SlotNotFound(reply_descriptor.slot))
+        );
+        assert_eq!(
+            state.objects().get(reply_object),
+            Err(ObjectTableError::ObjectNotFound {
+                object: reply_object,
+            })
         );
     }
 

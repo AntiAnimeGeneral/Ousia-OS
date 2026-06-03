@@ -12,8 +12,8 @@ use kernel::{
 };
 use support::{cpu, thread};
 
-fn cnode(rights: Rights) -> Capability {
-    Capability::CNode(CNodeCap { rights })
+fn cnode() -> Capability {
+    Capability::CNode(CNodeCap::new(4))
 }
 
 fn endpoint(rights: Rights, badge: u64) -> Capability {
@@ -28,7 +28,7 @@ fn cnode_state() -> (kernel::state::KernelState, CapabilityDescriptor) {
     let mut state = kernel::state::KernelState::new(&[cpu(0), cpu(1)]).unwrap();
     let cnode = state
         .cspace_mut()
-        .insert_initial_capability(cnode(Rights::MANAGE))
+        .insert_initial_capability(cnode())
         .unwrap();
     (state, cnode)
 }
@@ -100,11 +100,11 @@ fn cnode_copy_commits_derived_capability_through_executor() {
 fn cnode_mint_sets_badge_without_escalating_rights() {
     // Goal: CNode mint commits cap-specific mint parameters through the executor.
     // Scope: host integration across invocation authorization and CSpace mutation.
-    // Semantics: badge changes are allowed for endpoint caps, while rights still shrink.
+    // Semantics: seL4 updateCapData sets a badge only on an unbadged endpoint cap.
     let (mut state, cnode) = cnode_state();
     let source = state
         .cspace_mut()
-        .insert_initial_capability(endpoint(Rights::READ | Rights::WRITE, 0x11))
+        .insert_initial_capability(endpoint(Rights::READ | Rights::WRITE, 0))
         .unwrap();
 
     let minted = capability_descriptor(
@@ -115,7 +115,7 @@ fn cnode_mint_sets_badge_without_escalating_rights() {
                 Invocation::CNodeMint {
                     source,
                     requested_rights: Rights::READ,
-                    params: MintParams::Badge(0x99),
+                    params: MintParams::badge(0x99),
                 },
             )
             .unwrap(),
@@ -125,6 +125,41 @@ fn cnode_mint_sets_badge_without_escalating_rights() {
     assert_eq!(
         state.cspace().lookup(minted).unwrap().capability,
         endpoint(Rights::READ, 0x99)
+    );
+}
+
+#[test]
+fn cnode_mint_rejects_rebadging_badged_endpoint() {
+    // Goal: CNode mint follows seL4 updateCapData preserve rules for endpoint badges.
+    // Scope: host integration across invocation authorization and CSpace mutation failure.
+    // Semantics: a nonzero endpoint badge cannot be replaced by another badge.
+    let (mut state, cnode) = cnode_state();
+    let source = state
+        .cspace_mut()
+        .insert_initial_capability(endpoint(Rights::READ | Rights::WRITE, 0x11))
+        .unwrap();
+
+    assert_eq!(
+        state.execute_invocation(
+            InvocationContext::new(thread(1), cpu(0)),
+            cnode,
+            Invocation::CNodeMint {
+                source,
+                requested_rights: Rights::READ,
+                params: MintParams::badge(0x99),
+            },
+        ),
+        Err(KernelExecutionError::Invocation(
+            kernel::invocation::InvocationError::Cap(CapError::CapabilityNotMintable {
+                parent: source.slot,
+                capability: endpoint(Rights::READ | Rights::WRITE, 0x11),
+                params: MintParams::badge(0x99),
+            })
+        ))
+    );
+    assert_eq!(
+        state.cspace().lookup(source).unwrap().capability,
+        endpoint(Rights::READ | Rights::WRITE, 0x11)
     );
 }
 
@@ -773,14 +808,14 @@ fn cnode_copy_rights_failure_does_not_consume_new_slot() {
 }
 
 #[test]
-fn cnode_operation_requires_manage_rights_without_mutating_source() {
-    // Goal: invoking CNode rights are checked before the source slot is touched.
+fn cnode_operation_requires_cnode_capability_without_mutating_source() {
+    // Goal: invoking CNode authority is checked before the source slot is touched.
     // Scope: host integration of authorization failure before CSpace mutation.
-    // Semantics: a read-only CNode cannot mutate source or target slots.
+    // Semantics: a non-CNode cap cannot mutate source or target slots.
     let mut state = kernel::state::KernelState::new(&[cpu(0), cpu(1)]).unwrap();
-    let read_only_cnode = state
+    let invoking_endpoint = state
         .cspace_mut()
-        .insert_initial_capability(cnode(Rights::NONE))
+        .insert_initial_capability(endpoint(Rights::READ, 0x43))
         .unwrap();
     let target = state
         .cspace_mut()
@@ -794,7 +829,7 @@ fn cnode_operation_requires_manage_rights_without_mutating_source() {
         Invocation::CNodeMint {
             source: target,
             requested_rights: Rights::READ,
-            params: MintParams::Badge(0x45),
+            params: MintParams::badge(0x45),
         },
         Invocation::CNodeMove { source: target },
         Invocation::CNodeDelete { target },
@@ -805,13 +840,13 @@ fn cnode_operation_requires_manage_rights_without_mutating_source() {
         assert_eq!(
             state.execute_invocation(
                 InvocationContext::new(thread(1), cpu(0)),
-                read_only_cnode,
+                invoking_endpoint,
                 invocation,
             ),
             Err(KernelExecutionError::Invocation(
-                kernel::invocation::InvocationError::MissingRights {
-                    required: Rights::MANAGE,
-                    actual: Rights::NONE,
+                kernel::invocation::InvocationError::WrongCapability {
+                    expected: kernel::invocation::InvocationTarget::CNode,
+                    actual: endpoint(Rights::READ, 0x43),
                 }
             ))
         );

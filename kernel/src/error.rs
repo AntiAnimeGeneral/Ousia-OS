@@ -48,8 +48,11 @@ impl CapError {
             Self::RightsEscalation { .. }
             | Self::CapabilityNotDerivable { .. }
             | Self::CapabilityNotMintable { .. }
-            | Self::InvalidRights { .. } => KernelErrorCode::IllegalOperation,
-            Self::InvalidInitialCapability { .. } => KernelErrorCode::InvalidArgument,
+            | Self::InvalidRights { .. }
+            | Self::SlotOccupied(_) => KernelErrorCode::IllegalOperation,
+            Self::InvalidInitialCapability { .. } | Self::EmptyRetypeWindow => {
+                KernelErrorCode::InvalidArgument
+            }
             Self::WrongCapability { .. } => KernelErrorCode::InvalidCapability,
             Self::InvalidRetypeSize { .. } => KernelErrorCode::RangeError,
             Self::UntypedCapacityExhausted { .. } => KernelErrorCode::NotEnoughMemory,

@@ -52,6 +52,17 @@ impl SlotId {
 
 bitflags! {
     #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    /// Internal logical capability rights used by the host kernel model.
+    ///
+    /// seL4 encodes syscall-facing rights in machine-word-shaped message and
+    /// cap-data fields. This type intentionally uses a fixed `u32` because it
+    /// is not an ABI object: it is a compact, architecture-independent Rust
+    /// value used inside the executable model and tests. Any future syscall or
+    /// CSpace ABI boundary must convert explicitly to and from the seL4 word
+    /// layout instead of relying on this bit layout.
+    ///
+    /// The bit positions here are local semantic flags, not a promise to match
+    /// `seL4_CapRights_t` or any generated seL4 C representation.
     pub struct Rights: u32 {
         const NONE = 0;
         const READ = 1 << 0;
@@ -79,7 +90,6 @@ const ENDPOINT_ALLOWED_RIGHTS: Rights = Rights::READ
     .union(Rights::GRANT)
     .union(Rights::GRANT_REPLY);
 const FRAME_ALLOWED_RIGHTS: Rights = Rights::READ.union(Rights::WRITE).union(Rights::EXECUTE);
-const CNODE_ALLOWED_RIGHTS: Rights = Rights::MANAGE;
 const UNTYPED_ALLOWED_RIGHTS: Rights = Rights::NONE;
 const TCB_ALLOWED_RIGHTS: Rights = Rights::MANAGE;
 const NOTIFICATION_ALLOWED_RIGHTS: Rights = Rights::READ.union(Rights::WRITE);
@@ -134,7 +144,19 @@ pub struct FrameCap {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CNodeCap {
-    pub rights: Rights,
+    pub radix: u8,
+    pub guard: u64,
+    pub guard_size: u8,
+}
+
+impl CNodeCap {
+    pub const fn new(radix: u8) -> Self {
+        Self {
+            radix,
+            guard: 0,
+            guard_size: 0,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -193,11 +215,29 @@ pub struct CapabilityDescriptor {
     pub slot_generation: u64,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RetypeDestination {
+    pub start: SlotId,
+    pub count: usize,
+}
+
+impl RetypeDestination {
+    pub const fn single(start: SlotId) -> Self {
+        Self { start, count: 1 }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RetypeResult {
+    pub descriptors: Vec<CapabilityDescriptor>,
+    pub objects: Vec<ObjectId>,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum RetypeTarget {
     Endpoint,
     Frame { rights: Rights },
-    CNode { rights: Rights },
+    CNode { radix: u8 },
     Untyped { size_bits: u8 },
     Tcb { rights: Rights },
     Notification,
@@ -208,7 +248,7 @@ impl RetypeTarget {
         match self {
             Self::Endpoint => MODEL_ENDPOINT_SIZE_BITS,
             Self::Frame { .. } => MIN_FRAME_SIZE_BITS,
-            Self::CNode { .. } => MODEL_CNODE_SIZE_BITS,
+            Self::CNode { radix } => MODEL_CNODE_SIZE_BITS.saturating_add(*radix),
             Self::Untyped { size_bits } => *size_bits,
             Self::Tcb { .. } => MODEL_TCB_SIZE_BITS,
             Self::Notification => MODEL_NOTIFICATION_SIZE_BITS,
@@ -228,7 +268,7 @@ impl RetypeTarget {
                 rights: ENDPOINT_ALLOWED_RIGHTS,
             }),
             Self::Frame { rights } => Capability::Frame(FrameCap { rights }),
-            Self::CNode { rights } => Capability::CNode(CNodeCap { rights }),
+            Self::CNode { radix } => Capability::CNode(CNodeCap::new(radix)),
             Self::Untyped { size_bits } => Capability::Untyped(UntypedCap { size_bits }),
             Self::Tcb { rights } => Capability::Tcb(TcbCap { rights }),
             Self::Notification => Capability::Notification(NotificationCap {
@@ -253,7 +293,7 @@ impl RetypeTarget {
         match self {
             Self::Endpoint => ENDPOINT_ALLOWED_RIGHTS,
             Self::Frame { rights } => *rights,
-            Self::CNode { rights } => *rights,
+            Self::CNode { .. } => Rights::NONE,
             Self::Untyped { .. } => UNTYPED_ALLOWED_RIGHTS,
             Self::Tcb { rights } => *rights,
             Self::Notification => NOTIFICATION_ALLOWED_RIGHTS,
@@ -264,7 +304,16 @@ impl RetypeTarget {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum MintParams {
     None,
-    Badge(u64),
+    CapData { preserve: bool, data: u64 },
+}
+
+impl MintParams {
+    pub const fn badge(data: u64) -> Self {
+        Self::CapData {
+            preserve: false,
+            data,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -280,6 +329,11 @@ pub struct CapabilityView {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CapabilityRevocation {
     pub revoked_objects: Vec<ObjectId>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CapabilityDeletion {
+    pub final_object: Option<ObjectId>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -328,6 +382,8 @@ pub enum CapError {
         requested_rights: Rights,
         allowed_rights: Rights,
     },
+    SlotOccupied(SlotId),
+    EmptyRetypeWindow,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -346,7 +402,16 @@ struct CapabilitySlot {
     object_generation_snapshot: u64,
     parent: Option<SlotId>,
     children: BTreeSet<SlotId>,
+    mdb: MdbNode,
     alive: bool,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct MdbNode {
+    prev: Option<SlotId>,
+    next: Option<SlotId>,
+    revocable: bool,
+    first_badged: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -452,9 +517,36 @@ impl CapabilitySpace {
         source: CapabilityDescriptor,
         target: RetypeTarget,
     ) -> Result<CapabilityDescriptor, CapError> {
-        let allocation = self.validate_retype_untyped(source, &target)?;
-        let capability = target.into_capability();
-        Ok(self.insert_retyped_capability(source.slot, capability, allocation))
+        let destination = RetypeDestination::single(self.alloc_slot_id());
+        let result = self.retype_untyped_into(source, target, destination)?;
+        Ok(result
+            .descriptors
+            .into_iter()
+            .next()
+            .expect("single-slot retype must return one descriptor"))
+    }
+
+    pub fn retype_untyped_into(
+        &mut self,
+        source: CapabilityDescriptor,
+        target: RetypeTarget,
+        destination: RetypeDestination,
+    ) -> Result<RetypeResult, CapError> {
+        let allocation = self.validate_retype_untyped_into(source, &target, destination)?;
+        let mut descriptors = Vec::new();
+        let mut objects = Vec::new();
+        for offset in 0..destination.count {
+            let capability = target.clone().into_capability();
+            let slot = SlotId(destination.start.raw() + offset as u64);
+            let descriptor =
+                self.insert_retyped_capability(source.slot, slot, capability, allocation)?;
+            objects.push(self.lookup(descriptor)?.object);
+            descriptors.push(descriptor);
+        }
+        Ok(RetypeResult {
+            descriptors,
+            objects,
+        })
     }
 
     pub fn preview_retype_untyped(
@@ -522,6 +614,7 @@ impl CapabilitySpace {
         moved_from.slot_generation += 1;
         moved_from.parent = None;
         moved_from.children.clear();
+        moved_from.mdb = MdbNode::default();
         moved.slot_generation = destination_generation;
 
         if let Some(parent) = moved.parent {
@@ -539,6 +632,21 @@ impl CapabilitySpace {
                 .get_mut(&child)
                 .expect("moved capability child slot must remain in CSpace")
                 .parent = Some(destination);
+        }
+
+        if let Some(prev) = moved.mdb.prev {
+            self.slots
+                .get_mut(&prev)
+                .expect("moved capability previous MDB slot must remain in CSpace")
+                .mdb
+                .next = Some(destination);
+        }
+        if let Some(next) = moved.mdb.next {
+            self.slots
+                .get_mut(&next)
+                .expect("moved capability next MDB slot must remain in CSpace")
+                .mdb
+                .prev = Some(destination);
         }
 
         self.slots.insert(destination, moved);
@@ -563,10 +671,17 @@ impl CapabilitySpace {
         })
     }
 
-    pub fn delete(&mut self, descriptor: CapabilityDescriptor) -> Result<(), CapError> {
+    pub fn delete(
+        &mut self,
+        descriptor: CapabilityDescriptor,
+    ) -> Result<CapabilityDeletion, CapError> {
         self.validate_descriptor(descriptor)?;
+        let final_object = self
+            .is_final_capability(descriptor.slot)
+            .then(|| self.live_slot(descriptor.slot).map(|slot| slot.object))
+            .transpose()?;
         self.delete_slot(descriptor.slot);
-        Ok(())
+        Ok(CapabilityDeletion { final_object })
     }
 
     pub fn consume_reply_cap(&mut self, descriptor: CapabilityDescriptor) -> Result<(), CapError> {
@@ -595,6 +710,15 @@ impl CapabilitySpace {
             .filter_map(|slot| self.slots.get(slot).map(|slot| slot.object))
             .filter(|object| *object != target_object)
             .collect();
+        let final_object_ids: BTreeSet<_> = descendants
+            .iter()
+            .filter_map(|slot| {
+                self.is_final_capability(*slot)
+                    .then(|| self.slots.get(slot).map(|slot| slot.object))
+                    .flatten()
+            })
+            .filter(|object| *object != target_object)
+            .collect();
         for slot in descendants {
             self.delete_slot(slot);
         }
@@ -604,7 +728,12 @@ impl CapabilitySpace {
         self.reset_untyped_allocation(descriptor.slot);
 
         Ok(CapabilityRevocation {
-            revoked_objects: revoked_object_ids.into_iter().collect(),
+            revoked_objects: final_object_ids
+                .into_iter()
+                .chain(revoked_object_ids)
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .collect(),
         })
     }
 
@@ -612,6 +741,28 @@ impl CapabilitySpace {
         self.slots
             .values()
             .any(|slot| slot.alive && slot.object == object)
+    }
+
+    fn is_final_capability(&self, slot: SlotId) -> bool {
+        let Some(slot_ref) = self.slots.get(&slot).filter(|slot| slot.alive) else {
+            return false;
+        };
+        if let Some(prev) = slot_ref.mdb.prev
+            && let Some(prev_slot) = self.slots.get(&prev).filter(|slot| slot.alive)
+            && same_object_as(&prev_slot.capability, &slot_ref.capability)
+            && prev_slot.object == slot_ref.object
+        {
+            return false;
+        }
+        if let Some(next) = slot_ref.mdb.next
+            && let Some(next_slot) = self.slots.get(&next).filter(|slot| slot.alive)
+            && same_object_as(&next_slot.capability, &slot_ref.capability)
+            && next_slot.object == slot_ref.object
+        {
+            return false;
+        }
+
+        true
     }
 
     #[cfg(test)]
@@ -677,6 +828,7 @@ impl CapabilitySpace {
         let slot = self.alloc_slot_id();
         let slot_generation = self.slot_generation_for_insert(slot);
         self.detach_reused_slot(slot);
+        let mdb = self.cte_insert_mdb(parent_slot_id, slot, &capability, &parent_capability);
         self.slots.insert(
             slot,
             CapabilitySlot {
@@ -687,6 +839,7 @@ impl CapabilitySpace {
                 object_generation_snapshot,
                 parent: Some(parent_slot_id),
                 children: BTreeSet::new(),
+                mdb,
                 alive: true,
             },
         );
@@ -705,9 +858,10 @@ impl CapabilitySpace {
     fn insert_retyped_capability(
         &mut self,
         parent: SlotId,
+        slot: SlotId,
         capability: Capability,
         allocation: UntypedAllocationPlan,
-    ) -> CapabilityDescriptor {
+    ) -> Result<CapabilityDescriptor, CapError> {
         let kind = capability_kind(&capability);
         let child_untyped_size = match &capability {
             Capability::Untyped(capability) => Some(capability.size_bits),
@@ -727,9 +881,15 @@ impl CapabilitySpace {
                 },
             );
         }
-        let slot = self.alloc_slot_id();
         let slot_generation = self.slot_generation_for_insert(slot);
         self.detach_reused_slot(slot);
+        let parent_capability = self
+            .slots
+            .get(&parent)
+            .expect("validated parent slot must remain in CSpace during retype")
+            .capability
+            .clone();
+        let mdb = self.cte_insert_mdb(parent, slot, &capability, &parent_capability);
         self.slots.insert(
             slot,
             CapabilitySlot {
@@ -740,6 +900,7 @@ impl CapabilitySpace {
                 object_generation_snapshot: object_generation,
                 parent: Some(parent),
                 children: BTreeSet::new(),
+                mdb,
                 alive: true,
             },
         );
@@ -749,16 +910,43 @@ impl CapabilitySpace {
             .children
             .insert(slot);
 
-        CapabilityDescriptor {
+        Ok(CapabilityDescriptor {
             slot,
             slot_generation,
-        }
+        })
     }
 
     fn validate_retype_untyped(
         &self,
         source: CapabilityDescriptor,
         target: &RetypeTarget,
+    ) -> Result<UntypedAllocationPlan, CapError> {
+        self.validate_retype_untyped_capacity(source, target, 1)
+    }
+
+    fn validate_retype_untyped_into(
+        &self,
+        source: CapabilityDescriptor,
+        target: &RetypeTarget,
+        destination: RetypeDestination,
+    ) -> Result<UntypedAllocationPlan, CapError> {
+        if destination.count == 0 {
+            return Err(CapError::EmptyRetypeWindow);
+        }
+        for offset in 0..destination.count {
+            let slot = SlotId(destination.start.raw() + offset as u64);
+            if self.slots.get(&slot).is_some_and(|slot| slot.alive) {
+                return Err(CapError::SlotOccupied(slot));
+            }
+        }
+        self.validate_retype_untyped_capacity(source, target, destination.count)
+    }
+
+    fn validate_retype_untyped_capacity(
+        &self,
+        source: CapabilityDescriptor,
+        target: &RetypeTarget,
+        count: usize,
     ) -> Result<UntypedAllocationPlan, CapError> {
         let (source_size, source_object) = {
             let (parent_slot, _) = self.validated_slot(source)?;
@@ -786,7 +974,7 @@ impl CapabilitySpace {
             .untyped_allocations
             .get(&source_object)
             .expect("validated Untyped cap must have allocation metadata");
-        let next_watermark = allocation.next_watermark(source.slot, requested_size)?;
+        let next_watermark = allocation.next_watermark(source.slot, requested_size, count)?;
         Ok(UntypedAllocationPlan {
             parent_object: source_object,
             next_watermark,
@@ -831,6 +1019,7 @@ impl CapabilitySpace {
                 object_generation_snapshot: generation,
                 parent: None,
                 children: BTreeSet::new(),
+                mdb: MdbNode::default(),
                 alive: true,
             },
         );
@@ -949,7 +1138,10 @@ impl CapabilitySpace {
         }
 
         removed.alive = false;
-        if removed.children.is_empty() {
+        let reusable = removed.children.is_empty();
+        let _ = removed;
+        self.empty_mdb_slot(slot);
+        if reusable {
             self.free_slots.push(slot);
         }
     }
@@ -961,6 +1153,57 @@ impl CapabilitySpace {
 
         if let Some(parent) = self.slots.get_mut(&old_parent) {
             parent.children.remove(&slot);
+        }
+        self.empty_mdb_slot(slot);
+    }
+
+    fn cte_insert_mdb(
+        &mut self,
+        parent: SlotId,
+        slot: SlotId,
+        new_cap: &Capability,
+        parent_cap: &Capability,
+    ) -> MdbNode {
+        let next = self.slots.get(&parent).and_then(|parent| parent.mdb.next);
+        let revocable = is_cap_revocable(new_cap, parent_cap);
+        if let Some(next) = next {
+            self.slots
+                .get_mut(&next)
+                .expect("parent MDB next slot must remain in CSpace")
+                .mdb
+                .prev = Some(slot);
+        }
+        self.slots
+            .get_mut(&parent)
+            .expect("validated parent slot must remain in CSpace during cteInsert")
+            .mdb
+            .next = Some(slot);
+
+        MdbNode {
+            prev: Some(parent),
+            next,
+            revocable,
+            first_badged: revocable,
+        }
+    }
+
+    fn empty_mdb_slot(&mut self, slot: SlotId) {
+        let Some(mdb) = self.slots.get(&slot).map(|slot| slot.mdb) else {
+            return;
+        };
+        if let Some(prev) = mdb.prev
+            && let Some(prev_slot) = self.slots.get_mut(&prev)
+        {
+            prev_slot.mdb.next = mdb.next;
+        }
+        if let Some(next) = mdb.next
+            && let Some(next_slot) = self.slots.get_mut(&next)
+        {
+            next_slot.mdb.prev = mdb.prev;
+            next_slot.mdb.first_badged |= mdb.first_badged;
+        }
+        if let Some(slot_ref) = self.slots.get_mut(&slot) {
+            slot_ref.mdb = MdbNode::default();
         }
     }
 
@@ -979,7 +1222,12 @@ impl CapabilitySpace {
 }
 
 impl UntypedAllocation {
-    fn next_watermark(self, parent: SlotId, requested_size_bits: u8) -> Result<u128, CapError> {
+    fn next_watermark(
+        self,
+        parent: SlotId,
+        requested_size_bits: u8,
+        count: usize,
+    ) -> Result<u128, CapError> {
         let source_bytes =
             bytes_for_size_bits(self.size_bits).ok_or(CapError::UntypedCapacityExhausted {
                 parent,
@@ -992,6 +1240,13 @@ impl UntypedAllocation {
                 requested: requested_size_bits,
                 source: self.size_bits,
             })?;
+        let requested_total = requested_bytes.checked_mul(count as u128).ok_or(
+            CapError::UntypedCapacityExhausted {
+                parent,
+                requested: requested_size_bits,
+                source: self.size_bits,
+            },
+        )?;
         let aligned_watermark = align_up(self.watermark, requested_bytes).ok_or(
             CapError::UntypedCapacityExhausted {
                 parent,
@@ -999,7 +1254,7 @@ impl UntypedAllocation {
                 source: self.size_bits,
             },
         )?;
-        let next_watermark = aligned_watermark.checked_add(requested_bytes).ok_or(
+        let next_watermark = aligned_watermark.checked_add(requested_total).ok_or(
             CapError::UntypedCapacityExhausted {
                 parent,
                 requested: requested_size_bits,
@@ -1048,7 +1303,7 @@ fn capability_rights(capability: &Capability) -> Rights {
     match capability {
         Capability::Endpoint(cap) => cap.rights,
         Capability::Frame(cap) => cap.rights,
-        Capability::CNode(cap) => cap.rights,
+        Capability::CNode(_) => Rights::NONE,
         Capability::Untyped(_) => Rights::NONE,
         Capability::Tcb(cap) => cap.rights,
         Capability::Notification(cap) => cap.rights,
@@ -1060,7 +1315,7 @@ fn allowed_rights_for(kind: ObjectKind) -> Rights {
     match kind {
         ObjectKind::Endpoint => ENDPOINT_ALLOWED_RIGHTS,
         ObjectKind::Frame => FRAME_ALLOWED_RIGHTS,
-        ObjectKind::CNode => CNODE_ALLOWED_RIGHTS,
+        ObjectKind::CNode => Rights::NONE,
         ObjectKind::Untyped => UNTYPED_ALLOWED_RIGHTS,
         ObjectKind::Tcb => TCB_ALLOWED_RIGHTS,
         ObjectKind::Notification => NOTIFICATION_ALLOWED_RIGHTS,
@@ -1088,6 +1343,55 @@ fn validate_rights_for(object: ObjectKind, requested_rights: Rights) -> Result<(
     })
 }
 
+fn is_cap_revocable(new_cap: &Capability, parent_cap: &Capability) -> bool {
+    match (new_cap, parent_cap) {
+        (Capability::Endpoint(new_cap), Capability::Endpoint(parent_cap)) => {
+            parent_cap.badge == 0 && new_cap.badge != parent_cap.badge
+        }
+        (Capability::Notification(new_cap), Capability::Notification(parent_cap)) => {
+            parent_cap.badge == 0 && new_cap.badge != parent_cap.badge
+        }
+        _ => same_region_as(parent_cap, new_cap),
+    }
+}
+
+fn same_region_as(parent: &Capability, child: &Capability) -> bool {
+    match (parent, child) {
+        (Capability::Untyped(parent), Capability::Untyped(child)) => {
+            child.size_bits <= parent.size_bits
+        }
+        (Capability::Untyped(_), child) => capability_has_physical_region(child),
+        (Capability::Endpoint(_), Capability::Endpoint(_))
+        | (Capability::Notification(_), Capability::Notification(_))
+        | (Capability::Tcb(_), Capability::Tcb(_))
+        | (Capability::Reply(_), Capability::Reply(_)) => true,
+        (Capability::Frame(_), Capability::Frame(_)) => true,
+        (Capability::CNode(parent), Capability::CNode(child)) => parent.radix == child.radix,
+        _ => false,
+    }
+}
+
+fn same_object_as(left: &Capability, right: &Capability) -> bool {
+    if matches!(left, Capability::Untyped(_)) {
+        return false;
+    }
+
+    same_region_as(left, right)
+}
+
+fn capability_has_physical_region(capability: &Capability) -> bool {
+    matches!(
+        capability,
+        Capability::Endpoint(_)
+            | Capability::Frame(_)
+            | Capability::CNode(_)
+            | Capability::Untyped(_)
+            | Capability::Tcb(_)
+            | Capability::Notification(_)
+            | Capability::Reply(_)
+    )
+}
+
 fn mint_capability(
     parent_slot: SlotId,
     parent: &Capability,
@@ -1098,7 +1402,16 @@ fn mint_capability(
         Capability::Endpoint(cap) => {
             let badge = match params {
                 MintParams::None => cap.badge,
-                MintParams::Badge(badge) => badge,
+                MintParams::CapData { preserve, data } => {
+                    if preserve || cap.badge != 0 {
+                        return Err(CapError::CapabilityNotMintable {
+                            parent: parent_slot,
+                            capability: Capability::Endpoint(cap.clone()),
+                            params,
+                        });
+                    }
+                    data
+                }
             };
             let capability = Capability::Endpoint(EndpointCap {
                 badge,
@@ -1110,27 +1423,23 @@ fn mint_capability(
             MintParams::None => Ok(Capability::Frame(FrameCap {
                 rights: requested_rights,
             })),
-            MintParams::Badge(_) => Err(CapError::CapabilityNotMintable {
+            MintParams::CapData { .. } => Err(CapError::CapabilityNotMintable {
                 parent: parent_slot,
                 capability: Capability::Frame(cap.clone()),
                 params,
             }),
         },
         Capability::CNode(cap) => match params {
-            MintParams::None => Ok(Capability::CNode(CNodeCap {
-                rights: requested_rights,
-            })),
-            MintParams::Badge(_) => Err(CapError::CapabilityNotMintable {
-                parent: parent_slot,
-                capability: Capability::CNode(cap.clone()),
-                params,
-            }),
+            MintParams::None => Ok(Capability::CNode(cap.clone())),
+            MintParams::CapData { preserve: _, data } => {
+                Ok(Capability::CNode(update_cnode_cap_data(cap.clone(), data)))
+            }
         },
         Capability::Untyped(cap) => match params {
             MintParams::None => Ok(Capability::Untyped(UntypedCap {
                 size_bits: cap.size_bits,
             })),
-            MintParams::Badge(_) => Err(CapError::CapabilityNotMintable {
+            MintParams::CapData { .. } => Err(CapError::CapabilityNotMintable {
                 parent: parent_slot,
                 capability: Capability::Untyped(cap.clone()),
                 params,
@@ -1140,7 +1449,7 @@ fn mint_capability(
             MintParams::None => Ok(Capability::Tcb(TcbCap {
                 rights: requested_rights,
             })),
-            MintParams::Badge(_) => Err(CapError::CapabilityNotMintable {
+            MintParams::CapData { .. } => Err(CapError::CapabilityNotMintable {
                 parent: parent_slot,
                 capability: Capability::Tcb(cap.clone()),
                 params,
@@ -1149,7 +1458,16 @@ fn mint_capability(
         Capability::Notification(cap) => {
             let badge = match params {
                 MintParams::None => cap.badge,
-                MintParams::Badge(badge) => badge,
+                MintParams::CapData { preserve, data } => {
+                    if preserve || cap.badge != 0 {
+                        return Err(CapError::CapabilityNotMintable {
+                            parent: parent_slot,
+                            capability: Capability::Notification(cap.clone()),
+                            params,
+                        });
+                    }
+                    data
+                }
             };
             let capability = Capability::Notification(NotificationCap {
                 badge,
@@ -1162,6 +1480,22 @@ fn mint_capability(
             capability: Capability::Reply(cap.clone()),
         }),
     }
+}
+
+fn update_cnode_cap_data(mut cap: CNodeCap, data: u64) -> CNodeCap {
+    let guard_size = (data & 0xff) as u8;
+    let guard = data >> 8;
+    cap.guard_size = guard_size;
+    cap.guard = guard & guard_mask(guard_size);
+    cap
+}
+
+fn guard_mask(guard_size: u8) -> u64 {
+    if guard_size >= u64::BITS as u8 {
+        return u64::MAX;
+    }
+
+    (1u64 << guard_size) - 1
 }
 
 #[cfg(test)]
@@ -1268,7 +1602,7 @@ mod tests {
             .unwrap();
 
         let minted = cspace
-            .mint(root, Rights::READ, MintParams::Badge(0x55))
+            .mint(root, Rights::READ, MintParams::badge(0x55))
             .unwrap();
         let view = cspace.lookup(minted).unwrap();
 
@@ -1280,11 +1614,11 @@ mod tests {
     fn mint_can_set_notification_badge() {
         let mut cspace = CapabilitySpace::new();
         let root = cspace
-            .insert_initial_capability(notification(Rights::READ | Rights::WRITE))
+            .insert_initial_capability(badged_notification(Rights::READ | Rights::WRITE, 0))
             .unwrap();
 
         let minted = cspace
-            .mint(root, Rights::WRITE, MintParams::Badge(0x77))
+            .mint(root, Rights::WRITE, MintParams::badge(0x77))
             .unwrap();
         let view = cspace.lookup(minted).unwrap();
 
@@ -1293,18 +1627,46 @@ mod tests {
     }
 
     #[test]
-    fn badge_mint_is_rejected_for_unbadged_capabilities() {
+    fn badge_mint_is_rejected_for_non_badge_capabilities() {
         let mut cspace = CapabilitySpace::new();
         let root = cspace
             .insert_initial_capability(frame(Rights::READ | Rights::WRITE))
             .unwrap();
 
         assert_eq!(
-            cspace.mint(root, Rights::READ, MintParams::Badge(0x66)),
+            cspace.mint(root, Rights::READ, MintParams::badge(0x66)),
             Err(CapError::CapabilityNotMintable {
                 parent: root.slot,
                 capability: frame(Rights::READ | Rights::WRITE),
-                params: MintParams::Badge(0x66),
+                params: MintParams::badge(0x66),
+            })
+        );
+    }
+
+    #[test]
+    fn badge_mint_is_rejected_when_badge_already_present() {
+        let mut cspace = CapabilitySpace::new();
+        let endpoint_root = cspace
+            .insert_initial_capability(badged_endpoint(Rights::READ | Rights::WRITE, 1))
+            .unwrap();
+        let notification_root = cspace
+            .insert_initial_capability(badged_notification(Rights::READ | Rights::WRITE, 1))
+            .unwrap();
+
+        assert_eq!(
+            cspace.mint(endpoint_root, Rights::READ, MintParams::badge(2)),
+            Err(CapError::CapabilityNotMintable {
+                parent: endpoint_root.slot,
+                capability: badged_endpoint(Rights::READ | Rights::WRITE, 1),
+                params: MintParams::badge(2),
+            })
+        );
+        assert_eq!(
+            cspace.mint(notification_root, Rights::READ, MintParams::badge(2)),
+            Err(CapError::CapabilityNotMintable {
+                parent: notification_root.slot,
+                capability: badged_notification(Rights::READ | Rights::WRITE, 1),
+                params: MintParams::badge(2),
             })
         );
     }
@@ -1320,11 +1682,11 @@ mod tests {
         cspace.delete(child).unwrap();
 
         assert_eq!(
-            cspace.mint(root, Rights::READ, MintParams::Badge(0x66)),
+            cspace.mint(root, Rights::READ, MintParams::badge(0x66)),
             Err(CapError::CapabilityNotMintable {
                 parent: root.slot,
                 capability: frame(Rights::READ | Rights::WRITE),
-                params: MintParams::Badge(0x66),
+                params: MintParams::badge(0x66),
             })
         );
 
@@ -1397,12 +1759,7 @@ mod tests {
         let root = cspace.insert_initial_capability(untyped(12)).unwrap();
 
         let cnode = cspace
-            .retype_untyped(
-                root,
-                RetypeTarget::CNode {
-                    rights: Rights::MANAGE,
-                },
-            )
+            .retype_untyped(root, RetypeTarget::CNode { radix: 4 })
             .unwrap();
         let tcb_slot = cspace
             .retype_untyped(
@@ -1416,10 +1773,7 @@ mod tests {
             .retype_untyped(root, RetypeTarget::Notification)
             .unwrap();
 
-        assert_eq!(
-            cspace.lookup(cnode).unwrap().capability,
-            cnode_cap(Rights::MANAGE)
-        );
+        assert_eq!(cspace.lookup(cnode).unwrap().capability, cnode_cap());
         assert_eq!(
             cspace.lookup(tcb_slot).unwrap().capability,
             tcb(Rights::MANAGE)
@@ -1449,19 +1803,6 @@ mod tests {
                 object: ObjectKind::Frame,
                 requested_rights: Rights::READ | Rights::GRANT,
                 allowed_rights: Rights::READ | Rights::WRITE | Rights::EXECUTE,
-            })
-        );
-        assert_eq!(
-            cspace.retype_untyped(
-                root,
-                RetypeTarget::CNode {
-                    rights: Rights::READ | Rights::MANAGE,
-                },
-            ),
-            Err(CapError::InvalidRights {
-                object: ObjectKind::CNode,
-                requested_rights: Rights::READ | Rights::MANAGE,
-                allowed_rights: Rights::MANAGE,
             })
         );
     }
@@ -1670,7 +2011,6 @@ mod tests {
         let root = cspace.insert_initial_capability(untyped(12)).unwrap();
 
         cspace.retype_untyped(root, RetypeTarget::Endpoint).unwrap();
-
         assert_eq!(
             cspace.retype_untyped(
                 root,
@@ -1682,6 +2022,47 @@ mod tests {
                 parent: root.slot,
                 requested: 12,
                 source: 12,
+            })
+        );
+    }
+
+    #[test]
+    fn untyped_retype_into_destination_window_creates_multiple_caps() {
+        // Goal: model seL4 invokeUntyped_Retype destination length semantics.
+        // Scope: cap-layer transaction with explicit destination slots.
+        // Semantics: the whole destination window is checked before capacity is consumed.
+        let mut cspace = CapabilitySpace::new();
+        let root = cspace.insert_initial_capability(untyped(13)).unwrap();
+        let result = cspace
+            .retype_untyped_into(
+                root,
+                RetypeTarget::Frame {
+                    rights: Rights::READ,
+                },
+                RetypeDestination {
+                    start: SlotId(20),
+                    count: 2,
+                },
+            )
+            .unwrap();
+
+        assert_eq!(result.descriptors.len(), 2);
+        assert_eq!(result.descriptors[0].slot, SlotId(20));
+        assert_eq!(result.descriptors[1].slot, SlotId(21));
+        assert_eq!(
+            cspace.lookup(result.descriptors[0]).unwrap().capability,
+            frame(Rights::READ)
+        );
+        assert_eq!(
+            cspace.lookup(result.descriptors[1]).unwrap().capability,
+            frame(Rights::READ)
+        );
+        assert_eq!(
+            cspace.retype_untyped(root, RetypeTarget::Endpoint),
+            Err(CapError::UntypedCapacityExhausted {
+                parent: root.slot,
+                requested: 4,
+                source: 13,
             })
         );
     }
@@ -1712,12 +2093,7 @@ mod tests {
         let mut cspace = CapabilitySpace::new();
         let root = cspace.insert_initial_capability(untyped(6)).unwrap();
         cspace
-            .retype_untyped(
-                root,
-                RetypeTarget::CNode {
-                    rights: Rights::MANAGE,
-                },
-            )
+            .retype_untyped(root, RetypeTarget::CNode { radix: 0 })
             .unwrap();
 
         assert_eq!(
@@ -1734,8 +2110,8 @@ mod tests {
         Capability::Frame(FrameCap { rights })
     }
 
-    fn cnode_cap(rights: Rights) -> Capability {
-        Capability::CNode(CNodeCap { rights })
+    fn cnode_cap() -> Capability {
+        Capability::CNode(CNodeCap::new(4))
     }
 
     #[test]
@@ -1754,14 +2130,12 @@ mod tests {
             })
         );
 
-        let cnode = cspace
-            .insert_initial_capability(cnode_cap(Rights::MANAGE))
-            .unwrap();
+        let cnode = cspace.insert_initial_capability(cnode_cap()).unwrap();
         assert_eq!(
             cspace.copy(cnode, Rights::READ),
             Err(CapError::RightsEscalation {
                 parent: cnode.slot,
-                parent_rights: Rights::MANAGE,
+                parent_rights: Rights::NONE,
                 requested_rights: Rights::READ,
             })
         );
