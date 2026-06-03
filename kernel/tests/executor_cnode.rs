@@ -387,8 +387,8 @@ fn cnode_revoke_untyped_descendants_removes_unreachable_runtime_object() {
 #[test]
 fn cnode_revoke_typed_descendants_keeps_target_runtime_object() {
     // Goal: CNode revoke follows seL4 descendant semantics without deleting the target cap's object.
-    // Scope: host integration across Endpoint retype, CNode copy, CNode revoke, and ObjectTable cleanup.
-    // Semantics: revoked aliases disappear, but the target Endpoint remains live and keeps runtime state.
+    // Scope: host integration across Endpoint retype, CNode mint, CNode revoke, and ObjectTable cleanup.
+    // Semantics: revocable badged descendants disappear, but the target Endpoint remains live.
     let (mut state, cnode) = cnode_state();
     let root = state
         .cspace_mut()
@@ -412,13 +412,14 @@ fn cnode_revoke_typed_descendants_keeps_target_runtime_object() {
             .execute_invocation(
                 InvocationContext::new(thread(1), cpu(0)),
                 cnode,
-                Invocation::CNodeCopy {
+                Invocation::CNodeMint {
                     source: endpoint,
                     requested_rights: Rights::READ,
+                    params: MintParams::badge(0x77),
                 },
             )
             .unwrap(),
-        "Endpoint alias copy",
+        "Endpoint badged alias mint",
     );
 
     assert_eq!(
@@ -710,16 +711,16 @@ fn cnode_delete_blocked_tcb_removes_endpoint_queue_entry() {
 }
 
 #[test]
-fn cnode_revoke_copied_untyped_alias_does_not_recover_shared_capacity() {
-    // Goal: executor revoke cannot use a copied Untyped alias as a reset boundary.
-    // Scope: host integration across CNode copy, CNode revoke, and Untyped retype.
-    // Semantics: alias revoke leaves root-owned allocations and capacity unchanged.
+fn cnode_copy_rejects_untyped_with_children_without_recovering_capacity() {
+    // Goal: seL4 deriveCap rejects copying an Untyped cap while it has children.
+    // Scope: host integration across Untyped retype, CNode copy, and capacity state.
+    // Semantics: copy fails before creating an alias and leaves Untyped capacity consumed.
     let (mut state, cnode) = cnode_state();
     let root = state
         .cspace_mut()
         .insert_initial_capability(untyped(12))
         .unwrap();
-    let frame = state
+    state
         .cspace_mut()
         .retype_untyped(
             root,
@@ -728,30 +729,24 @@ fn cnode_revoke_copied_untyped_alias_does_not_recover_shared_capacity() {
             },
         )
         .unwrap();
-    let alias = capability_descriptor(
-        state
-            .execute_invocation(
-                InvocationContext::new(thread(1), cpu(0)),
-                cnode,
-                Invocation::CNodeCopy {
-                    source: root,
-                    requested_rights: Rights::NONE,
-                },
-            )
-            .unwrap(),
-        "Untyped alias copy",
-    );
 
     assert_eq!(
         state.execute_invocation(
             InvocationContext::new(thread(1), cpu(0)),
             cnode,
-            Invocation::CNodeRevoke { target: alias },
+            Invocation::CNodeCopy {
+                source: root,
+                requested_rights: Rights::NONE,
+            },
         ),
-        Ok(ExecutionOutcome::CapabilityMutation)
+        Err(KernelExecutionError::Invocation(
+            kernel::invocation::InvocationError::Cap(CapError::CapabilityNotDerivable {
+                parent: root.slot,
+                capability: untyped(12),
+            })
+        ))
     );
 
-    assert!(state.cspace().lookup(frame).is_ok());
     assert_eq!(
         state
             .cspace_mut()

@@ -10,13 +10,12 @@
 //!
 //! - Rights may only shrink during derivation.
 //! - `delete` invalidates only the named slot.
-//! - `revoke_descendants` invalidates descendants while keeping the named slot.
+//! - `revoke_descendants` invalidates MDB descendants while keeping the named slot.
 //! - `destroy_object` invalidates every capability that targets the object.
 //! - `slot_generation` prevents ABA when a slot is safely reused.
 //! - `object_generation_snapshot` rejects descriptors after object generation
 //!   changes.
-//! - Dead slots with descendants are not reused, so lineage remains available
-//!   for later revocation.
+//! - MDB predecessor/successor metadata is the authority for revoke traversal.
 //!
 //! This is still a testable model, not the final CSpace implementation. The
 //! next integration step is to connect these semantics to Portal / Operation
@@ -719,24 +718,34 @@ impl CapabilitySpace {
         &mut self,
         descriptor: CapabilityDescriptor,
     ) -> Result<CapabilityRevocation, CapError> {
-        let target_object = self.validated_slot(descriptor)?.0.object;
-        let descendants = self.collect_descendants(descriptor.slot);
-        let revoked_object_ids: BTreeSet<_> = descendants
-            .iter()
-            .filter_map(|slot| self.slots.get(slot).map(|slot| slot.object))
-            .filter(|object| *object != target_object)
-            .collect();
-        let final_object_ids: BTreeSet<_> = descendants
-            .iter()
-            .filter_map(|slot| {
-                self.is_final_capability(*slot)
-                    .then(|| self.slots.get(slot).map(|slot| slot.object))
-                    .flatten()
-            })
-            .filter(|object| *object != target_object)
-            .collect();
-        for slot in descendants {
-            self.delete_slot(slot);
+        let (target_slot, _) = self.validated_slot(descriptor)?;
+        let target_object = target_slot.object;
+        let mut revoked_object_ids = BTreeSet::new();
+        let mut final_object_ids = BTreeSet::new();
+
+        loop {
+            let Some(next_slot_id) = self
+                .slots
+                .get(&descriptor.slot)
+                .and_then(|slot| slot.mdb.next)
+            else {
+                break;
+            };
+            let Some(next_slot) = self.slots.get(&next_slot_id).filter(|slot| slot.alive) else {
+                break;
+            };
+            if !self.is_mdb_parent_of(descriptor.slot, next_slot_id) {
+                break;
+            }
+
+            if self.is_final_capability(next_slot_id) {
+                final_object_ids.insert(next_slot.object);
+            }
+            if next_slot.object != target_object {
+                revoked_object_ids.insert(next_slot.object);
+            }
+
+            self.delete_slot(next_slot_id);
         }
         for object in &revoked_object_ids {
             self.untyped_allocations.remove(object);
@@ -779,6 +788,40 @@ impl CapabilitySpace {
         }
 
         true
+    }
+
+    fn is_mdb_parent_of(&self, parent: SlotId, child: SlotId) -> bool {
+        let Some(parent_slot) = self.slots.get(&parent).filter(|slot| slot.alive) else {
+            return false;
+        };
+        let Some(child_slot) = self.slots.get(&child).filter(|slot| slot.alive) else {
+            return false;
+        };
+
+        if !parent_slot.mdb.revocable {
+            return false;
+        }
+        if !same_region_as(&parent_slot.capability, &child_slot.capability) {
+            return false;
+        }
+
+        match (&parent_slot.capability, &child_slot.capability) {
+            (Capability::Endpoint(parent_cap), Capability::Endpoint(child_cap)) => {
+                if parent_cap.badge == 0 {
+                    true
+                } else {
+                    child_cap.badge == parent_cap.badge && !child_slot.mdb.first_badged
+                }
+            }
+            (Capability::Notification(parent_cap), Capability::Notification(child_cap)) => {
+                if parent_cap.badge == 0 {
+                    true
+                } else {
+                    child_cap.badge == parent_cap.badge && !child_slot.mdb.first_badged
+                }
+            }
+            _ => true,
+        }
     }
 
     #[cfg(test)]
@@ -830,6 +873,17 @@ impl CapabilitySpace {
                     parent: parent.slot,
                     parent_rights: parent_slot.rights,
                     requested_rights,
+                });
+            }
+            if matches!(parent_slot.capability, Capability::Untyped(_))
+                && parent_slot
+                    .mdb
+                    .next
+                    .is_some_and(|next| self.is_mdb_parent_of(parent.slot, next))
+            {
+                return Err(CapError::CapabilityNotDerivable {
+                    parent: parent.slot,
+                    capability: parent_slot.capability.clone(),
                 });
             }
             (
@@ -1035,7 +1089,11 @@ impl CapabilitySpace {
                 object_generation_snapshot: generation,
                 parent: None,
                 children: BTreeSet::new(),
-                mdb: MdbNode::default(),
+                mdb: MdbNode {
+                    revocable: true,
+                    first_badged: true,
+                    ..MdbNode::default()
+                },
                 alive: true,
             },
         );
@@ -1127,23 +1185,6 @@ impl CapabilitySpace {
             .ok_or(CapError::ObjectNotFound(object))
     }
 
-    fn collect_descendants(&self, slot: SlotId) -> Vec<SlotId> {
-        let mut descendants = Vec::new();
-        self.collect_descendants_into(slot, &mut descendants);
-        descendants
-    }
-
-    fn collect_descendants_into(&self, slot: SlotId, descendants: &mut Vec<SlotId>) {
-        let Some(parent) = self.slots.get(&slot) else {
-            return;
-        };
-
-        for child in &parent.children {
-            descendants.push(*child);
-            self.collect_descendants_into(*child, descendants);
-        }
-    }
-
     fn delete_slot(&mut self, slot: SlotId) {
         let Some(removed) = self.slots.get_mut(&slot) else {
             return;
@@ -1227,7 +1268,7 @@ impl CapabilitySpace {
         let Some(slot_ref) = self.slots.get(&slot) else {
             return;
         };
-        if !matches!(slot_ref.capability, Capability::Untyped(_)) || slot_ref.parent.is_some() {
+        if !matches!(slot_ref.capability, Capability::Untyped(_)) {
             return;
         };
 
@@ -1362,12 +1403,13 @@ fn validate_rights_for(object: ObjectKind, requested_rights: Rights) -> Result<(
 fn is_cap_revocable(new_cap: &Capability, parent_cap: &Capability) -> bool {
     match (new_cap, parent_cap) {
         (Capability::Endpoint(new_cap), Capability::Endpoint(parent_cap)) => {
-            parent_cap.badge == 0 && new_cap.badge != parent_cap.badge
+            new_cap.badge != parent_cap.badge
         }
         (Capability::Notification(new_cap), Capability::Notification(parent_cap)) => {
-            parent_cap.badge == 0 && new_cap.badge != parent_cap.badge
+            new_cap.badge != parent_cap.badge
         }
-        _ => same_region_as(parent_cap, new_cap),
+        (_, Capability::Untyped(_)) | (Capability::Untyped(_), _) => true,
+        _ => false,
     }
 }
 
@@ -1746,6 +1788,20 @@ mod tests {
     }
 
     #[test]
+    fn revoke_copied_typed_cap_does_not_remove_copy_descendants() {
+        let mut cspace = CapabilitySpace::new();
+        let root = cspace
+            .insert_initial_capability(endpoint(ENDPOINT_ALLOWED_RIGHTS))
+            .unwrap();
+        let copy = cspace.copy(root, Rights::READ | Rights::WRITE).unwrap();
+        let copy_child = cspace.copy(copy, Rights::READ).unwrap();
+
+        cspace.revoke_descendants(copy).unwrap();
+
+        assert!(cspace.lookup(copy_child).is_ok());
+    }
+
+    #[test]
     fn untyped_retype_creates_child_object() {
         let mut cspace = CapabilitySpace::new();
         let root = cspace.insert_initial_capability(untyped(12)).unwrap();
@@ -1834,6 +1890,40 @@ mod tests {
 
         assert_eq!(cspace.lookup(child).unwrap().capability, untyped(12));
         assert_eq!(cspace.lookup(child).unwrap().parent, Some(root.slot));
+    }
+
+    #[test]
+    fn revoke_derived_untyped_descendants_resets_child_capacity() {
+        let mut cspace = CapabilitySpace::new();
+        let root = cspace.insert_initial_capability(untyped(16)).unwrap();
+        let child = cspace
+            .retype_untyped(root, RetypeTarget::Untyped { size_bits: 12 })
+            .unwrap();
+        let frame = cspace
+            .retype_untyped(
+                child,
+                RetypeTarget::Frame {
+                    rights: Rights::READ,
+                },
+            )
+            .unwrap();
+
+        cspace.revoke_descendants(child).unwrap();
+
+        assert_eq!(
+            cspace.lookup(frame),
+            Err(CapError::SlotNotFound(frame.slot))
+        );
+        assert!(
+            cspace
+                .retype_untyped(
+                    child,
+                    RetypeTarget::Frame {
+                        rights: Rights::READ,
+                    },
+                )
+                .is_ok()
+        );
     }
 
     #[test]
@@ -1971,10 +2061,10 @@ mod tests {
     }
 
     #[test]
-    fn revoke_copied_untyped_alias_does_not_reset_shared_capacity() {
+    fn copying_untyped_with_children_is_rejected_without_resetting_capacity() {
         let mut cspace = CapabilitySpace::new();
         let root = cspace.insert_initial_capability(untyped(12)).unwrap();
-        let frame = cspace
+        cspace
             .retype_untyped(
                 root,
                 RetypeTarget::Frame {
@@ -1982,11 +2072,14 @@ mod tests {
                 },
             )
             .unwrap();
-        let alias = cspace.copy(root, Rights::NONE).unwrap();
 
-        cspace.revoke_descendants(alias).unwrap();
-
-        assert!(cspace.lookup(frame).is_ok());
+        assert_eq!(
+            cspace.copy(root, Rights::NONE),
+            Err(CapError::CapabilityNotDerivable {
+                parent: root.slot,
+                capability: untyped(12),
+            })
+        );
         assert_eq!(
             cspace.retype_untyped(root, RetypeTarget::Endpoint),
             Err(CapError::UntypedCapacityExhausted {
