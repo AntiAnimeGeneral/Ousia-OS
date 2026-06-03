@@ -338,7 +338,7 @@ pub fn send_ipc(
             },
         )?;
 
-        if request.options.mode.is_call() {
+        if request.options.is_call() {
             let caller_can_reply = request.options.can_grant || request.options.can_grant_reply;
             let reply_request = ReplyRequest {
                 caller: request.sender,
@@ -1053,8 +1053,8 @@ mod tests {
         IpcSendOptions::send(blocking, can_grant, false)
     }
 
-    fn call_options(blocking: bool, can_grant: bool, can_grant_reply: bool) -> IpcSendOptions {
-        IpcSendOptions::call(blocking, can_grant, can_grant_reply)
+    fn call_options(can_grant: bool, can_grant_reply: bool) -> IpcSendOptions {
+        IpcSendOptions::call(can_grant, can_grant_reply)
     }
 
     // ThreadAction tests cover local thread/queue state transitions after
@@ -1154,13 +1154,7 @@ mod tests {
                 &mut scheduler,
                 &mut endpoint,
                 None,
-                send_request(
-                    object(10),
-                    thread(1),
-                    cpu(0),
-                    7,
-                    call_options(true, true, false),
-                ),
+                send_request(object(10), thread(1), cpu(0), 7, call_options(true, false),),
             ),
             Ok(ThreadAction::Blocked {
                 thread: thread(1),
@@ -1244,14 +1238,8 @@ mod tests {
                 &mut scheduler,
                 &mut endpoint,
                 Some(&mut reply),
-                send_request(
-                    object(10),
-                    thread(1),
-                    cpu(0),
-                    7,
-                    call_options(true, true, false),
-                )
-                .with_caller(object(100)),
+                send_request(object(10), thread(1), cpu(0), 7, call_options(true, false),)
+                    .with_caller(object(100)),
             ),
             Ok(ThreadAction::Woken {
                 thread: thread(2),
@@ -1289,13 +1277,7 @@ mod tests {
                 &mut scheduler,
                 &mut endpoint,
                 None,
-                send_request(
-                    object(10),
-                    thread(1),
-                    cpu(0),
-                    7,
-                    call_options(true, false, false),
-                ),
+                send_request(object(10), thread(1), cpu(0), 7, call_options(false, false),),
             ),
             Ok(ThreadAction::Woken {
                 thread: thread(2),
@@ -1333,13 +1315,7 @@ mod tests {
                 &mut scheduler,
                 &mut endpoint,
                 None,
-                send_request(
-                    object(10),
-                    thread(1),
-                    cpu(0),
-                    7,
-                    call_options(true, true, false),
-                ),
+                send_request(object(10), thread(1), cpu(0), 7, call_options(true, false),),
             ),
             Err(ThreadActionError::MissingReplyObject {
                 setup: ReplySetup {
@@ -1551,7 +1527,7 @@ mod tests {
             thread(1),
             cpu(0),
             7,
-            call_options(true, true, false),
+            call_options(true, false),
             IpcPayload::empty(),
         );
         let mut reply = Reply::new();
@@ -1609,7 +1585,7 @@ mod tests {
             thread(1),
             cpu(0),
             7,
-            call_options(true, false, false),
+            call_options(false, false),
             IpcPayload::empty(),
         );
         let mut threads = table_with_threads(&[(1, cpu(0)), (2, cpu(1))]);
@@ -1660,7 +1636,7 @@ mod tests {
             thread(1),
             cpu(0),
             7,
-            call_options(true, true, false),
+            call_options(true, false),
             IpcPayload::empty(),
         );
         let mut threads = table_with_threads(&[(1, cpu(0)), (2, cpu(1))]);
@@ -1723,7 +1699,7 @@ mod tests {
             thread(1),
             cpu(0),
             7,
-            call_options(true, true, false),
+            call_options(true, false),
             IpcPayload::empty(),
         );
         let mut reply = Reply::new();
@@ -1788,7 +1764,7 @@ mod tests {
             thread(1),
             cpu(3),
             7,
-            call_options(true, true, false),
+            call_options(true, false),
             IpcPayload::empty(),
         );
         let mut reply = Reply::new();

@@ -40,9 +40,14 @@ pub enum IpcSendMode {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum IpcSendOperation {
+    Send { blocking: bool },
+    Call,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct IpcSendOptions {
-    pub blocking: bool,
-    pub mode: IpcSendMode,
+    pub operation: IpcSendOperation,
     pub can_grant: bool,
     pub can_grant_reply: bool,
 }
@@ -219,23 +224,53 @@ impl IpcSendMode {
     }
 }
 
+impl IpcSendOperation {
+    pub const fn is_blocking(self) -> bool {
+        match self {
+            Self::Send { blocking } => blocking,
+            Self::Call => true,
+        }
+    }
+
+    pub const fn mode(self) -> IpcSendMode {
+        match self {
+            Self::Send { .. } => IpcSendMode::Send,
+            Self::Call => IpcSendMode::Call,
+        }
+    }
+
+    pub const fn is_call(self) -> bool {
+        matches!(self, Self::Call)
+    }
+}
+
 impl IpcSendOptions {
     pub const fn send(blocking: bool, can_grant: bool, can_grant_reply: bool) -> Self {
         Self {
-            blocking,
-            mode: IpcSendMode::Send,
+            operation: IpcSendOperation::Send { blocking },
             can_grant,
             can_grant_reply,
         }
     }
 
-    pub const fn call(blocking: bool, can_grant: bool, can_grant_reply: bool) -> Self {
+    pub const fn call(can_grant: bool, can_grant_reply: bool) -> Self {
         Self {
-            blocking,
-            mode: IpcSendMode::Call,
+            operation: IpcSendOperation::Call,
             can_grant,
             can_grant_reply,
         }
+    }
+
+    pub const fn is_blocking(self) -> bool {
+        self.operation.is_blocking()
+    }
+
+    pub const fn mode(self) -> IpcSendMode {
+        self.operation.mode()
+    }
+
+    pub const fn is_call(self) -> bool {
+        self.operation.is_call()
     }
 }
 
@@ -271,13 +306,13 @@ impl Endpoint {
             badge,
             can_grant: options.can_grant,
             can_grant_reply: options.can_grant_reply,
-            mode: options.mode,
+            mode: options.mode(),
             payload,
         };
 
         match self.state {
             EndpointState::Idle | EndpointState::Send => {
-                if !options.blocking {
+                if !options.is_blocking() {
                     return IpcAction::SendIgnored {
                         thread: sender,
                         cpu: sender_cpu,
@@ -292,7 +327,7 @@ impl Endpoint {
                     badge,
                     can_grant: options.can_grant,
                     can_grant_reply: options.can_grant_reply,
-                    is_call: options.mode.is_call(),
+                    is_call: options.is_call(),
                 }
             }
             EndpointState::Recv => {
@@ -435,7 +470,7 @@ mod tests {
     }
 
     fn blocking_call() -> IpcSendOptions {
-        IpcSendOptions::call(true, true, true)
+        IpcSendOptions::call(true, true)
     }
 
     fn nonblocking_send() -> IpcSendOptions {
@@ -676,7 +711,7 @@ mod tests {
                 thread(1),
                 cpu(0),
                 7,
-                IpcSendOptions::call(true, false, true),
+                IpcSendOptions::call(false, true),
                 IpcPayload::new(&[10]).unwrap(),
             ),
             IpcAction::DeliveredToReceiver {

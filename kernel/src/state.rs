@@ -203,7 +203,7 @@ impl KernelState {
                         IpcSendOptions::send(false, send.can_grant, send.can_grant_reply)
                     }
                     EndpointSendOp::Call => {
-                        IpcSendOptions::call(true, send.can_grant, send.can_grant_reply)
+                        IpcSendOptions::call(send.can_grant, send.can_grant_reply)
                     }
                 };
                 let payload = context.payload().truncate_to_words(send.message_words);
@@ -549,7 +549,7 @@ impl KernelState {
             .expect_kind(endpoint, KernelObjectKind::Endpoint)?;
         let waiting_receiver = self.objects.endpoint(endpoint)?.next_receiver();
         let call_creates_reply =
-            options.mode.is_call() && (options.can_grant || options.can_grant_reply);
+            options.is_call() && (options.can_grant || options.can_grant_reply);
         let reply = if call_creates_reply {
             match waiting_receiver {
                 Some(receiver) => self.reply_from_receiver_state(endpoint, receiver.thread())?,
@@ -1048,6 +1048,38 @@ mod tests {
                 .payload()
                 .words(),
             &[10, 20]
+        );
+    }
+
+    #[test]
+    fn endpoint_nbsend_invocation_does_not_block_or_queue_without_receiver() {
+        // Goal: nonblocking endpoint send maps through KernelState without becoming a blocking send.
+        // Scope: host integration across invocation decode, executor option mapping, and Endpoint.
+        // Semantics: NBSend on an idle endpoint is ignored and leaves the sender running.
+        let (mut state, endpoint_descriptor, endpoint_object) = state_with_current_thread();
+
+        assert_eq!(
+            state.execute_invocation(
+                InvocationContext::new(thread(1), cpu(0)),
+                endpoint_descriptor,
+                Invocation::EndpointSend {
+                    message_words: 0,
+                    op: EndpointSendOp::NBSend,
+                },
+            ),
+            Ok(ExecutionOutcome::Thread(ThreadAction::Ignored {
+                thread: thread(1),
+                cpu: cpu(0),
+            }))
+        );
+        assert_eq!(state.threads().state(thread(1)), Some(ThreadState::Running));
+        assert_eq!(
+            state
+                .objects()
+                .endpoint(endpoint_object)
+                .unwrap()
+                .queued_senders(),
+            0
         );
     }
 
