@@ -156,6 +156,14 @@ impl IpcPayload {
         self.len == 0
     }
 
+    pub fn truncate_to_words(self, words: usize) -> Self {
+        let len = if words < self.len { words } else { self.len };
+        let mut payload = Self::empty();
+        payload.words[..len].copy_from_slice(&self.words[..len]);
+        payload.len = len;
+        payload
+    }
+
     pub fn words(&self) -> &[u64] {
         &self.words[..self.len]
     }
@@ -451,6 +459,18 @@ mod tests {
                 limit: MAX_IPC_WORDS,
             })
         );
+    }
+
+    #[test]
+    fn payload_truncate_keeps_message_word_prefix() {
+        // Goal: message length consumption never exposes words past the requested prefix.
+        // Scope: unit test for IPC payload normalization before endpoint delivery.
+        // Semantics: truncating is monotonic and never pads missing message registers.
+        let payload = IpcPayload::new(&[1, 2, 3]).unwrap();
+
+        assert_eq!(payload.truncate_to_words(2).words(), &[1, 2]);
+        assert_eq!(payload.truncate_to_words(8).words(), &[1, 2, 3]);
+        assert_eq!(payload.truncate_to_words(0), IpcPayload::empty());
     }
 
     #[test]

@@ -5,7 +5,7 @@ use crate::{
         CapabilityDescriptor, CapabilitySpace, MintParams, ObjectId, ReplyCap, RetypeDestination,
         RetypeResult, RetypeTarget, Rights, SlotId,
     },
-    invocation::{Invocation, InvocationError, InvocationOutcome, invoke},
+    invocation::{EndpointSendOp, Invocation, InvocationError, InvocationOutcome, invoke},
     ipc::{Endpoint, IpcPayload, IpcReceiveOptions, IpcSendOptions},
     notification::{BoundTcbSignal, Notification},
     object::{FrameObject, KernelObjectKind, KernelObjectRef, ObjectTable, ObjectTableError},
@@ -194,21 +194,20 @@ impl KernelState {
         outcome: InvocationOutcome,
     ) -> Result<ExecutionOutcome, KernelExecutionError> {
         match outcome {
-            InvocationOutcome::SendIpcAuthorized {
-                endpoint,
-                badge,
-                blocking,
-                is_call,
-                can_grant,
-                can_grant_reply,
-                ..
-            } => {
-                let options = if is_call {
-                    IpcSendOptions::call(blocking, can_grant, can_grant_reply)
-                } else {
-                    IpcSendOptions::send(blocking, can_grant, can_grant_reply)
+            InvocationOutcome::SendIpcAuthorized(send) => {
+                let options = match send.op {
+                    EndpointSendOp::Send => {
+                        IpcSendOptions::send(true, send.can_grant, send.can_grant_reply)
+                    }
+                    EndpointSendOp::NBSend => {
+                        IpcSendOptions::send(false, send.can_grant, send.can_grant_reply)
+                    }
+                    EndpointSendOp::Call => {
+                        IpcSendOptions::call(true, send.can_grant, send.can_grant_reply)
+                    }
                 };
-                self.execute_endpoint_send(context, endpoint, badge, options)
+                let payload = context.payload().truncate_to_words(send.message_words);
+                self.execute_endpoint_send(context, send.endpoint, send.badge, options, payload)
             }
             InvocationOutcome::ReceiveIpcAuthorized {
                 endpoint,
@@ -544,6 +543,7 @@ impl KernelState {
         endpoint: ObjectId,
         badge: u64,
         options: IpcSendOptions,
+        payload: IpcPayload,
     ) -> Result<ExecutionOutcome, KernelExecutionError> {
         self.objects
             .expect_kind(endpoint, KernelObjectKind::Endpoint)?;
@@ -587,7 +587,7 @@ impl KernelState {
                         context.cpu(),
                         badge,
                         options,
-                        context.payload(),
+                        payload,
                     )
                     .with_caller(caller_object.expect("reply path must have caller object"));
 
@@ -608,7 +608,7 @@ impl KernelState {
                     context.cpu(),
                     badge,
                     options,
-                    context.payload(),
+                    payload,
                 );
 
                 send_ipc(
@@ -1016,6 +1016,38 @@ mod tests {
                 can_grant_reply: true,
                 is_call: false,
             })
+        );
+    }
+
+    #[test]
+    fn endpoint_send_invocation_truncates_payload_to_message_words() {
+        // Goal: executor consumes the send invocation message length before endpoint queueing.
+        // Scope: host integration across invocation decode, KernelState, and Endpoint storage.
+        // Semantics: only the requested message register prefix is visible to receivers.
+        let (mut state, endpoint_descriptor, endpoint_object) = state_with_current_thread();
+
+        state
+            .execute_invocation(
+                InvocationContext::new(thread(1), cpu(0))
+                    .with_payload(IpcPayload::new(&[10, 20, 30]).unwrap()),
+                endpoint_descriptor,
+                Invocation::EndpointSend {
+                    message_words: 2,
+                    op: EndpointSendOp::Send,
+                },
+            )
+            .unwrap();
+
+        assert_eq!(
+            state
+                .objects()
+                .endpoint(endpoint_object)
+                .unwrap()
+                .next_sender()
+                .unwrap()
+                .payload()
+                .words(),
+            &[10, 20]
         );
     }
 

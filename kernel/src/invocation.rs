@@ -68,15 +68,7 @@ pub enum EndpointSendOp {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum InvocationOutcome {
-    SendIpcAuthorized {
-        endpoint: ObjectId,
-        badge: u64,
-        message_words: usize,
-        blocking: bool,
-        is_call: bool,
-        can_grant: bool,
-        can_grant_reply: bool,
-    },
+    SendIpcAuthorized(EndpointSendAuthorized),
     ReceiveIpcAuthorized {
         endpoint: ObjectId,
         blocking: bool,
@@ -135,6 +127,16 @@ pub enum InvocationOutcome {
         target: ObjectId,
         can_grant: bool,
     },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EndpointSendAuthorized {
+    pub endpoint: ObjectId,
+    pub badge: u64,
+    pub message_words: usize,
+    pub op: EndpointSendOp,
+    pub can_grant: bool,
+    pub can_grant_reply: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -201,15 +203,16 @@ pub fn invoke(
                         actual: view.rights,
                     });
                 }
-                Ok(InvocationOutcome::SendIpcAuthorized {
-                    endpoint: view.object,
-                    badge: cap.badge,
-                    message_words,
-                    blocking: op.is_blocking(),
-                    is_call: op.is_call(),
-                    can_grant: cap.can_grant(),
-                    can_grant_reply: cap.can_grant_reply(),
-                })
+                Ok(InvocationOutcome::SendIpcAuthorized(
+                    EndpointSendAuthorized {
+                        endpoint: view.object,
+                        badge: cap.badge,
+                        message_words,
+                        op,
+                        can_grant: cap.can_grant(),
+                        can_grant_reply: cap.can_grant_reply(),
+                    },
+                ))
             }
             actual => Err(wrong_capability(InvocationTarget::Endpoint, actual)),
         },
@@ -461,15 +464,16 @@ mod tests {
                     op: EndpointSendOp::Call,
                 },
             ),
-            Ok(InvocationOutcome::SendIpcAuthorized {
-                endpoint,
-                badge: 0x2a,
-                message_words: 3,
-                blocking: true,
-                is_call: true,
-                can_grant: false,
-                can_grant_reply: true,
-            })
+            Ok(InvocationOutcome::SendIpcAuthorized(
+                EndpointSendAuthorized {
+                    endpoint,
+                    badge: 0x2a,
+                    message_words: 3,
+                    op: EndpointSendOp::Call,
+                    can_grant: false,
+                    can_grant_reply: true,
+                }
+            ))
         );
     }
 
@@ -493,15 +497,16 @@ mod tests {
                     op: EndpointSendOp::Call,
                 },
             ),
-            Ok(InvocationOutcome::SendIpcAuthorized {
-                endpoint,
-                badge: 0x2a,
-                message_words: 0,
-                blocking: true,
-                is_call: true,
-                can_grant: false,
-                can_grant_reply: false,
-            })
+            Ok(InvocationOutcome::SendIpcAuthorized(
+                EndpointSendAuthorized {
+                    endpoint,
+                    badge: 0x2a,
+                    message_words: 0,
+                    op: EndpointSendOp::Call,
+                    can_grant: false,
+                    can_grant_reply: false,
+                }
+            ))
         );
     }
 
@@ -547,15 +552,16 @@ mod tests {
                     op: EndpointSendOp::NBSend,
                 },
             ),
-            Ok(InvocationOutcome::SendIpcAuthorized {
-                endpoint,
-                badge: 0x2a,
-                message_words: 1,
-                blocking: false,
-                is_call: false,
-                can_grant: true,
-                can_grant_reply: true,
-            })
+            Ok(InvocationOutcome::SendIpcAuthorized(
+                EndpointSendAuthorized {
+                    endpoint,
+                    badge: 0x2a,
+                    message_words: 1,
+                    op: EndpointSendOp::NBSend,
+                    can_grant: true,
+                    can_grant_reply: true,
+                }
+            ))
         );
 
         assert_eq!(
