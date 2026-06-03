@@ -148,81 +148,96 @@ mod tests {
     }
 
     #[test]
-    fn blocked_states_match_sel4_blocked_semantics() {
-        assert!(
-            ThreadState::BlockedOnReceive {
-                endpoint: object(1),
-                can_grant: true,
-                reply: None,
-            }
-            .is_blocked()
-        );
-        assert!(
-            ThreadState::BlockedOnSend {
-                endpoint: object(1),
-                sender_cpu: CpuId::new(0),
-                badge: 1,
-                can_grant: true,
-                can_grant_reply: false,
-                is_call: true,
-                payload: IpcPayload::empty(),
-            }
-            .is_blocked()
-        );
-        assert!(ThreadState::BlockedOnReply.is_blocked());
-        assert!(
-            ThreadState::BlockedOnNotification {
-                notification: object(2),
-            }
-            .is_blocked()
-        );
-        assert!(!ThreadState::Running.is_blocked());
-        assert!(!ThreadState::Restart.is_blocked());
-        assert!(!ThreadState::IdleThreadState.is_blocked());
-    }
+    fn thread_state_predicates_match_sel4_scheduling_classes() {
+        // Goal: ThreadState predicates expose seL4 blocked, runnable, and stopped classes.
+        // Scope: pure ThreadState classification without scheduler or endpoint side effects.
+        // Semantics: each state belongs to the expected scheduling class matrix.
+        struct Case {
+            label: &'static str,
+            state: ThreadState,
+            blocked: bool,
+            runnable: bool,
+            stopped: bool,
+        }
 
-    #[test]
-    fn runnable_states_match_sel4_schedulable_states() {
-        assert!(ThreadState::Running.is_runnable());
-        assert!(ThreadState::Restart.is_runnable());
-        assert!(!ThreadState::Inactive.is_runnable());
-        assert!(!ThreadState::BlockedOnReply.is_runnable());
-        assert!(!ThreadState::IdleThreadState.is_runnable());
-    }
+        let cases = [
+            Case {
+                label: "inactive is stopped before configuration",
+                state: ThreadState::Inactive,
+                blocked: false,
+                runnable: false,
+                stopped: true,
+            },
+            Case {
+                label: "blocked receive is blocked and stopped",
+                state: ThreadState::BlockedOnReceive {
+                    endpoint: object(1),
+                    can_grant: true,
+                    reply: None,
+                },
+                blocked: true,
+                runnable: false,
+                stopped: true,
+            },
+            Case {
+                label: "blocked send is blocked and stopped",
+                state: ThreadState::BlockedOnSend {
+                    endpoint: object(1),
+                    sender_cpu: CpuId::new(0),
+                    badge: 1,
+                    can_grant: true,
+                    can_grant_reply: false,
+                    is_call: true,
+                    payload: IpcPayload::empty(),
+                },
+                blocked: true,
+                runnable: false,
+                stopped: true,
+            },
+            Case {
+                label: "blocked reply is blocked and stopped",
+                state: ThreadState::BlockedOnReply,
+                blocked: true,
+                runnable: false,
+                stopped: true,
+            },
+            Case {
+                label: "blocked notification is blocked and stopped",
+                state: ThreadState::BlockedOnNotification {
+                    notification: object(2),
+                },
+                blocked: true,
+                runnable: false,
+                stopped: true,
+            },
+            Case {
+                label: "running is runnable only",
+                state: ThreadState::Running,
+                blocked: false,
+                runnable: true,
+                stopped: false,
+            },
+            Case {
+                label: "restart is runnable only",
+                state: ThreadState::Restart,
+                blocked: false,
+                runnable: true,
+                stopped: false,
+            },
+            Case {
+                label: "idle thread state is outside normal scheduling classes",
+                state: ThreadState::IdleThreadState,
+                blocked: false,
+                runnable: false,
+                stopped: false,
+            },
+        ];
 
-    #[test]
-    fn stopped_states_match_sel4_stopped_semantics() {
-        assert!(ThreadState::Inactive.is_stopped());
-        assert!(
-            ThreadState::BlockedOnReceive {
-                endpoint: object(1),
-                can_grant: true,
-                reply: None,
-            }
-            .is_stopped()
-        );
-        assert!(
-            ThreadState::BlockedOnSend {
-                endpoint: object(1),
-                sender_cpu: CpuId::new(0),
-                badge: 1,
-                can_grant: true,
-                can_grant_reply: false,
-                is_call: true,
-                payload: IpcPayload::empty(),
-            }
-            .is_stopped()
-        );
-        assert!(ThreadState::BlockedOnReply.is_stopped());
-        assert!(
-            ThreadState::BlockedOnNotification {
-                notification: object(2),
-            }
-            .is_stopped()
-        );
-        assert!(!ThreadState::Running.is_stopped());
-        assert!(!ThreadState::Restart.is_stopped());
-        assert!(!ThreadState::IdleThreadState.is_stopped());
+        for case in cases {
+            assert_eq!(case.state.is_blocked(), case.blocked, "{}", case.label);
+            assert_eq!(case.state.is_runnable(), case.runnable, "{}", case.label);
+            assert_eq!(case.state.is_stopped(), case.stopped, "{}", case.label);
+        }
     }
 
     #[test]

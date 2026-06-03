@@ -35,6 +35,8 @@ description: "测试与演进规范：测试语义、失败无副作用、黑队
 
 - 每个非平凡测试应能从测试名或短注释中读出 `Goal`、`Scope` 和 `Semantics`：目标语义是什么，测试层级/调用边界是什么，成功或失败后哪些状态必须成立或保持不变。
 - Table-driven 测试可以在测试组上写统一 contract，但每个 case 必须有语义化 label，不能只复制实现 match table。
+- 语义相同、调用边界相同、只改变输入参数或 invocation variant 的 case 应优先收敛为一个带 case label 的测试集，复用构造并缩小后续改动面；不同状态 owner、不同副作用边界或不同失败不变量的测试应保持独立。
+- 测试集的注释说明整组 `Goal`、`Scope` 和 `Semantics`，case label 说明单个场景的语义差异，确保失败输出能定位到具体场景。
 - 失败路径测试必须说明失败发生在哪个边界，以及哪些 owner 的状态不应改变。
 - 冒烟测试必须说明 marker 覆盖的 boot/platform 风险，不要把串口输出等同于内核语义测试。
 

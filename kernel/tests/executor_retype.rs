@@ -1,8 +1,10 @@
 mod support;
 
 use kernel::{
+    cap::SlotId,
     cap::{CNodeCap, CNodePath, CapError, CapabilityDescriptor, RetypeDestination},
     cap::{Capability, EndpointCap, FrameCap, RetypeTarget, Rights, TcbCap},
+    invocation::InvocationError,
     invocation::{Invocation, RetypeDestinationPath},
     notification::NotificationState,
     object::{FrameObject, KernelObjectRef, ObjectTableError},
@@ -355,157 +357,119 @@ fn untyped_retype_path_creates_all_runtime_objects_in_resolved_window() {
 }
 
 #[test]
-fn untyped_retype_path_guard_mismatch_fails_without_side_effects() {
-    // Goal: destination CNode lookup faults are Untyped retype preflight failures.
+fn untyped_retype_path_failures_do_not_consume_capacity_or_target_slots() {
+    // Goal: destination CNode lookup/window faults are Untyped retype preflight failures.
     // Scope: host integration through explicit UntypedRetypePath invocation.
-    // Semantics: guard mismatch does not consume Untyped capacity or create target slots.
-    let (mut state, untyped) = state_with_untyped(13);
-    let target_root = state
-        .cspace_mut()
-        .insert_initial_capability(Capability::CNode(CNodeCap::with_window(
-            4,
-            0b10,
-            2,
-            kernel::cap::SlotId::new(140),
-        )))
-        .unwrap();
-    let predicted_object = state
-        .cspace()
-        .preview_retype_untyped(
-            untyped,
-            &RetypeTarget::Frame {
-                rights: Rights::READ,
-            },
-        )
-        .unwrap();
+    // Semantics: each failure leaves Untyped capacity and target slots uncommitted.
+    struct Case {
+        label: &'static str,
+        cnode: CNodeCap,
+        path_capptr: u64,
+        path_depth: u8,
+        count: usize,
+        expected_error: CapError,
+        empty_slot: Option<SlotId>,
+    }
 
-    assert_eq!(
-        state.execute_invocation(
-            InvocationContext::new(thread(1), cpu(0)),
-            untyped,
-            Invocation::UntypedRetypePath {
-                target: RetypeTarget::Frame {
-                    rights: Rights::READ,
-                },
-                destination: RetypeDestinationPath {
-                    start: CNodePath {
-                        root: target_root,
-                        capptr: 0b11_0010,
-                        depth: 6,
-                    },
-                    count: 1,
-                },
-            },
-        ),
-        Err(KernelExecutionError::Invocation(
-            kernel::invocation::InvocationError::Cap(CapError::CNodeGuardMismatch {
+    let cases = [
+        Case {
+            label: "guard mismatch fails before creating the resolved slot",
+            cnode: CNodeCap::with_window(4, 0b10, 2, SlotId::new(140)),
+            path_capptr: 0b11_0010,
+            path_depth: 6,
+            count: 1,
+            expected_error: CapError::CNodeGuardMismatch {
                 expected_guard: 0b10,
                 actual_guard: 0b11,
                 bits_remaining: 6,
                 guard_size: 2,
-            })
-        ))
-    );
-    assert_eq!(
-        state.cspace().lookup(CapabilityDescriptor {
-            slot: kernel::cap::SlotId::new(140 + 0b0010),
-            slot_generation: 1,
-        }),
-        Err(CapError::SlotNotFound(kernel::cap::SlotId::new(
-            140 + 0b0010
-        )))
-    );
-
-    let descriptor = retyped_descriptor(
-        state
-            .execute_invocation(
-                InvocationContext::new(thread(1), cpu(0)),
-                untyped,
-                Invocation::UntypedRetype {
-                    target: RetypeTarget::Frame {
-                        rights: Rights::READ,
-                    },
-                },
-            )
-            .unwrap(),
-        "frame retype after path guard mismatch",
-    );
-    assert_eq!(
-        state.cspace().lookup(descriptor).map(|view| view.object),
-        Ok(predicted_object)
-    );
-}
-
-#[test]
-fn untyped_retype_path_rejects_window_exceeding_cnode_bounds() {
-    // Goal: path-based Untyped retype respects the resolved CNode slot window.
-    // Scope: host integration through explicit UntypedRetypePath invocation.
-    // Semantics: count cannot run past the CNode radix window after the start slot resolves.
-    let (mut state, untyped) = state_with_untyped(13);
-    let target_root = state
-        .cspace_mut()
-        .insert_initial_capability(Capability::CNode(CNodeCap::with_window(
-            2,
-            0b10,
-            2,
-            kernel::cap::SlotId::new(160),
-        )))
-        .unwrap();
-    let predicted_object = state
-        .cspace()
-        .preview_retype_untyped(
-            untyped,
-            &RetypeTarget::Frame {
-                rights: Rights::READ,
             },
-        )
-        .unwrap();
-
-    assert_eq!(
-        state.execute_invocation(
-            InvocationContext::new(thread(1), cpu(0)),
-            untyped,
-            Invocation::UntypedRetypePath {
-                target: RetypeTarget::Frame {
-                    rights: Rights::READ,
-                },
-                destination: RetypeDestinationPath {
-                    start: CNodePath {
-                        root: target_root,
-                        capptr: 0b10_11,
-                        depth: 4,
-                    },
-                    count: 2,
-                },
-            },
-        ),
-        Err(KernelExecutionError::Invocation(
-            kernel::invocation::InvocationError::Cap(CapError::RetypeWindowExceedsCNode {
-                start: kernel::cap::SlotId::new(160 + 0b11),
+            empty_slot: Some(SlotId::new(140 + 0b0010)),
+        },
+        Case {
+            label: "window overflow fails before consuming untyped capacity",
+            cnode: CNodeCap::with_window(2, 0b10, 2, SlotId::new(160)),
+            path_capptr: 0b10_11,
+            path_depth: 4,
+            count: 2,
+            expected_error: CapError::RetypeWindowExceedsCNode {
+                start: SlotId::new(160 + 0b11),
                 requested: 2,
                 available: 1,
-            })
-        ))
-    );
+            },
+            empty_slot: Some(SlotId::new(160 + 0b11)),
+        },
+    ];
 
-    let descriptor = retyped_descriptor(
-        state
-            .execute_invocation(
+    for case in cases {
+        let (mut state, untyped) = state_with_untyped(13);
+        let target_root = state
+            .cspace_mut()
+            .insert_initial_capability(Capability::CNode(case.cnode))
+            .unwrap();
+        let frame_target = RetypeTarget::Frame {
+            rights: Rights::READ,
+        };
+        let predicted_object = state
+            .cspace()
+            .preview_retype_untyped(untyped, &frame_target)
+            .unwrap();
+
+        assert_eq!(
+            state.execute_invocation(
                 InvocationContext::new(thread(1), cpu(0)),
                 untyped,
-                Invocation::UntypedRetype {
-                    target: RetypeTarget::Frame {
-                        rights: Rights::READ,
+                Invocation::UntypedRetypePath {
+                    target: frame_target,
+                    destination: RetypeDestinationPath {
+                        start: CNodePath {
+                            root: target_root,
+                            capptr: case.path_capptr,
+                            depth: case.path_depth,
+                        },
+                        count: case.count,
                     },
                 },
-            )
-            .unwrap(),
-        "frame retype after path window overflow",
-    );
-    assert_eq!(
-        state.cspace().lookup(descriptor).map(|view| view.object),
-        Ok(predicted_object)
-    );
+            ),
+            Err(KernelExecutionError::Invocation(InvocationError::Cap(
+                case.expected_error
+            ))),
+            "{}",
+            case.label
+        );
+        if let Some(slot) = case.empty_slot {
+            assert_eq!(
+                state.cspace().lookup(CapabilityDescriptor {
+                    slot,
+                    slot_generation: 1,
+                }),
+                Err(CapError::SlotNotFound(slot)),
+                "{}",
+                case.label
+            );
+        }
+
+        let descriptor = retyped_descriptor(
+            state
+                .execute_invocation(
+                    InvocationContext::new(thread(1), cpu(0)),
+                    untyped,
+                    Invocation::UntypedRetype {
+                        target: RetypeTarget::Frame {
+                            rights: Rights::READ,
+                        },
+                    },
+                )
+                .unwrap(),
+            case.label,
+        );
+        assert_eq!(
+            state.cspace().lookup(descriptor).map(|view| view.object),
+            Ok(predicted_object),
+            "{}",
+            case.label
+        );
+    }
 }
 
 #[test]
@@ -648,85 +612,83 @@ fn untyped_retype_cnode_creates_object_and_capability() {
 }
 
 #[test]
-fn untyped_retype_cnode_object_table_conflict_does_not_commit_cspace() {
-    // Goal: object-table conflicts fail before CSpace consumes the next slot/object.
-    // Scope: host integration of executor precheck ordering for CNode retype.
-    // Semantics: after failure, a later retype observes the same predicted child object.
-    let (mut state, untyped) = state_with_untyped(13);
-    let target = RetypeTarget::CNode { radix: 4 };
-    let predicted_object = state
-        .cspace()
-        .preview_retype_untyped(untyped, &target)
-        .unwrap();
-    state
-        .objects_mut()
-        .insert_cnode(predicted_object, kernel::object::CNodeObject::new(4))
-        .unwrap();
+fn untyped_retype_object_table_conflicts_do_not_commit_cspace() {
+    // Goal: runtime object conflicts fail before CSpace consumes the next slot/object.
+    // Scope: host integration of executor precheck ordering for typed Untyped retype targets.
+    // Semantics: after each conflict, a later retype observes the same predicted child object.
+    struct Case {
+        label: &'static str,
+        target: RetypeTarget,
+        install_conflict: fn(&mut kernel::state::KernelState, kernel::cap::ObjectId),
+    }
 
-    assert_eq!(
-        state.execute_invocation(
-            InvocationContext::new(thread(1), cpu(0)),
-            untyped,
-            Invocation::UntypedRetype { target },
-        ),
-        Err(KernelExecutionError::Object(
-            ObjectTableError::ObjectIdAlreadyBound {
-                object: predicted_object,
-            }
-        ))
-    );
+    let cases = [
+        Case {
+            label: "CNode conflict leaves CSpace transaction uncommitted",
+            target: RetypeTarget::CNode { radix: 4 },
+            install_conflict: |state, object| {
+                state
+                    .objects_mut()
+                    .insert_cnode(object, kernel::object::CNodeObject::new(4))
+                    .unwrap();
+            },
+        },
+        Case {
+            label: "Frame conflict leaves CSpace transaction uncommitted",
+            target: RetypeTarget::Frame {
+                rights: Rights::READ,
+            },
+            install_conflict: |state, object| {
+                state
+                    .objects_mut()
+                    .insert_frame(object, FrameObject::new(12))
+                    .unwrap();
+            },
+        },
+    ];
 
-    let endpoint = state
-        .cspace_mut()
-        .retype_untyped(untyped, RetypeTarget::Endpoint)
-        .unwrap();
-    assert_eq!(endpoint.slot.raw(), untyped.slot.raw() + 1);
-    assert_eq!(
-        state.cspace().lookup(endpoint).map(|view| view.object),
-        Ok(predicted_object)
-    );
-}
+    for case in cases {
+        let (mut state, untyped) = state_with_untyped(13);
+        let predicted_object = state
+            .cspace()
+            .preview_retype_untyped(untyped, &case.target)
+            .unwrap();
+        (case.install_conflict)(&mut state, predicted_object);
 
-#[test]
-fn untyped_retype_frame_object_table_conflict_does_not_commit_cspace() {
-    // Goal: Frame conflicts share the same failure-before-side-effect contract.
-    // Scope: host integration of Frame retype precheck before CSpace commit.
-    // Semantics: failed Frame retype leaves slot allocation and object lineage unchanged.
-    let (mut state, untyped) = state_with_untyped(13);
-    let target = RetypeTarget::Frame {
-        rights: Rights::READ,
-    };
-    let predicted_object = state
-        .cspace()
-        .preview_retype_untyped(untyped, &target)
-        .unwrap();
-    state
-        .objects_mut()
-        .insert_frame(predicted_object, FrameObject::new(12))
-        .unwrap();
+        assert_eq!(
+            state.execute_invocation(
+                InvocationContext::new(thread(1), cpu(0)),
+                untyped,
+                Invocation::UntypedRetype {
+                    target: case.target,
+                },
+            ),
+            Err(KernelExecutionError::Object(
+                ObjectTableError::ObjectIdAlreadyBound {
+                    object: predicted_object,
+                }
+            )),
+            "{}",
+            case.label
+        );
 
-    assert_eq!(
-        state.execute_invocation(
-            InvocationContext::new(thread(1), cpu(0)),
-            untyped,
-            Invocation::UntypedRetype { target },
-        ),
-        Err(KernelExecutionError::Object(
-            ObjectTableError::ObjectIdAlreadyBound {
-                object: predicted_object,
-            }
-        ))
-    );
-
-    let endpoint = state
-        .cspace_mut()
-        .retype_untyped(untyped, RetypeTarget::Endpoint)
-        .unwrap();
-    assert_eq!(endpoint.slot.raw(), untyped.slot.raw() + 1);
-    assert_eq!(
-        state.cspace().lookup(endpoint).map(|view| view.object),
-        Ok(predicted_object)
-    );
+        let endpoint = state
+            .cspace_mut()
+            .retype_untyped(untyped, RetypeTarget::Endpoint)
+            .unwrap();
+        assert_eq!(
+            endpoint.slot.raw(),
+            untyped.slot.raw() + 1,
+            "{}",
+            case.label
+        );
+        assert_eq!(
+            state.cspace().lookup(endpoint).map(|view| view.object),
+            Ok(predicted_object),
+            "{}",
+            case.label
+        );
+    }
 }
 
 #[test]

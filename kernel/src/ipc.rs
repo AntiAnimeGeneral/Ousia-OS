@@ -502,31 +502,106 @@ mod tests {
     }
 
     #[test]
-    fn send_blocks_when_no_receiver_waits() {
-        let mut endpoint = Endpoint::new();
-        let action = endpoint.send(
-            thread(1),
-            cpu(0),
-            7,
-            blocking_call(),
-            IpcPayload::new(&[10]).unwrap(),
-        );
+    fn empty_endpoint_blocking_and_nonblocking_actions_preserve_queue_contract() {
+        // Goal: empty Endpoint send/receive operations follow blocking and nonblocking contracts.
+        // Scope: Endpoint local state without cross-object ThreadTable or Scheduler effects.
+        // Semantics: blocking operations enqueue the caller; nonblocking operations leave queues idle.
+        struct Case {
+            label: &'static str,
+            run: fn(&mut Endpoint) -> IpcAction,
+            expected: IpcAction,
+            expected_state: EndpointState,
+            expected_senders: usize,
+            expected_receivers: usize,
+        }
 
-        assert_eq!(
-            action,
-            IpcAction::SenderBlocked {
-                thread: thread(1),
-                cpu: cpu(0),
-                badge: 7,
-                can_grant: true,
-                can_grant_reply: true,
-                is_call: true,
-                payload: IpcPayload::new(&[10]).unwrap(),
-            }
-        );
-        assert_eq!(endpoint.state(), EndpointState::Send);
-        assert_eq!(endpoint.queued_senders(), 1);
-        assert_eq!(endpoint.queued_receivers(), 0);
+        let cases = [
+            Case {
+                label: "blocking send queues sender when no receiver waits",
+                run: |endpoint| {
+                    endpoint.send(
+                        thread(1),
+                        cpu(0),
+                        7,
+                        blocking_call(),
+                        IpcPayload::new(&[10]).unwrap(),
+                    )
+                },
+                expected: IpcAction::SenderBlocked {
+                    thread: thread(1),
+                    cpu: cpu(0),
+                    badge: 7,
+                    can_grant: true,
+                    can_grant_reply: true,
+                    is_call: true,
+                    payload: IpcPayload::new(&[10]).unwrap(),
+                },
+                expected_state: EndpointState::Send,
+                expected_senders: 1,
+                expected_receivers: 0,
+            },
+            Case {
+                label: "blocking receive queues receiver when no sender waits",
+                run: |endpoint| endpoint.recv(thread(3), cpu(2), blocking_recv()),
+                expected: IpcAction::ReceiverBlocked {
+                    thread: thread(3),
+                    cpu: cpu(2),
+                    can_grant: true,
+                },
+                expected_state: EndpointState::Recv,
+                expected_senders: 0,
+                expected_receivers: 1,
+            },
+            Case {
+                label: "nonblocking send leaves idle endpoint unqueued",
+                run: |endpoint| {
+                    endpoint.send(
+                        thread(1),
+                        cpu(0),
+                        7,
+                        nonblocking_send(),
+                        IpcPayload::new(&[10]).unwrap(),
+                    )
+                },
+                expected: IpcAction::SendIgnored {
+                    thread: thread(1),
+                    cpu: cpu(0),
+                },
+                expected_state: EndpointState::Idle,
+                expected_senders: 0,
+                expected_receivers: 0,
+            },
+            Case {
+                label: "nonblocking receive leaves idle endpoint unqueued",
+                run: |endpoint| endpoint.recv(thread(1), cpu(0), nonblocking_recv()),
+                expected: IpcAction::NonblockingReceiveFailed {
+                    thread: thread(1),
+                    cpu: cpu(0),
+                },
+                expected_state: EndpointState::Idle,
+                expected_senders: 0,
+                expected_receivers: 0,
+            },
+        ];
+
+        for case in cases {
+            let mut endpoint = Endpoint::new();
+
+            assert_eq!((case.run)(&mut endpoint), case.expected, "{}", case.label);
+            assert_eq!(endpoint.state(), case.expected_state, "{}", case.label);
+            assert_eq!(
+                endpoint.queued_senders(),
+                case.expected_senders,
+                "{}",
+                case.label
+            );
+            assert_eq!(
+                endpoint.queued_receivers(),
+                case.expected_receivers,
+                "{}",
+                case.label
+            );
+        }
     }
 
     #[test]
@@ -559,24 +634,6 @@ mod tests {
         assert_eq!(endpoint.state(), EndpointState::Send);
         assert_eq!(endpoint.queued_senders(), 1);
         assert_eq!(endpoint.queued_receivers(), 0);
-    }
-
-    #[test]
-    fn recv_blocks_when_no_sender_waits() {
-        let mut endpoint = Endpoint::new();
-        let action = endpoint.recv(thread(3), cpu(2), blocking_recv());
-
-        assert_eq!(
-            action,
-            IpcAction::ReceiverBlocked {
-                thread: thread(3),
-                cpu: cpu(2),
-                can_grant: true,
-            }
-        );
-        assert_eq!(endpoint.state(), EndpointState::Recv);
-        assert_eq!(endpoint.queued_senders(), 0);
-        assert_eq!(endpoint.queued_receivers(), 1);
     }
 
     #[test]
@@ -712,41 +769,5 @@ mod tests {
                 },
             }
         );
-    }
-
-    #[test]
-    fn nonblocking_send_does_not_queue_when_endpoint_is_not_receiving() {
-        let mut endpoint = Endpoint::new();
-
-        assert_eq!(
-            endpoint.send(
-                thread(1),
-                cpu(0),
-                7,
-                nonblocking_send(),
-                IpcPayload::new(&[10]).unwrap(),
-            ),
-            IpcAction::SendIgnored {
-                thread: thread(1),
-                cpu: cpu(0),
-            }
-        );
-        assert_eq!(endpoint.state(), EndpointState::Idle);
-        assert_eq!(endpoint.queued_senders(), 0);
-    }
-
-    #[test]
-    fn nonblocking_receive_fails_without_waiting_sender() {
-        let mut endpoint = Endpoint::new();
-
-        assert_eq!(
-            endpoint.recv(thread(1), cpu(0), nonblocking_recv()),
-            IpcAction::NonblockingReceiveFailed {
-                thread: thread(1),
-                cpu: cpu(0),
-            }
-        );
-        assert_eq!(endpoint.state(), EndpointState::Idle);
-        assert_eq!(endpoint.queued_receivers(), 0);
     }
 }

@@ -6,3 +6,6 @@ edition.workspace = true
 
 [dependencies]
 bitflags = { version = "2", default-features = false }
+
+[dev-dependencies]
+rstest = "0.26.1"
