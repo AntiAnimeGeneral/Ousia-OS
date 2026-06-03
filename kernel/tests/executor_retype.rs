@@ -638,7 +638,13 @@ fn untyped_retype_cnode_creates_object_and_capability() {
     );
     let object = state.cspace().lookup(descriptor).unwrap().object;
 
-    assert_eq!(state.objects().get(object), Ok(KernelObjectRef::CNode));
+    assert_eq!(
+        state.objects().get(object),
+        Ok(KernelObjectRef::CNode {
+            radix: 4,
+            slots: 16,
+        })
+    );
 }
 
 #[test]
@@ -652,7 +658,10 @@ fn untyped_retype_cnode_object_table_conflict_does_not_commit_cspace() {
         .cspace()
         .preview_retype_untyped(untyped, &target)
         .unwrap();
-    state.objects_mut().insert_cnode(predicted_object).unwrap();
+    state
+        .objects_mut()
+        .insert_cnode(predicted_object, kernel::object::CNodeObject::new(4))
+        .unwrap();
 
     assert_eq!(
         state.execute_invocation(

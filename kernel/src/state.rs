@@ -8,7 +8,9 @@ use crate::{
     invocation::{EndpointSendOp, Invocation, InvocationError, InvocationOutcome, invoke},
     ipc::{Endpoint, IpcPayload, IpcReceiveOptions, IpcSendOptions},
     notification::{BoundTcbSignal, Notification},
-    object::{FrameObject, KernelObjectKind, KernelObjectRef, ObjectTable, ObjectTableError},
+    object::{
+        CNodeObject, FrameObject, KernelObjectKind, KernelObjectRef, ObjectTable, ObjectTableError,
+    },
     reply::ReplyState,
     scheduler::{Scheduler, SchedulerError},
     tcb::{CpuId, Tcb, ThreadId, ThreadState},
@@ -363,10 +365,10 @@ impl KernelState {
                         .expect("prevalidated frame object insertion must succeed");
                 }
             }
-            RetypeTarget::CNode { .. } => {
+            RetypeTarget::CNode { radix } => {
                 for object in &retype_result.objects {
                     self.objects
-                        .insert_cnode(*object)
+                        .insert_cnode(*object, CNodeObject::new(radix))
                         .expect("prevalidated CNode object insertion must succeed");
                 }
             }
@@ -503,7 +505,7 @@ impl KernelState {
             KernelObjectRef::Endpoint => self.finalise_endpoint(object),
             KernelObjectRef::Notification => self.finalise_notification(object),
             KernelObjectRef::Tcb { thread } => self.finalise_tcb_object(object, thread),
-            KernelObjectRef::Frame { .. } | KernelObjectRef::CNode => {
+            KernelObjectRef::Frame { .. } | KernelObjectRef::CNode { .. } => {
                 self.objects.remove_finalised(object);
             }
             KernelObjectRef::Reply => {

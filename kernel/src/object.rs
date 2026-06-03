@@ -22,7 +22,7 @@ pub enum KernelObjectKind {
 pub enum KernelObjectRef {
     Endpoint,
     Frame { size_bits: u8 },
-    CNode,
+    CNode { radix: u8, slots: usize },
     Notification,
     Reply,
     Tcb { thread: Option<ThreadId> },
@@ -57,6 +57,11 @@ pub struct FrameObject {
     size_bits: u8,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CNodeObject {
+    radix: u8,
+}
+
 impl FrameObject {
     pub const fn new(size_bits: u8) -> Self {
         Self { size_bits }
@@ -64,6 +69,24 @@ impl FrameObject {
 
     pub const fn size_bits(self) -> u8 {
         self.size_bits
+    }
+}
+
+impl CNodeObject {
+    pub const fn new(radix: u8) -> Self {
+        Self { radix }
+    }
+
+    pub const fn radix(self) -> u8 {
+        self.radix
+    }
+
+    pub const fn slots(self) -> usize {
+        if self.radix >= usize::BITS as u8 {
+            return usize::MAX;
+        }
+
+        1usize << self.radix
     }
 }
 
@@ -82,7 +105,7 @@ struct ObjectSlot {
 enum KernelObject {
     Endpoint(Endpoint),
     Frame(FrameObject),
-    CNode,
+    CNode(CNodeObject),
     Notification(Notification),
     Reply(Reply),
     Tcb { thread: Option<ThreadId> },
@@ -107,7 +130,7 @@ impl KernelObjectRef {
         match self {
             Self::Endpoint => KernelObjectKind::Endpoint,
             Self::Frame { .. } => KernelObjectKind::Frame,
-            Self::CNode => KernelObjectKind::CNode,
+            Self::CNode { .. } => KernelObjectKind::CNode,
             Self::Notification => KernelObjectKind::Notification,
             Self::Reply => KernelObjectKind::Reply,
             Self::Tcb { .. } => KernelObjectKind::Tcb,
@@ -122,7 +145,10 @@ impl KernelObject {
             Self::Frame(frame) => KernelObjectRef::Frame {
                 size_bits: frame.size_bits(),
             },
-            Self::CNode => KernelObjectRef::CNode,
+            Self::CNode(cnode) => KernelObjectRef::CNode {
+                radix: cnode.radix(),
+                slots: cnode.slots(),
+            },
             Self::Notification(_) => KernelObjectRef::Notification,
             Self::Reply(_) => KernelObjectRef::Reply,
             Self::Tcb { thread } => KernelObjectRef::Tcb { thread: *thread },
@@ -169,11 +195,15 @@ impl ObjectTable {
         Ok(())
     }
 
-    pub fn insert_cnode(&mut self, object: ObjectId) -> Result<(), ObjectTableError> {
+    pub fn insert_cnode(
+        &mut self,
+        object: ObjectId,
+        cnode: CNodeObject,
+    ) -> Result<(), ObjectTableError> {
         self.ensure_unbound(object)?;
         self.objects.push(ObjectSlot {
             object,
-            value: KernelObject::CNode,
+            value: KernelObject::CNode(cnode),
         });
         Ok(())
     }
@@ -407,7 +437,7 @@ impl ObjectTable {
             }
             KernelObjectRef::Endpoint
             | KernelObjectRef::Frame { .. }
-            | KernelObjectRef::CNode
+            | KernelObjectRef::CNode { .. }
             | KernelObjectRef::Notification
             | KernelObjectRef::Reply => {
                 unreachable!("expect_kind returned a non-TCB object for TCB expectation")
@@ -517,9 +547,15 @@ mod tests {
     #[test]
     fn cnode_object_is_tracked_as_kernel_object() {
         let mut table = ObjectTable::new();
-        table.insert_cnode(object(2)).unwrap();
+        table.insert_cnode(object(2), CNodeObject::new(4)).unwrap();
 
-        assert_eq!(table.get(object(2)), Ok(KernelObjectRef::CNode));
+        assert_eq!(
+            table.get(object(2)),
+            Ok(KernelObjectRef::CNode {
+                radix: 4,
+                slots: 16,
+            })
+        );
         assert_eq!(
             table.endpoint(object(2)).map(|_| ()),
             Err(ObjectTableError::WrongObjectType {
