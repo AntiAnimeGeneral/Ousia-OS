@@ -1,4 +1,6 @@
-use alloc::collections::{BTreeMap, VecDeque};
+use alloc::collections::VecDeque;
+
+use hashbrown::HashMap;
 
 use crate::tcb::{CpuId, Tcb, ThreadId, ThreadState};
 
@@ -105,7 +107,7 @@ pub struct PerCpuRunQueue {
 
 #[derive(Debug)]
 pub struct Scheduler {
-    run_queues: BTreeMap<CpuId, PerCpuRunQueue>,
+    run_queues: HashMap<CpuId, PerCpuRunQueue>,
 }
 
 impl PerCpuRunQueue {
@@ -278,7 +280,7 @@ impl Scheduler {
             });
         }
 
-        let mut run_queues = BTreeMap::new();
+        let mut run_queues = HashMap::new();
         for cpu in cpus {
             if run_queues.insert(*cpu, PerCpuRunQueue::new(*cpu)).is_some() {
                 return Err(SchedulerError::DuplicateCpu { cpu: *cpu });

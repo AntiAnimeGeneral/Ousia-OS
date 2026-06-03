@@ -1,4 +1,4 @@
-use alloc::collections::BTreeMap;
+use hashbrown::HashMap;
 
 use crate::{
     cap::ObjectId,
@@ -126,13 +126,13 @@ pub struct ReceiveIpcRequest {
 
 #[derive(Debug, Default)]
 pub struct ThreadTable {
-    tcbs: BTreeMap<ThreadId, Tcb>,
+    tcbs: HashMap<ThreadId, Tcb>,
 }
 
 impl ThreadTable {
     pub fn new() -> Self {
         Self {
-            tcbs: BTreeMap::new(),
+            tcbs: HashMap::new(),
         }
     }
 

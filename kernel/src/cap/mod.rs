@@ -22,10 +22,10 @@
 //! handle transfer and to replace the test-friendly storage with the eventual
 //! kernel allocator and CSpace representation.
 
-use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::vec::Vec;
 
 use bitflags::bitflags;
+use hashbrown::{HashMap, HashSet};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub struct ObjectId(u64);
@@ -404,7 +404,7 @@ struct CapabilitySlot {
     slot_generation: u64,
     object_generation_snapshot: u64,
     parent: Option<SlotId>,
-    children: BTreeSet<SlotId>,
+    children: HashSet<SlotId>,
     mdb: MdbNode,
     alive: bool,
 }
@@ -434,9 +434,9 @@ pub struct CapabilitySpace {
     next_object: u64,
     next_slot: u64,
     free_slots: Vec<SlotId>,
-    objects: BTreeMap<ObjectId, KernelObject>,
-    untyped_allocations: BTreeMap<ObjectId, UntypedAllocation>,
-    slots: BTreeMap<SlotId, CapabilitySlot>,
+    objects: HashMap<ObjectId, KernelObject>,
+    untyped_allocations: HashMap<ObjectId, UntypedAllocation>,
+    slots: HashMap<SlotId, CapabilitySlot>,
 }
 
 impl CapabilitySpace {
@@ -445,9 +445,9 @@ impl CapabilitySpace {
             next_object: 1,
             next_slot: 1,
             free_slots: Vec::new(),
-            objects: BTreeMap::new(),
-            untyped_allocations: BTreeMap::new(),
-            slots: BTreeMap::new(),
+            objects: HashMap::new(),
+            untyped_allocations: HashMap::new(),
+            slots: HashMap::new(),
         }
     }
 
@@ -767,8 +767,8 @@ impl CapabilitySpace {
     ) -> Result<CapabilityRevocation, CapError> {
         let (target_slot, _) = self.validated_slot(descriptor)?;
         let target_object = target_slot.object;
-        let mut revoked_object_ids = BTreeSet::new();
-        let mut final_object_ids = BTreeSet::new();
+        let mut revoked_object_ids = HashSet::new();
+        let mut final_object_ids = HashSet::new();
 
         loop {
             let Some(next_slot_id) = self
@@ -799,14 +799,15 @@ impl CapabilitySpace {
         }
         self.reset_untyped_allocation(descriptor.slot);
 
-        Ok(CapabilityRevocation {
-            revoked_objects: final_object_ids
-                .into_iter()
-                .chain(revoked_object_ids)
-                .collect::<BTreeSet<_>>()
-                .into_iter()
-                .collect(),
-        })
+        let mut revoked_objects: Vec<_> = final_object_ids
+            .into_iter()
+            .chain(revoked_object_ids)
+            .collect::<HashSet<_>>()
+            .into_iter()
+            .collect();
+        revoked_objects.sort_by_key(|object| object.raw());
+
+        Ok(CapabilityRevocation { revoked_objects })
     }
 
     pub fn object_has_live_cap(&self, object: ObjectId) -> bool {
@@ -963,7 +964,7 @@ impl CapabilitySpace {
                 slot_generation,
                 object_generation_snapshot,
                 parent: Some(parent_slot_id),
-                children: BTreeSet::new(),
+                children: HashSet::new(),
                 mdb,
                 alive: true,
             },
@@ -1025,7 +1026,7 @@ impl CapabilitySpace {
                 slot_generation,
                 object_generation_snapshot: object_generation,
                 parent: Some(parent),
-                children: BTreeSet::new(),
+                children: HashSet::new(),
                 mdb,
                 alive: true,
             },
@@ -1155,7 +1156,7 @@ impl CapabilitySpace {
                 slot_generation,
                 object_generation_snapshot: generation,
                 parent: None,
-                children: BTreeSet::new(),
+                children: HashSet::new(),
                 mdb: MdbNode {
                     revocable: true,
                     first_badged: true,
@@ -2107,6 +2108,34 @@ mod tests {
         assert_eq!(
             cspace.lookup(frame),
             Err(CapError::SlotNotFound(frame.slot))
+        );
+    }
+
+    #[test]
+    fn revoke_descendants_reports_revoked_objects_in_object_id_order() {
+        // Goal: revocation reporting remains stable without relying on map or set iteration order.
+        // Scope: cap-layer revoke result after MDB traversal has selected descendants.
+        // Semantics: finalisation consumers receive each affected object once, sorted by ObjectId.
+        let mut cspace = CapabilitySpace::new();
+        let root = cspace.insert_initial_capability(untyped(13)).unwrap();
+        let first = cspace.retype_untyped(root, RetypeTarget::Endpoint).unwrap();
+        let second = cspace
+            .retype_untyped(
+                root,
+                RetypeTarget::Frame {
+                    rights: Rights::READ,
+                },
+            )
+            .unwrap();
+        let first_object = cspace.object_of(first).unwrap();
+        let second_object = cspace.object_of(second).unwrap();
+
+        let revocation = cspace.revoke_descendants(root).unwrap();
+
+        assert!(first_object.raw() < second_object.raw());
+        assert_eq!(
+            revocation.revoked_objects,
+            Vec::from([first_object, second_object])
         );
     }
 
