@@ -42,11 +42,14 @@ fn capability_descriptor(outcome: ExecutionOutcome, context: &str) -> Capability
 }
 
 fn retyped_descriptor(outcome: ExecutionOutcome, context: &str) -> CapabilityDescriptor {
-    let ExecutionOutcome::Retyped { descriptor } = outcome else {
+    let ExecutionOutcome::Retyped { descriptors } = outcome else {
         panic!("{context}: expected retyped outcome");
     };
 
-    descriptor
+    let [descriptor] = descriptors.as_slice() else {
+        panic!("{context}: expected one retyped descriptor");
+    };
+    *descriptor
 }
 
 fn configure_thread(state: &mut kernel::state::KernelState, id: u64) -> CapabilityDescriptor {

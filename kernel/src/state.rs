@@ -1,3 +1,5 @@
+use alloc::vec::Vec;
+
 use crate::{
     cap::{
         CapabilityDescriptor, CapabilitySpace, MintParams, ObjectId, ReplyCap, RetypeTarget, Rights,
@@ -35,7 +37,7 @@ pub enum ExecutionOutcome {
     },
     CapabilityMutation,
     Retyped {
-        descriptor: CapabilityDescriptor,
+        descriptors: Vec<CapabilityDescriptor>,
     },
     Unsupported(UnsupportedInvocation),
 }
@@ -274,61 +276,108 @@ impl KernelState {
         target: RetypeTarget,
         destination: Option<crate::cap::RetypeDestination>,
     ) -> Result<ExecutionOutcome, KernelExecutionError> {
-        let object = self
-            .cspace
-            .preview_retype_untyped(source, &target)
-            .map_err(InvocationError::Cap)?;
+        let objects = match destination {
+            Some(destination) => self
+                .cspace
+                .preview_retype_untyped_into(source, &target, destination)
+                .map_err(InvocationError::Cap)?,
+            None => alloc::vec![
+                self.cspace
+                    .preview_retype_untyped(source, &target)
+                    .map_err(InvocationError::Cap)?
+            ],
+        };
 
-        match &target {
+        self.validate_retype_runtime_destinations(&target, &objects)?;
+
+        let retype_result = match destination {
+            Some(destination) => self
+                .cspace
+                .retype_untyped_into(source, target.clone(), destination)
+                .map_err(InvocationError::Cap)?,
+            None => {
+                let descriptor = self
+                    .cspace
+                    .retype_untyped(source, target.clone())
+                    .expect("prevalidated untyped retype must succeed");
+                let object = self
+                    .cspace
+                    .lookup(descriptor)
+                    .map_err(InvocationError::Cap)?
+                    .object;
+                crate::cap::RetypeResult {
+                    descriptors: alloc::vec![descriptor],
+                    objects: alloc::vec![object],
+                }
+            }
+        };
+
+        assert_eq!(
+            objects, retype_result.objects,
+            "retype preview must match committed CSpace objects"
+        );
+        match target {
+            RetypeTarget::Endpoint => {
+                for object in &retype_result.objects {
+                    self.objects
+                        .insert_endpoint(*object, Endpoint::new())
+                        .expect("prevalidated endpoint object insertion must succeed");
+                }
+            }
+            RetypeTarget::Frame { .. } => {
+                for object in &retype_result.objects {
+                    self.objects
+                        .insert_frame(*object, FrameObject::new(target.minimum_size_bits()))
+                        .expect("prevalidated frame object insertion must succeed");
+                }
+            }
+            RetypeTarget::CNode { .. } => {
+                for object in &retype_result.objects {
+                    self.objects
+                        .insert_cnode(*object)
+                        .expect("prevalidated CNode object insertion must succeed");
+                }
+            }
+            RetypeTarget::Notification => {
+                for object in &retype_result.objects {
+                    self.objects
+                        .insert_notification(*object, Notification::new())
+                        .expect("prevalidated notification object insertion must succeed");
+                }
+            }
+            RetypeTarget::Tcb { .. } => {
+                for object in &retype_result.objects {
+                    self.objects
+                        .insert_tcb(*object)
+                        .expect("prevalidated TCB object insertion must succeed");
+                }
+            }
+            RetypeTarget::Untyped { .. } => {}
+        }
+
+        Ok(ExecutionOutcome::Retyped {
+            descriptors: retype_result.descriptors,
+        })
+    }
+
+    fn validate_retype_runtime_destinations(
+        &self,
+        target: &RetypeTarget,
+        objects: &[crate::cap::ObjectId],
+    ) -> Result<(), KernelExecutionError> {
+        match target {
             RetypeTarget::Endpoint
             | RetypeTarget::Frame { .. }
             | RetypeTarget::CNode { .. }
             | RetypeTarget::Notification
             | RetypeTarget::Tcb { .. } => {
-                self.objects.validate_unbound(object)?;
+                for object in objects {
+                    self.objects.validate_unbound(*object)?;
+                }
             }
             RetypeTarget::Untyped { .. } => {}
         }
-
-        let descriptor = match destination {
-            Some(destination) => self
-                .cspace
-                .retype_untyped_into(source, target.clone(), destination)
-                .map_err(InvocationError::Cap)?
-                .descriptors
-                .into_iter()
-                .next()
-                .expect("explicit untyped retype must yield a descriptor"),
-            None => self
-                .cspace
-                .retype_untyped(source, target.clone())
-                .expect("prevalidated untyped retype must succeed"),
-        };
-        match target {
-            RetypeTarget::Endpoint => self
-                .objects
-                .insert_endpoint(object, Endpoint::new())
-                .expect("prevalidated endpoint object insertion must succeed"),
-            RetypeTarget::Frame { .. } => self
-                .objects
-                .insert_frame(object, FrameObject::new(target.minimum_size_bits()))
-                .expect("prevalidated frame object insertion must succeed"),
-            RetypeTarget::CNode { .. } => self
-                .objects
-                .insert_cnode(object)
-                .expect("prevalidated CNode object insertion must succeed"),
-            RetypeTarget::Notification => self
-                .objects
-                .insert_notification(object, Notification::new())
-                .expect("prevalidated notification object insertion must succeed"),
-            RetypeTarget::Tcb { .. } => self
-                .objects
-                .insert_tcb(object)
-                .expect("prevalidated TCB object insertion must succeed"),
-            RetypeTarget::Untyped { .. } => {}
-        }
-
-        Ok(ExecutionOutcome::Retyped { descriptor })
+        Ok(())
     }
 
     fn execute_cnode_copy(

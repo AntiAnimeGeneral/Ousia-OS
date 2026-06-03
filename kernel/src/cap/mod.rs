@@ -45,6 +45,10 @@ impl ObjectId {
 pub struct SlotId(u64);
 
 impl SlotId {
+    pub const fn from_raw(raw: u64) -> Self {
+        Self(raw)
+    }
+
     pub const fn raw(self) -> u64 {
         self.0
     }
@@ -556,6 +560,18 @@ impl CapabilitySpace {
     ) -> Result<ObjectId, CapError> {
         self.validate_retype_untyped(source, target)?;
         Ok(ObjectId(self.next_object))
+    }
+
+    pub fn preview_retype_untyped_into(
+        &self,
+        source: CapabilityDescriptor,
+        target: &RetypeTarget,
+        destination: RetypeDestination,
+    ) -> Result<Vec<ObjectId>, CapError> {
+        self.validate_retype_untyped_into(source, target, destination)?;
+        Ok((0..destination.count)
+            .map(|offset| ObjectId(self.next_object + offset as u64))
+            .collect())
     }
 
     pub fn validate_reply_capability(

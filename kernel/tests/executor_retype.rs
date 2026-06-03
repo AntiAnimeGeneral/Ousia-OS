@@ -11,11 +11,14 @@ use kernel::{
 use support::{cpu, state_with_untyped, thread};
 
 fn retyped_descriptor(outcome: ExecutionOutcome, context: &str) -> CapabilityDescriptor {
-    let ExecutionOutcome::Retyped { descriptor } = outcome else {
+    let ExecutionOutcome::Retyped { descriptors } = outcome else {
         panic!("{context}: expected retyped outcome");
     };
 
-    descriptor
+    let [descriptor] = descriptors.as_slice() else {
+        panic!("{context}: expected one retyped descriptor");
+    };
+    *descriptor
 }
 
 #[test]
@@ -249,6 +252,95 @@ fn untyped_retype_into_occupied_destination_fails_without_side_effects() {
     assert_eq!(
         state.cspace().lookup(descriptor).map(|view| view.object),
         Ok(predicted_object)
+    );
+}
+
+#[test]
+fn untyped_retype_into_window_creates_all_runtime_objects() {
+    // Goal: executor commit covers every object in an UntypedRetype destination window.
+    // Scope: host integration through explicit UntypedRetypeInto invocation.
+    // Semantics: CSpace descriptors and ObjectTable runtime entries are created for the full window.
+    let (mut state, untyped) = state_with_untyped(13);
+
+    let outcome = state
+        .execute_invocation(
+            InvocationContext::new(thread(1), cpu(0)),
+            untyped,
+            Invocation::UntypedRetypeInto {
+                target: RetypeTarget::Frame {
+                    rights: Rights::READ,
+                },
+                destination: RetypeDestination {
+                    start: kernel::cap::SlotId::from_raw(30),
+                    count: 2,
+                },
+            },
+        )
+        .unwrap();
+    let ExecutionOutcome::Retyped { descriptors } = outcome else {
+        panic!("window retype must return retyped descriptors");
+    };
+
+    assert_eq!(descriptors.len(), 2);
+    for descriptor in descriptors {
+        let view = state.cspace().lookup(descriptor).unwrap();
+        assert_eq!(
+            view.capability,
+            Capability::Frame(FrameCap {
+                rights: Rights::READ,
+            })
+        );
+        assert_eq!(
+            state.objects().get(view.object),
+            Ok(KernelObjectRef::Frame { size_bits: 12 })
+        );
+    }
+}
+
+#[test]
+fn untyped_retype_into_runtime_conflict_fails_before_cspace_commit() {
+    // Goal: executor validates the whole runtime destination set before committing CSpace.
+    // Scope: host integration through explicit UntypedRetypeInto with an ObjectTable conflict.
+    // Semantics: no descriptor in the requested window becomes live after a later runtime conflict.
+    let (mut state, untyped) = state_with_untyped(13);
+    state
+        .objects_mut()
+        .insert_frame(kernel::cap::ObjectId::new(2), FrameObject::new(12))
+        .unwrap();
+    let start = kernel::cap::SlotId::from_raw(40);
+
+    assert_eq!(
+        state.execute_invocation(
+            InvocationContext::new(thread(1), cpu(0)),
+            untyped,
+            Invocation::UntypedRetypeInto {
+                target: RetypeTarget::Frame {
+                    rights: Rights::READ,
+                },
+                destination: RetypeDestination { start, count: 2 },
+            },
+        ),
+        Err(KernelExecutionError::Object(
+            ObjectTableError::ObjectIdAlreadyBound {
+                object: kernel::cap::ObjectId::new(2),
+            }
+        ))
+    );
+
+    assert_eq!(
+        state.cspace().lookup(CapabilityDescriptor {
+            slot: start,
+            slot_generation: 1,
+        }),
+        Err(CapError::SlotNotFound(start))
+    );
+    let next = kernel::cap::SlotId::from_raw(start.raw() + 1);
+    assert_eq!(
+        state.cspace().lookup(CapabilityDescriptor {
+            slot: next,
+            slot_generation: 1,
+        }),
+        Err(CapError::SlotNotFound(next))
     );
 }
 
