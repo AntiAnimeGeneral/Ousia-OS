@@ -1052,10 +1052,12 @@ fn cnode_revoke_endpoint_restarts_blocked_sender_before_removing_object() {
         state.threads().state(thread(7)),
         Some(ThreadState::BlockedOnSend {
             endpoint: endpoint_object,
+            sender_cpu: cpu(0),
             badge: 0,
             can_grant: true,
             can_grant_reply: true,
             is_call: false,
+            payload: kernel::ipc::IpcPayload::empty(),
         })
     );
 

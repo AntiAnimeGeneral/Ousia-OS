@@ -1,12 +1,7 @@
 use alloc::vec::Vec;
 
+pub use crate::message::{IpcError, IpcPayload, MAX_IPC_WORDS};
 use crate::tcb::{CpuId, ThreadId};
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct IpcPayload {
-    words: [u64; MAX_IPC_WORDS],
-    len: usize,
-}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct EndpointWaiter {
@@ -31,6 +26,12 @@ pub struct IpcMessage {
     can_grant_reply: bool,
     mode: IpcSendMode,
     payload: IpcPayload,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct QueuedSender {
+    thread: ThreadId,
+    cpu: CpuId,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -67,6 +68,7 @@ pub enum IpcAction {
         can_grant: bool,
         can_grant_reply: bool,
         is_call: bool,
+        payload: IpcPayload,
     },
     ReceiverBlocked {
         thread: ThreadId,
@@ -92,8 +94,7 @@ pub enum IpcAction {
         receiver: ThreadId,
         receiver_cpu: CpuId,
         receiver_can_grant: bool,
-        message: IpcMessage,
-        reply_request: Option<ReplyRequest>,
+        sender: QueuedSender,
     },
 }
 
@@ -111,15 +112,10 @@ pub struct ReplySetup {
     pub reply_can_grant: bool,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum IpcError {
-    TooManyMessageWords { requested: usize, limit: usize },
-}
-
 #[derive(Debug)]
 pub struct Endpoint {
     state: EndpointState,
-    senders: EndpointQueue<IpcMessage>,
+    senders: EndpointQueue<QueuedSender>,
     receivers: EndpointQueue<EndpointWaiter>,
 }
 
@@ -132,51 +128,6 @@ struct EndpointQueue<T> {
 pub struct EndpointCancellation {
     pub senders: Vec<EndpointWaiter>,
     pub receivers: Vec<EndpointWaiter>,
-}
-
-pub const MAX_IPC_WORDS: usize = 4;
-
-impl IpcPayload {
-    pub const fn empty() -> Self {
-        Self {
-            words: [0; MAX_IPC_WORDS],
-            len: 0,
-        }
-    }
-
-    pub fn new(words: &[u64]) -> Result<Self, IpcError> {
-        if words.len() > MAX_IPC_WORDS {
-            return Err(IpcError::TooManyMessageWords {
-                requested: words.len(),
-                limit: MAX_IPC_WORDS,
-            });
-        }
-
-        let mut payload = Self::empty();
-        payload.words[..words.len()].copy_from_slice(words);
-        payload.len = words.len();
-        Ok(payload)
-    }
-
-    pub const fn len(&self) -> usize {
-        self.len
-    }
-
-    pub const fn is_empty(&self) -> bool {
-        self.len == 0
-    }
-
-    pub fn truncate_to_words(self, words: usize) -> Self {
-        let len = if words < self.len { words } else { self.len };
-        let mut payload = Self::empty();
-        payload.words[..len].copy_from_slice(&self.words[..len]);
-        payload.len = len;
-        payload
-    }
-
-    pub fn words(&self) -> &[u64] {
-        &self.words[..self.len]
-    }
 }
 
 impl EndpointWaiter {
@@ -194,6 +145,26 @@ impl EndpointWaiter {
 }
 
 impl IpcMessage {
+    pub(crate) const fn new_for_blocked_sender(
+        sender: ThreadId,
+        sender_cpu: CpuId,
+        badge: u64,
+        can_grant: bool,
+        can_grant_reply: bool,
+        mode: IpcSendMode,
+        payload: IpcPayload,
+    ) -> Self {
+        Self {
+            sender,
+            sender_cpu,
+            badge,
+            can_grant,
+            can_grant_reply,
+            mode,
+            payload,
+        }
+    }
+
     pub const fn sender(self) -> ThreadId {
         self.sender
     }
@@ -220,6 +191,20 @@ impl IpcMessage {
 
     pub const fn payload(self) -> IpcPayload {
         self.payload
+    }
+}
+
+impl QueuedSender {
+    pub const fn new(thread: ThreadId, cpu: CpuId) -> Self {
+        Self { thread, cpu }
+    }
+
+    pub const fn thread(self) -> ThreadId {
+        self.thread
+    }
+
+    pub const fn cpu(self) -> CpuId {
+        self.cpu
     }
 }
 
@@ -324,7 +309,8 @@ impl Endpoint {
                     };
                 }
 
-                self.senders.push_back(message);
+                self.senders
+                    .push_back(QueuedSender::new(sender, sender_cpu));
                 self.state = EndpointState::Send;
                 IpcAction::SenderBlocked {
                     thread: sender,
@@ -333,6 +319,7 @@ impl Endpoint {
                     can_grant: options.can_grant,
                     can_grant_reply: options.can_grant_reply,
                     is_call: options.is_call(),
+                    payload,
                 }
             }
             EndpointState::Recv => {
@@ -382,7 +369,7 @@ impl Endpoint {
                 }
             }
             EndpointState::Send => {
-                let message = self
+                let sender = self
                     .senders
                     .pop_front()
                     .expect("Send endpoint state must have a waiting sender");
@@ -393,8 +380,7 @@ impl Endpoint {
                     receiver,
                     receiver_cpu,
                     receiver_can_grant: options.can_grant,
-                    reply_request: reply_request_for(message),
-                    message,
+                    sender,
                 }
             }
         }
@@ -416,7 +402,7 @@ impl Endpoint {
         self.receivers.front().copied()
     }
 
-    pub fn next_sender(&self) -> Option<IpcMessage> {
+    pub fn next_sender(&self) -> Option<QueuedSender> {
         self.senders.front().copied()
     }
 
@@ -424,9 +410,9 @@ impl Endpoint {
         let senders = self
             .senders
             .drain_all()
-            .map(|message| EndpointWaiter {
-                thread: message.sender,
-                cpu: message.sender_cpu,
+            .map(|sender| EndpointWaiter {
+                thread: sender.thread,
+                cpu: sender.cpu,
                 can_grant: false,
             })
             .collect();
@@ -439,7 +425,7 @@ impl Endpoint {
     pub fn cancel_thread(&mut self, thread: ThreadId) -> bool {
         let sender_count = self.senders.len();
         let receiver_count = self.receivers.len();
-        self.senders.retain(|message| message.sender != thread);
+        self.senders.retain(|sender| sender.thread != thread);
         self.receivers.retain(|waiter| waiter.thread != thread);
 
         if self.senders.is_empty() && self.receivers.is_empty() {
@@ -530,29 +516,6 @@ mod tests {
     }
 
     #[test]
-    fn payload_rejects_too_many_words() {
-        assert_eq!(
-            IpcPayload::new(&[1, 2, 3, 4, 5]),
-            Err(IpcError::TooManyMessageWords {
-                requested: 5,
-                limit: MAX_IPC_WORDS,
-            })
-        );
-    }
-
-    #[test]
-    fn payload_truncate_keeps_message_word_prefix() {
-        // Goal: message length consumption never exposes words past the requested prefix.
-        // Scope: unit test for IPC payload normalization before endpoint delivery.
-        // Semantics: truncating is monotonic and never pads missing message registers.
-        let payload = IpcPayload::new(&[1, 2, 3]).unwrap();
-
-        assert_eq!(payload.truncate_to_words(2).words(), &[1, 2]);
-        assert_eq!(payload.truncate_to_words(8).words(), &[1, 2, 3]);
-        assert_eq!(payload.truncate_to_words(0), IpcPayload::empty());
-    }
-
-    #[test]
     fn send_blocks_when_no_receiver_waits() {
         let mut endpoint = Endpoint::new();
         let action = endpoint.send(
@@ -572,6 +535,7 @@ mod tests {
                 can_grant: true,
                 can_grant_reply: true,
                 is_call: true,
+                payload: IpcPayload::new(&[10]).unwrap(),
             }
         );
         assert_eq!(endpoint.state(), EndpointState::Send);
@@ -603,20 +567,7 @@ mod tests {
                 receiver: thread(3),
                 receiver_cpu: cpu(2),
                 receiver_can_grant: true,
-                reply_request: Some(ReplyRequest {
-                    caller: thread(1),
-                    caller_cpu: cpu(0),
-                    sender_can_reply: true,
-                }),
-                message: IpcMessage {
-                    sender: thread(1),
-                    sender_cpu: cpu(0),
-                    badge: 7,
-                    can_grant: true,
-                    can_grant_reply: true,
-                    mode: IpcSendMode::Call,
-                    payload: IpcPayload::new(&[10]).unwrap(),
-                },
+                sender: QueuedSender::new(thread(1), cpu(0)),
             }
         );
         assert_eq!(endpoint.state(), EndpointState::Send);

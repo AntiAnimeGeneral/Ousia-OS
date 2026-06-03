@@ -696,22 +696,29 @@ impl KernelState {
     ) -> Result<ExecutionOutcome, KernelExecutionError> {
         self.objects
             .expect_kind(endpoint, KernelObjectKind::Endpoint)?;
-        let queued_call_creates_reply =
-            self.objects
-                .endpoint(endpoint)?
-                .next_sender()
-                .is_some_and(|message| {
-                    message.is_call() && (message.can_grant() || message.can_grant_reply())
-                });
+        let queued_sender = self.objects.endpoint(endpoint)?.next_sender();
+        let queued_sender_state = queued_sender.and_then(|sender| {
+            self.threads
+                .state(sender.thread())
+                .map(|state| (sender, state))
+        });
+        let queued_call_creates_reply = queued_sender_state.is_some_and(|(_, state)| {
+            matches!(
+                state,
+                ThreadState::BlockedOnSend {
+                    endpoint: blocked_endpoint,
+                    can_grant,
+                    can_grant_reply,
+                    is_call: true,
+                    ..
+                } if blocked_endpoint == endpoint && (can_grant || can_grant_reply)
+            )
+        });
         let reply =
             self.reply_for_endpoint(endpoint, context.reply(), queued_call_creates_reply)?;
         let caller_object = if queued_call_creates_reply {
-            let message = self
-                .objects
-                .endpoint(endpoint)?
-                .next_sender()
-                .expect("queued call precheck requires a queued sender");
-            Some(self.objects.tcb_object_for_thread(message.sender())?)
+            let sender = queued_sender.expect("queued call precheck requires a queued sender");
+            Some(self.objects.tcb_object_for_thread(sender.thread())?)
         } else {
             None
         };
@@ -1066,10 +1073,12 @@ mod tests {
             state.threads().state(thread(1)),
             Some(ThreadState::BlockedOnSend {
                 endpoint: endpoint_object,
+                sender_cpu: cpu(0),
                 badge: 7,
                 can_grant: true,
                 can_grant_reply: true,
                 is_call: false,
+                payload: IpcPayload::empty(),
             })
         );
     }
@@ -1094,15 +1103,16 @@ mod tests {
             .unwrap();
 
         assert_eq!(
-            state
-                .objects()
-                .endpoint(endpoint_object)
-                .unwrap()
-                .next_sender()
-                .unwrap()
-                .payload()
-                .words(),
-            &[10, 20]
+            state.threads().state(thread(1)),
+            Some(ThreadState::BlockedOnSend {
+                endpoint: endpoint_object,
+                sender_cpu: cpu(0),
+                badge: 7,
+                can_grant: true,
+                can_grant_reply: true,
+                is_call: false,
+                payload: IpcPayload::new(&[10, 20]).unwrap(),
+            })
         );
     }
 

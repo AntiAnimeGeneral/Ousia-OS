@@ -6,6 +6,7 @@ pub mod cap;
 pub mod error;
 pub mod invocation;
 pub mod ipc;
+pub mod message;
 pub mod notification;
 pub mod object;
 pub mod reply;

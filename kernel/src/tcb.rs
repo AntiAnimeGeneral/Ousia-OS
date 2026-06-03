@@ -1,4 +1,4 @@
-use crate::cap::ObjectId;
+use crate::{cap::ObjectId, message::IpcPayload};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub struct CpuId(u32);
@@ -38,10 +38,12 @@ pub enum ThreadState {
     },
     BlockedOnSend {
         endpoint: ObjectId,
+        sender_cpu: CpuId,
         badge: u64,
         can_grant: bool,
         can_grant_reply: bool,
         is_call: bool,
+        payload: IpcPayload,
     },
     BlockedOnReply,
     BlockedOnNotification {
@@ -158,10 +160,12 @@ mod tests {
         assert!(
             ThreadState::BlockedOnSend {
                 endpoint: object(1),
+                sender_cpu: CpuId::new(0),
                 badge: 1,
                 can_grant: true,
                 can_grant_reply: false,
                 is_call: true,
+                payload: IpcPayload::empty(),
             }
             .is_blocked()
         );
@@ -200,10 +204,12 @@ mod tests {
         assert!(
             ThreadState::BlockedOnSend {
                 endpoint: object(1),
+                sender_cpu: CpuId::new(0),
                 badge: 1,
                 can_grant: true,
                 can_grant_reply: false,
                 is_call: true,
+                payload: IpcPayload::empty(),
             }
             .is_stopped()
         );

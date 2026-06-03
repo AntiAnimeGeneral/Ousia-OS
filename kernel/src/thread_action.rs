@@ -3,8 +3,8 @@ use alloc::vec::Vec;
 use crate::{
     cap::ObjectId,
     ipc::{
-        Endpoint, IpcAction, IpcPayload, IpcReceiveOptions, IpcSendOptions, ReplyRequest,
-        ReplySetup,
+        Endpoint, IpcAction, IpcMessage, IpcPayload, IpcReceiveOptions, IpcSendOptions,
+        QueuedSender, ReplyRequest, ReplySetup,
     },
     notification::{BoundTcbSignal, Notification, NotificationAction, NotificationState},
     reply::{Reply, ReplyAction, ReplyCaller, ReplyCallerParams, ReplyError, ReplyState},
@@ -101,6 +101,12 @@ enum WakeExpectation {
     State(ThreadState),
     Receive { endpoint: ObjectId, can_grant: bool },
     BoundNotificationReceive { notification: ObjectId },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct BlockedSenderMessage {
+    message: IpcMessage,
+    reply_request: Option<ReplyRequest>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -232,6 +238,82 @@ impl ReceiveIpcRequest {
     }
 }
 
+fn blocked_sender_message(
+    threads: &ThreadTable,
+    endpoint: ObjectId,
+    sender: QueuedSender,
+) -> Result<BlockedSenderMessage, ThreadActionError> {
+    let Some(state) = threads.state(sender.thread()) else {
+        return Err(ThreadActionError::UnknownThread {
+            thread: sender.thread(),
+        });
+    };
+    let ThreadState::BlockedOnSend {
+        endpoint: blocked_endpoint,
+        sender_cpu,
+        badge,
+        can_grant,
+        can_grant_reply,
+        is_call,
+        payload,
+    } = state
+    else {
+        return Err(ThreadActionError::UnexpectedThreadState {
+            thread: sender.thread(),
+            expected: ThreadState::BlockedOnSend {
+                endpoint,
+                sender_cpu: sender.cpu(),
+                badge: 0,
+                can_grant: false,
+                can_grant_reply: false,
+                is_call: false,
+                payload: IpcPayload::empty(),
+            },
+            actual: state,
+        });
+    };
+    if blocked_endpoint != endpoint || sender_cpu != sender.cpu() {
+        return Err(ThreadActionError::UnexpectedThreadState {
+            thread: sender.thread(),
+            expected: ThreadState::BlockedOnSend {
+                endpoint,
+                sender_cpu: sender.cpu(),
+                badge,
+                can_grant,
+                can_grant_reply,
+                is_call,
+                payload,
+            },
+            actual: state,
+        });
+    }
+
+    let mode = if is_call {
+        crate::ipc::IpcSendMode::Call
+    } else {
+        crate::ipc::IpcSendMode::Send
+    };
+    let message = IpcMessage::new_for_blocked_sender(
+        sender.thread(),
+        sender.cpu(),
+        badge,
+        can_grant,
+        can_grant_reply,
+        mode,
+        payload,
+    );
+    let reply_request = is_call.then_some(ReplyRequest {
+        caller: sender.thread(),
+        caller_cpu: sender.cpu(),
+        sender_can_reply: can_grant || can_grant_reply,
+    });
+
+    Ok(BlockedSenderMessage {
+        message,
+        reply_request,
+    })
+}
+
 fn apply_ipc_action(
     threads: &mut ThreadTable,
     scheduler: &mut Scheduler,
@@ -247,6 +329,7 @@ fn apply_ipc_action(
             can_grant,
             can_grant_reply,
             is_call,
+            payload,
         } => block_current(
             threads,
             scheduler,
@@ -254,10 +337,12 @@ fn apply_ipc_action(
             cpu,
             ThreadState::BlockedOnSend {
                 endpoint,
+                sender_cpu: cpu,
                 badge,
                 can_grant,
                 can_grant_reply,
                 is_call,
+                payload,
             },
         ),
         IpcAction::ReceiverBlocked {
@@ -290,11 +375,10 @@ fn apply_ipc_action(
                 can_grant: receiver_can_grant,
             },
         ),
-        IpcAction::SenderReleased {
-            message,
-            reply_request,
-            ..
-        } => {
+        IpcAction::SenderReleased { sender, .. } => {
+            let blocked = blocked_sender_message(threads, endpoint, sender)?;
+            let message = blocked.message;
+            let reply_request = blocked.reply_request;
             if let Some(request) = reply_request {
                 return Err(ThreadActionError::ReceiveCallTransactionUnsupported {
                     setup: reply_setup_for(request, false),
@@ -308,10 +392,12 @@ fn apply_ipc_action(
                 message.sender_cpu(),
                 WakeExpectation::State(ThreadState::BlockedOnSend {
                     endpoint,
+                    sender_cpu: message.sender_cpu(),
                     badge: message.badge(),
                     can_grant: message.can_grant(),
                     can_grant_reply: message.can_grant_reply(),
                     is_call: false,
+                    payload: message.payload(),
                 }),
             )
         }
@@ -429,13 +515,17 @@ pub fn recv_ipc(
 
     let mut reply = reply;
 
-    if let Some(message) = endpoint.next_sender() {
+    if let Some(sender) = endpoint.next_sender() {
+        let blocked = blocked_sender_message(threads, request.endpoint, sender)?;
+        let message = blocked.message;
         let expected = ThreadState::BlockedOnSend {
             endpoint: request.endpoint,
+            sender_cpu: message.sender_cpu(),
             badge: message.badge(),
             can_grant: message.can_grant(),
             can_grant_reply: message.can_grant_reply(),
             is_call: message.is_call(),
+            payload: message.payload(),
         };
 
         if message.is_call() {
@@ -477,52 +567,49 @@ pub fn recv_ipc(
 
     let action = endpoint.recv(request.receiver, request.receiver_cpu, request.options);
     match action {
-        IpcAction::SenderReleased {
-            message,
-            reply_request: Some(reply_request),
-            ..
-        } => {
-            let caller_can_reply = reply_request.sender_can_reply;
-            let setup = reply_setup_for(reply_request, request.options.can_grant);
-            if caller_can_reply {
-                let caller_object = request
-                    .caller
-                    .expect("prechecked receive-side call must provide caller TCB object");
-                let reply = reply
-                    .as_deref_mut()
-                    .expect("prechecked receive-side call must provide reply object");
-                let _ = reply
-                    .record_caller(ReplyCaller::new(ReplyCallerParams {
-                        caller: caller_object,
-                        target: request.endpoint,
-                        thread: setup.caller,
-                        cpu: setup.caller_cpu,
-                        can_grant: setup.reply_can_grant,
-                    }))
-                    .expect("prechecked receive-side call reply object must be empty");
-                threads
-                    .get_mut(message.sender())
-                    .expect("prechecked receive-side call sender must exist")
-                    .set_state(ThreadState::BlockedOnReply);
-                Ok(ThreadAction::ReplyRecorded { setup })
+        IpcAction::SenderReleased { sender, .. } => {
+            let blocked = blocked_sender_message(threads, request.endpoint, sender)?;
+            let message = blocked.message;
+            if let Some(reply_request) = blocked.reply_request {
+                let caller_can_reply = reply_request.sender_can_reply;
+                let setup = reply_setup_for(reply_request, request.options.can_grant);
+                if caller_can_reply {
+                    let caller_object = request
+                        .caller
+                        .expect("prechecked receive-side call must provide caller TCB object");
+                    let reply = reply
+                        .as_deref_mut()
+                        .expect("prechecked receive-side call must provide reply object");
+                    let _ = reply
+                        .record_caller(ReplyCaller::new(ReplyCallerParams {
+                            caller: caller_object,
+                            target: request.endpoint,
+                            thread: setup.caller,
+                            cpu: setup.caller_cpu,
+                            can_grant: setup.reply_can_grant,
+                        }))
+                        .expect("prechecked receive-side call reply object must be empty");
+                    threads
+                        .get_mut(message.sender())
+                        .expect("prechecked receive-side call sender must exist")
+                        .set_state(ThreadState::BlockedOnReply);
+                    Ok(ThreadAction::ReplyRecorded { setup })
+                } else {
+                    Ok(stop_thread_validated(
+                        threads,
+                        message.sender(),
+                        message.sender_cpu(),
+                    ))
+                }
             } else {
-                Ok(stop_thread_validated(
+                Ok(wake_thread_validated(
                     threads,
+                    scheduler,
                     message.sender(),
                     message.sender_cpu(),
                 ))
             }
         }
-        IpcAction::SenderReleased {
-            message,
-            reply_request: None,
-            ..
-        } => Ok(wake_thread_validated(
-            threads,
-            scheduler,
-            message.sender(),
-            message.sender_cpu(),
-        )),
         action => apply_ipc_action(
             threads,
             scheduler,
@@ -1173,10 +1260,12 @@ mod tests {
             threads.state(thread(1)),
             Some(ThreadState::BlockedOnSend {
                 endpoint: object(10),
+                sender_cpu: cpu(0),
                 badge: 7,
                 can_grant: true,
                 can_grant_reply: false,
                 is_call: true,
+                payload: IpcPayload::empty(),
             })
         );
     }
@@ -1488,10 +1577,12 @@ mod tests {
             .unwrap()
             .set_state(ThreadState::BlockedOnSend {
                 endpoint: object(10),
+                sender_cpu: cpu(0),
                 badge: 7,
                 can_grant: true,
                 can_grant_reply: false,
                 is_call: false,
+                payload: IpcPayload::empty(),
             });
         let mut scheduler = scheduler_with_current(None, Some(2));
 
@@ -1544,10 +1635,12 @@ mod tests {
             .unwrap()
             .set_state(ThreadState::BlockedOnSend {
                 endpoint: object(10),
+                sender_cpu: cpu(0),
                 badge: 7,
                 can_grant: true,
                 can_grant_reply: false,
                 is_call: true,
+                payload: IpcPayload::empty(),
             });
         let mut scheduler = scheduler_with_current(None, Some(2));
 
@@ -1601,10 +1694,12 @@ mod tests {
             .unwrap()
             .set_state(ThreadState::BlockedOnSend {
                 endpoint: object(10),
+                sender_cpu: cpu(0),
                 badge: 7,
                 can_grant: false,
                 can_grant_reply: false,
                 is_call: true,
+                payload: IpcPayload::empty(),
             });
         let mut scheduler = scheduler_with_current(None, Some(2));
 
@@ -1652,10 +1747,12 @@ mod tests {
             .unwrap()
             .set_state(ThreadState::BlockedOnSend {
                 endpoint: object(10),
+                sender_cpu: cpu(0),
                 badge: 7,
                 can_grant: true,
                 can_grant_reply: false,
                 is_call: true,
+                payload: IpcPayload::empty(),
             });
         let mut scheduler = scheduler_with_current(None, Some(2));
 
@@ -1686,10 +1783,12 @@ mod tests {
             threads.state(thread(1)),
             Some(ThreadState::BlockedOnSend {
                 endpoint: object(10),
+                sender_cpu: cpu(0),
                 badge: 7,
                 can_grant: true,
                 can_grant_reply: false,
                 is_call: true,
+                payload: IpcPayload::empty(),
             })
         );
         assert_eq!(threads.state(thread(2)), Some(ThreadState::Running));
@@ -1725,10 +1824,12 @@ mod tests {
             .unwrap()
             .set_state(ThreadState::BlockedOnSend {
                 endpoint: object(10),
+                sender_cpu: cpu(0),
                 badge: 7,
                 can_grant: true,
                 can_grant_reply: false,
                 is_call: true,
+                payload: IpcPayload::empty(),
             });
         let mut scheduler = scheduler_with_current(None, Some(2));
 
@@ -1755,10 +1856,12 @@ mod tests {
             threads.state(thread(1)),
             Some(ThreadState::BlockedOnSend {
                 endpoint: object(10),
+                sender_cpu: cpu(0),
                 badge: 7,
                 can_grant: true,
                 can_grant_reply: false,
                 is_call: true,
+                payload: IpcPayload::empty(),
             })
         );
         assert!(reply.is_pending());
@@ -1781,10 +1884,12 @@ mod tests {
             .unwrap()
             .set_state(ThreadState::BlockedOnSend {
                 endpoint: object(10),
+                sender_cpu: cpu(3),
                 badge: 7,
                 can_grant: true,
                 can_grant_reply: false,
                 is_call: true,
+                payload: IpcPayload::empty(),
             });
         let mut scheduler = scheduler_with_current(None, Some(2));
 
@@ -1812,10 +1917,12 @@ mod tests {
             threads.state(thread(1)),
             Some(ThreadState::BlockedOnSend {
                 endpoint: object(10),
+                sender_cpu: cpu(3),
                 badge: 7,
                 can_grant: true,
                 can_grant_reply: false,
                 is_call: true,
+                payload: IpcPayload::empty(),
             })
         );
         assert!(!reply.is_pending());
