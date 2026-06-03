@@ -366,9 +366,15 @@ impl KernelState {
         &mut self,
         target: CapabilityDescriptor,
     ) -> Result<ExecutionOutcome, KernelExecutionError> {
-        self.cspace
+        let revocation = self
+            .cspace
             .revoke_descendants(target)
             .map_err(InvocationError::Cap)?;
+        for object in revocation.revoked_objects {
+            if !self.cspace.object_has_live_cap(object) {
+                self.objects.remove_inert(object);
+            }
+        }
         Ok(ExecutionOutcome::CapabilityMutation)
     }
 

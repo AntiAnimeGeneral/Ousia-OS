@@ -6,5 +6,5 @@
 
 ## 阅读顺序
 
-1. [00-sel4-like-rust-baseline.md](./00-sel4-like-rust-baseline.md)
+1. [00-sel4-baseline-rust-replica.md](./00-sel4-baseline-rust-replica.md)
    说明近期内核实现先在 Rust 中复刻 seL4 baseline，再在 baseline 闭环后评估 Ousia 平台语义扩展。

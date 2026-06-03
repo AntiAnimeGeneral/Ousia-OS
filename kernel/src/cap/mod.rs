@@ -278,6 +278,11 @@ pub struct CapabilityView {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CapabilityRevocation {
+    pub revoked_objects: Vec<ObjectId>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum CapError {
     SlotNotFound(SlotId),
     ObjectNotFound(ObjectId),
@@ -579,10 +584,13 @@ impl CapabilitySpace {
         Ok(())
     }
 
-    pub fn revoke_descendants(&mut self, descriptor: CapabilityDescriptor) -> Result<(), CapError> {
+    pub fn revoke_descendants(
+        &mut self,
+        descriptor: CapabilityDescriptor,
+    ) -> Result<CapabilityRevocation, CapError> {
         let target_object = self.validated_slot(descriptor)?.0.object;
         let descendants = self.collect_descendants(descriptor.slot);
-        let revoked_object_ids: Vec<_> = descendants
+        let revoked_object_ids: BTreeSet<_> = descendants
             .iter()
             .filter_map(|slot| self.slots.get(slot).map(|slot| slot.object))
             .filter(|object| *object != target_object)
@@ -590,12 +598,20 @@ impl CapabilitySpace {
         for slot in descendants {
             self.delete_slot(slot);
         }
-        for object in revoked_object_ids {
-            self.untyped_allocations.remove(&object);
+        for object in &revoked_object_ids {
+            self.untyped_allocations.remove(object);
         }
         self.reset_untyped_allocation(descriptor.slot);
 
-        Ok(())
+        Ok(CapabilityRevocation {
+            revoked_objects: revoked_object_ids.into_iter().collect(),
+        })
+    }
+
+    pub fn object_has_live_cap(&self, object: ObjectId) -> bool {
+        self.slots
+            .values()
+            .any(|slot| slot.alive && slot.object == object)
     }
 
     #[cfg(test)]

@@ -6,6 +6,7 @@ use kernel::{
         RetypeTarget, Rights, UntypedCap,
     },
     invocation::Invocation,
+    object::{KernelObjectRef, ObjectTableError},
     state::{ExecutionOutcome, InvocationContext, KernelExecutionError},
 };
 use support::{cpu, thread};
@@ -34,6 +35,14 @@ fn cnode_state() -> (kernel::state::KernelState, CapabilityDescriptor) {
 fn capability_descriptor(outcome: ExecutionOutcome, context: &str) -> CapabilityDescriptor {
     let ExecutionOutcome::Capability { descriptor } = outcome else {
         panic!("{context}: expected capability outcome");
+    };
+
+    descriptor
+}
+
+fn retyped_descriptor(outcome: ExecutionOutcome, context: &str) -> CapabilityDescriptor {
+    let ExecutionOutcome::Retyped { descriptor } = outcome else {
+        panic!("{context}: expected retyped outcome");
     };
 
     descriptor
@@ -247,6 +256,178 @@ fn cnode_revoke_untyped_descendants_recovers_capacity() {
         Capability::Frame(FrameCap {
             rights: Rights::READ,
         })
+    );
+}
+
+#[test]
+fn cnode_revoke_untyped_descendants_removes_unreachable_runtime_object() {
+    // Goal: seL4-style CNode revoke over an Untyped parent tears down unreachable
+    // runtime object state created by retype.
+    // Scope: host integration across CSpace lineage, Untyped capacity reset, and ObjectTable cleanup.
+    // Semantics: once the revoked Frame cap has no live aliases, ObjectTable no longer exposes it.
+    let (mut state, cnode) = cnode_state();
+    let root = state
+        .cspace_mut()
+        .insert_initial_capability(untyped(12))
+        .unwrap();
+    let frame = retyped_descriptor(
+        state
+            .execute_invocation(
+                InvocationContext::new(thread(1), cpu(0)),
+                root,
+                Invocation::UntypedRetype {
+                    target: RetypeTarget::Frame {
+                        rights: Rights::READ,
+                    },
+                },
+            )
+            .unwrap(),
+        "Frame retype",
+    );
+    let frame_object = state.cspace().lookup(frame).unwrap().object;
+
+    assert_eq!(
+        state.objects().get(frame_object),
+        Ok(KernelObjectRef::Frame { size_bits: 12 })
+    );
+    assert_eq!(
+        state.execute_invocation(
+            InvocationContext::new(thread(1), cpu(0)),
+            cnode,
+            Invocation::CNodeRevoke { target: root },
+        ),
+        Ok(ExecutionOutcome::CapabilityMutation)
+    );
+
+    assert!(matches!(
+        state.cspace().lookup(frame),
+        Err(CapError::SlotNotFound(_))
+    ));
+    assert_eq!(
+        state.objects().get(frame_object),
+        Err(ObjectTableError::ObjectNotFound {
+            object: frame_object,
+        })
+    );
+    let recycled = retyped_descriptor(
+        state
+            .execute_invocation(
+                InvocationContext::new(thread(1), cpu(0)),
+                root,
+                Invocation::UntypedRetype {
+                    target: RetypeTarget::Frame {
+                        rights: Rights::READ,
+                    },
+                },
+            )
+            .unwrap(),
+        "Frame retype after revoke",
+    );
+    let recycled_object = state.cspace().lookup(recycled).unwrap().object;
+    assert_eq!(
+        state.objects().get(recycled_object),
+        Ok(KernelObjectRef::Frame { size_bits: 12 })
+    );
+}
+
+#[test]
+fn cnode_revoke_typed_descendants_keeps_target_runtime_object() {
+    // Goal: CNode revoke follows seL4 descendant semantics without deleting the target cap's object.
+    // Scope: host integration across Endpoint retype, CNode copy, CNode revoke, and ObjectTable cleanup.
+    // Semantics: revoked aliases disappear, but the target Endpoint remains live and keeps runtime state.
+    let (mut state, cnode) = cnode_state();
+    let root = state
+        .cspace_mut()
+        .insert_initial_capability(untyped(12))
+        .unwrap();
+    let endpoint = retyped_descriptor(
+        state
+            .execute_invocation(
+                InvocationContext::new(thread(1), cpu(0)),
+                root,
+                Invocation::UntypedRetype {
+                    target: RetypeTarget::Endpoint,
+                },
+            )
+            .unwrap(),
+        "Endpoint retype",
+    );
+    let endpoint_object = state.cspace().lookup(endpoint).unwrap().object;
+    let alias = capability_descriptor(
+        state
+            .execute_invocation(
+                InvocationContext::new(thread(1), cpu(0)),
+                cnode,
+                Invocation::CNodeCopy {
+                    source: endpoint,
+                    requested_rights: Rights::READ,
+                },
+            )
+            .unwrap(),
+        "Endpoint alias copy",
+    );
+
+    assert_eq!(
+        state.execute_invocation(
+            InvocationContext::new(thread(1), cpu(0)),
+            cnode,
+            Invocation::CNodeRevoke { target: endpoint },
+        ),
+        Ok(ExecutionOutcome::CapabilityMutation)
+    );
+
+    assert!(state.cspace().lookup(endpoint).is_ok());
+    assert!(matches!(
+        state.cspace().lookup(alias),
+        Err(CapError::SlotNotFound(_))
+    ));
+    assert_eq!(
+        state.objects().get(endpoint_object),
+        Ok(KernelObjectRef::Endpoint)
+    );
+}
+
+#[test]
+fn cnode_revoke_untyped_endpoint_keeps_runtime_object_until_finalisation_path() {
+    // Goal: CNode revoke does not pretend Endpoint finalisation is implemented by
+    // deleting ObjectTable state directly.
+    // Scope: host integration across Untyped retype, CNode revoke, and conservative cleanup.
+    // Semantics: the Endpoint cap is gone, while runtime object state waits for explicit finaliseCap alignment.
+    let (mut state, cnode) = cnode_state();
+    let root = state
+        .cspace_mut()
+        .insert_initial_capability(untyped(12))
+        .unwrap();
+    let endpoint = retyped_descriptor(
+        state
+            .execute_invocation(
+                InvocationContext::new(thread(1), cpu(0)),
+                root,
+                Invocation::UntypedRetype {
+                    target: RetypeTarget::Endpoint,
+                },
+            )
+            .unwrap(),
+        "Endpoint retype",
+    );
+    let endpoint_object = state.cspace().lookup(endpoint).unwrap().object;
+
+    assert_eq!(
+        state.execute_invocation(
+            InvocationContext::new(thread(1), cpu(0)),
+            cnode,
+            Invocation::CNodeRevoke { target: root },
+        ),
+        Ok(ExecutionOutcome::CapabilityMutation)
+    );
+
+    assert!(matches!(
+        state.cspace().lookup(endpoint),
+        Err(CapError::SlotNotFound(_))
+    ));
+    assert_eq!(
+        state.objects().get(endpoint_object),
+        Ok(KernelObjectRef::Endpoint)
     );
 }
 

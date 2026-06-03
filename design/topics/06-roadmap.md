@@ -6,7 +6,7 @@
 
 第一阶段实现遵循 [工程化复用策略](./02-engineering.md)：积极复用成熟库和现有内核 SDK 经验来降低工程风险，但所有复用都必须服从 Ousia 自己的 capability、通信、pager、驱动和 Package Cell 语义边界。
 
-近期阶段性目标是先做一个 [Phase 1 seL4 baseline Rust 复刻](../implementation/00-sel4-like-rust-baseline.md)。它不追求形式化验证，但必须用类型边界、不变量、测试和 review 纪律保证足够的工程正确性；Ousia 的 Portal、Operation、Communication Fabric、浏览器权限、服务授权、lease、session、Package Cell 和 Device Service 语义应在 baseline 闭环后映射或扩展。
+近期阶段性目标是先做一个 [Phase 1 seL4 baseline Rust 复刻](../implementation/00-sel4-baseline-rust-replica.md)。它不追求形式化验证，但必须用类型边界、不变量、测试和 review 纪律保证足够的工程正确性；Ousia 的 Portal、Operation、Communication Fabric、浏览器权限、服务授权、lease、session、Package Cell 和 Device Service 语义应在 baseline 闭环后映射或扩展。
 
 ## 非目标（第一阶段绝对不做）
 
@@ -21,9 +21,10 @@
 
 ```
 第 0 层: 微内核
-  调度+执行等级、地址空间+页表、Communication Fabric+能力句柄、
-  中断+时钟、IOMMU/DMA 仲裁、MemoryObject、启动句柄注入；
-  纯内核态 FS 方案还包含 Object Store 核心
+  Phase 1 先复刻 seL4 baseline：CSpace/CNode、Untyped/retype、
+  Endpoint/Notification/Reply、TCB、调度、地址空间基础和启动能力注入；
+  Communication Fabric、MemoryObject、IOMMU/DMA 仲裁和纯内核态 Object Store
+  只在 baseline 闭环后作为 Ousia 映射或扩展评估
 
 第 1 层: 基础系统服务
   名字服务(←内核启动句柄注入)、Object Namespace、Capsule 管理器、
@@ -47,19 +48,19 @@
 
 ## 第一阶段落地顺序
 
-| Phase                 | 需求               | 目标                                                                                     | 核心验证                                                    |
-| --------------------- | ------------------ | ---------------------------------------------------------------------------------------- | ----------------------------------------------------------- |
-| 0.5: 能力核心合同     | R7                 | CapSlot/CSpace 等价结构 + 派生链 + rights 单调性 + delete/revoke/destroy/generation 语义 | 派生 READ-only 后撤销父句柄后代；stale descriptor 明确失败  |
-| 1a: seL4 微内核 baseline | R5, R7             | QEMU 中启动内核，任务、CSpace/CNode、Untyped/retype、Endpoint/Notification/Reply、TCB、抢占调度和启动能力注入 | 两个任务通过 seL4 baseline IPC 传递能力并验证撤销语义        |
-| 1a.5: Ousia 通信映射  | R5, R6             | 在 seL4 baseline 闭环后评估 Portal/Operation/Continuation/EventPort/WaitSet 的映射与扩展 | 一个任务提交 Ousia Operation，另一个任务延迟完成并唤醒 Future |
-| 1b: 名字服务+Capsule  | R7, R10            | Service Graph bootstrap + Capsule 生命周期                                               | Capsule 通过名字服务发现并调用另一个 Capsule                |
-| 1c: Object Namespace  | R1, R2, R7, R8, R9 | 路径解析 + ProviderRoot + MountBinding + ObjectHandle 缓存与撤销                         | native 目录挂载 remote provider；应用拿到统一 ObjectHandle  |
-| 1d: MemoryObject      | R3, R4, R9         | 缺页处理 + 纯用户态 Pager / 纯内核 Object Store 两条供页路径                             | mmap 缺页正常供页；故障按所选 FS 放置方案处理               |
-| 1e: 最小对象存储      | R1, R2, R3         | 对象 CRUD + 元数据 + 标签 + tier-1 tree view；裁决用户态或内核态落地                     | OID 与 tree view 正交；在冻结 FS / VM ABI 前完成放置裁决    |
-| 1e.5: 身份与密钥预留  | R7, R11            | IdentityHandle + Device Owner / Policy Authority + Key Agent 元数据                      | PIN 不等于私钥或 root；加密 FS 可表达 key policy            |
-| 1f: Package Cell 原型 | R7, R10            | 声明式安装/激活/回滚/卸载 + 多版本并存                                                   | 安装两个依赖不同版本库的 Cell                               |
-| 1g: 驱动框架原型      | R4, R6, R7         | 设备能力句柄 + IOMMU 授权 + IOQueue/IOBuffer + 用户态 MMIO                               | 用户态 NVMe 队列提交/完成；驱动崩溃→撤销 DMA→复位→恢复      |
-| 1h: 兼容层            | R1, R2, R7, R8     | Linux 兼容域（类 WSL2 VM）+ 兼容域网关                                                   | 兼容域内运行 bash+gcc+编译 C 程序                           |
+| Phase                    | 需求               | 目标                                                                                                          | 核心验证                                                      |
+| ------------------------ | ------------------ | ------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------- |
+| 0.5: 能力核心合同        | R7                 | CapSlot/CSpace 等价结构 + 派生链 + rights 单调性 + delete/revoke/destroy/generation 语义                      | 派生 READ-only 后撤销父句柄后代；stale descriptor 明确失败    |
+| 1a: seL4 微内核 baseline | R5, R7             | QEMU 中启动内核，任务、CSpace/CNode、Untyped/retype、Endpoint/Notification/Reply、TCB、抢占调度和启动能力注入 | 两个任务通过 seL4 baseline IPC 传递能力并验证撤销语义         |
+| 1a.5: Ousia 通信映射     | R5, R6             | 在 seL4 baseline 闭环后评估 Portal/Operation/Continuation/EventPort/WaitSet 的映射与扩展                      | 一个任务提交 Ousia Operation，另一个任务延迟完成并唤醒 Future |
+| 1b: 名字服务+Capsule     | R7, R10            | Service Graph bootstrap + Capsule 生命周期                                                                    | Capsule 通过名字服务发现并调用另一个 Capsule                  |
+| 1c: Object Namespace     | R1, R2, R7, R8, R9 | 路径解析 + ProviderRoot + MountBinding + ObjectHandle 缓存与撤销                                              | native 目录挂载 remote provider；应用拿到统一 ObjectHandle    |
+| 1d: MemoryObject         | R3, R4, R9         | 缺页处理 + 纯用户态 Pager / 纯内核 Object Store 两条供页路径                                                  | mmap 缺页正常供页；故障按所选 FS 放置方案处理                 |
+| 1e: 最小对象存储         | R1, R2, R3         | 对象 CRUD + 元数据 + 标签 + tier-1 tree view；裁决用户态或内核态落地                                          | OID 与 tree view 正交；在冻结 FS / VM ABI 前完成放置裁决      |
+| 1e.5: 身份与密钥预留     | R7, R11            | IdentityHandle + Device Owner / Policy Authority + Key Agent 元数据                                           | PIN 不等于私钥或 root；加密 FS 可表达 key policy              |
+| 1f: Package Cell 原型    | R7, R10            | 声明式安装/激活/回滚/卸载 + 多版本并存                                                                        | 安装两个依赖不同版本库的 Cell                                 |
+| 1g: 驱动框架原型         | R4, R6, R7         | 设备能力句柄 + IOMMU 授权 + IOQueue/IOBuffer + 用户态 MMIO                                                    | 用户态 NVMe 队列提交/完成；驱动崩溃→撤销 DMA→复位→恢复        |
+| 1h: 兼容层               | R1, R2, R7, R8     | Linux 兼容域（类 WSL2 VM）+ 兼容域网关                                                                        | 兼容域内运行 bash+gcc+编译 C 程序                             |
 
 ## 设计判断标准
 

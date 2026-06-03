@@ -48,7 +48,7 @@
 | IPC 参考     | [notes/reference/00-ipc-sel4-fuchsia.md](./notes/reference/00-ipc-sel4-fuchsia.md) | 保存 seL4 / Fuchsia IPC 背景、机制和比较材料。             |
 | 事件等待参考 | [notes/reference/01-epoll-and-kqueue.md](./notes/reference/01-epoll-and-kqueue.md) | 比较 epoll / kqueue 的 wait set、ready notification 语义。 |
 | 设计分析     | [notes/analysis/README.md](./notes/analysis/README.md)                             | 保存 Ousia 设计判断、候选方案、SDK 草案和子系统路径矩阵。  |
-| 实现草案     | [implementation/README.md](./implementation/README.md)                             | 保存临时实现路线、代码演进草案和短期 reviewer 入口。        |
+| 实现草案     | [implementation/README.md](./implementation/README.md)                             | 保存临时实现路线、代码演进草案和短期 reviewer 入口。       |
 | FS/VM 分析   | [notes/analysis/00-fs-vm.md](./notes/analysis/00-fs-vm.md)                         | 保存 FS/VM 候选方案、调研、裁决标准和开放问题。            |
 
 ## 2. 文档层级
@@ -64,33 +64,33 @@
 | 专题层   | [topics/](./topics/)                   | 处理跨主线的边界问题、工程路线、兼容性和路线图。               |
 | 笔记层   | [notes/reference/](./notes/reference/) | 保存外部系统、外部机制和现有技术模式，不作为 Ousia 规范。      |
 | 分析层   | [notes/analysis/](./notes/analysis/)   | 保存 Ousia 设计推导、候选方案、草案和深挖，不作为最终规范。    |
-| 实现层   | [implementation/](./implementation/)   | 保存短期实现草案、代码演进说明和临时路线，不作为最终规范。    |
+| 实现层   | [implementation/](./implementation/)   | 保存短期实现草案、代码演进说明和临时路线，不作为最终规范。     |
 
 ## 3. 语义归属表
 
-| 语义                                                                                              | Owning 文档                                                                  | 引用方应如何处理                                 |
-| ------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------- | ------------------------------------------------ |
-| 文档地图、阅读顺序、归属规则                                                                      | 本文                                                                         | 只链接本文，不复制整张索引。                     |
-| 系统愿景、顶层目标、设计约束                                                                      | [target.md](./target.md)                                                     | 摘要引用，不重写目标表。                         |
-| 问题陈述和痛点案例                                                                                | [pain-points.md](./pain-points.md)                                           | 使用痛点编号或链接，不重新展开案例。             |
-| 硬需求、需求编号、抽象推导索引                                                                    | [requirements.md](./requirements.md)                                         | 只引用 `R#` / `D#`，不要复制完整表。             |
-| 术语定义                                                                                          | [glossary.md](./glossary.md)                                                 | 使用同一术语，不在章节内重新定义。               |
-| Capsule、Capability、能力转移与撤销                                                               | [core/01-capsule-and-capability.md](./core/01-capsule-and-capability.md)     | 其他章节说明所需能力，不定义能力模型。           |
-| Portal、Operation、Continuation、EventPort、SharedQueue、bypass session                           | [core/02-communication-fabric.md](./core/02-communication-fabric.md)         | 其他章节说明调用形态，不定义通信原语。           |
-| Phase 1 seL4 baseline Rust 复刻、短期 kernel 实现路线和 reviewer 入口                             | [implementation/00-sel4-like-rust-baseline.md](./implementation/00-sel4-like-rust-baseline.md) | core 文档只说明长期 Ousia 抽象，不把 Portal/Operation 写成 Phase 1 kernel baseline。 |
-| MemoryObject、Pager、缺页、映射和回写边界                                                         | [core/03-pager-and-memory.md](./core/03-pager-and-memory.md)                 | FS/VM 深挖只讨论方案和取舍。                     |
-| Hardware Core、Driver Host、IOQueue、IOBuffer、Doorbell、Fence、IOMMU 授权                        | [core/04-driver-and-kernel.md](./core/04-driver-and-kernel.md)               | reference 文档只保留背景和草案。                 |
-| Compute Domain、Execution Class、调度和功耗预算                                                   | [core/05-compute-and-scheduling.md](./core/05-compute-and-scheduling.md)     | 其他章节只声明资源需求和优先级传播。             |
-| Service Graph、服务发现、版本协商和 bootstrap                                                     | [core/06-service-graph.md](./core/06-service-graph.md)                       | Package Cell 和 Capsule 章节只消费服务组织结果。 |
-| Object Namespace、tier-1 tree view、Object Store、Stream、FS Provider、ProviderRoot、MountBinding | [core/07-data-and-filesystem.md](./core/07-data-and-filesystem.md)           | 其他章节只说明如何使用对象、命名和存储接口。     |
-| Package Cell、依赖解析、多版本并存、生命周期                                                      | [core/08-package-cell.md](./core/08-package-cell.md)                         | 环境章节只消费解析和激活结果。                   |
-| 同步/异步与 mmap 的张力                                                                           | [topics/00-async-and-mmap.md](./topics/00-async-and-mmap.md)                 | 主设计只保留最终契约。                           |
-| Linux 兼容域和兼容域网关                                                                          | [topics/01-compatibility.md](./topics/01-compatibility.md)                   | core 文档只定义原生接口。                        |
-| 实现语言、构建、测试、更新                                                                        | [topics/02-engineering.md](./topics/02-engineering.md)                       | 不重复具体子系统设计。                           |
-| Shell、交互工具和命令体验                                                                         | [topics/03-shell-and-tools.md](./topics/03-shell-and-tools.md)               | 不定义 Package Cell 或配置服务。                 |
-| 运行环境、配置服务、兼容域库视图                                                                  | [topics/04-environment-and-config.md](./topics/04-environment-and-config.md) | 不重新定义依赖解析。                             |
-| 身份、账户、Device Owner、Key Agent、FSKeyPolicy、信任和发布者                                    | [topics/05-identity-and-accounts.md](./topics/05-identity-and-accounts.md)   | 第一阶段只引用预留身份句柄和密钥策略元数据。     |
-| 第一阶段路线、非目标、阶段验收                                                                    | [topics/06-roadmap.md](./topics/06-roadmap.md)                               | 只引用需求编号和 owning 文档，不复制文档地图。   |
+| 语义                                                                                              | Owning 文档                                                                                    | 引用方应如何处理                                                                     |
+| ------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------ |
+| 文档地图、阅读顺序、归属规则                                                                      | 本文                                                                                           | 只链接本文，不复制整张索引。                                                         |
+| 系统愿景、顶层目标、设计约束                                                                      | [target.md](./target.md)                                                                       | 摘要引用，不重写目标表。                                                             |
+| 问题陈述和痛点案例                                                                                | [pain-points.md](./pain-points.md)                                                             | 使用痛点编号或链接，不重新展开案例。                                                 |
+| 硬需求、需求编号、抽象推导索引                                                                    | [requirements.md](./requirements.md)                                                           | 只引用 `R#` / `D#`，不要复制完整表。                                                 |
+| 术语定义                                                                                          | [glossary.md](./glossary.md)                                                                   | 使用同一术语，不在章节内重新定义。                                                   |
+| Capsule、Capability、能力转移与撤销                                                               | [core/01-capsule-and-capability.md](./core/01-capsule-and-capability.md)                       | 其他章节说明所需能力，不定义能力模型。                                               |
+| Portal、Operation、Continuation、EventPort、SharedQueue、bypass session                           | [core/02-communication-fabric.md](./core/02-communication-fabric.md)                           | 其他章节说明调用形态，不定义通信原语。                                               |
+| Phase 1 seL4 baseline Rust 复刻、短期 kernel 实现路线和 reviewer 入口                             | [implementation/00-sel4-baseline-rust-replica.md](./implementation/00-sel4-baseline-rust-replica.md) | core 文档只说明长期 Ousia 抽象，不把 Portal/Operation 写成 Phase 1 kernel baseline。 |
+| MemoryObject、Pager、缺页、映射和回写边界                                                         | [core/03-pager-and-memory.md](./core/03-pager-and-memory.md)                                   | FS/VM 深挖只讨论方案和取舍。                                                         |
+| Hardware Core、Driver Host、IOQueue、IOBuffer、Doorbell、Fence、IOMMU 授权                        | [core/04-driver-and-kernel.md](./core/04-driver-and-kernel.md)                                 | reference 文档只保留背景和草案。                                                     |
+| Compute Domain、Execution Class、调度和功耗预算                                                   | [core/05-compute-and-scheduling.md](./core/05-compute-and-scheduling.md)                       | 其他章节只声明资源需求和优先级传播。                                                 |
+| Service Graph、服务发现、版本协商和 bootstrap                                                     | [core/06-service-graph.md](./core/06-service-graph.md)                                         | Package Cell 和 Capsule 章节只消费服务组织结果。                                     |
+| Object Namespace、tier-1 tree view、Object Store、Stream、FS Provider、ProviderRoot、MountBinding | [core/07-data-and-filesystem.md](./core/07-data-and-filesystem.md)                             | 其他章节只说明如何使用对象、命名和存储接口。                                         |
+| Package Cell、依赖解析、多版本并存、生命周期                                                      | [core/08-package-cell.md](./core/08-package-cell.md)                                           | 环境章节只消费解析和激活结果。                                                       |
+| 同步/异步与 mmap 的张力                                                                           | [topics/00-async-and-mmap.md](./topics/00-async-and-mmap.md)                                   | 主设计只保留最终契约。                                                               |
+| Linux 兼容域和兼容域网关                                                                          | [topics/01-compatibility.md](./topics/01-compatibility.md)                                     | core 文档只定义原生接口。                                                            |
+| 实现语言、构建、测试、更新                                                                        | [topics/02-engineering.md](./topics/02-engineering.md)                                         | 不重复具体子系统设计。                                                               |
+| Shell、交互工具和命令体验                                                                         | [topics/03-shell-and-tools.md](./topics/03-shell-and-tools.md)                                 | 不定义 Package Cell 或配置服务。                                                     |
+| 运行环境、配置服务、兼容域库视图                                                                  | [topics/04-environment-and-config.md](./topics/04-environment-and-config.md)                   | 不重新定义依赖解析。                                                                 |
+| 身份、账户、Device Owner、Key Agent、FSKeyPolicy、信任和发布者                                    | [topics/05-identity-and-accounts.md](./topics/05-identity-and-accounts.md)                     | 第一阶段只引用预留身份句柄和密钥策略元数据。                                         |
+| 第一阶段路线、非目标、阶段验收                                                                    | [topics/06-roadmap.md](./topics/06-roadmap.md)                                                 | 只引用需求编号和 owning 文档，不复制文档地图。                                       |
 
 ## 4. AI 查漏补缺清单
 

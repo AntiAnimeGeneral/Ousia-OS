@@ -218,6 +218,19 @@ impl ObjectTable {
             .ok_or(ObjectTableError::ObjectNotFound { object })
     }
 
+    pub fn remove_inert(&mut self, object: ObjectId) -> Option<KernelObjectRef> {
+        match self.objects.get(&object)?.kind() {
+            KernelObjectKind::Frame | KernelObjectKind::CNode => self
+                .objects
+                .remove(&object)
+                .map(|object_ref| object_ref.as_ref()),
+            KernelObjectKind::Endpoint
+            | KernelObjectKind::Notification
+            | KernelObjectKind::Reply
+            | KernelObjectKind::Tcb => None,
+        }
+    }
+
     pub fn expect_kind(
         &self,
         object: ObjectId,
