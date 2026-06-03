@@ -13,6 +13,15 @@ pub struct ReplyCaller {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ReplyCallerParams {
+    pub caller: ObjectId,
+    pub target: ObjectId,
+    pub thread: ThreadId,
+    pub cpu: CpuId,
+    pub can_grant: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ReplyState {
     Empty,
     Pending { caller: ReplyCaller },
@@ -48,19 +57,13 @@ pub struct Reply {
 }
 
 impl ReplyCaller {
-    pub const fn new(
-        caller: ObjectId,
-        target: ObjectId,
-        thread: ThreadId,
-        cpu: CpuId,
-        can_grant: bool,
-    ) -> Self {
+    pub const fn new(params: ReplyCallerParams) -> Self {
         Self {
-            caller,
-            target,
-            thread,
-            cpu,
-            can_grant,
+            caller: params.caller,
+            target: params.target,
+            thread: params.thread,
+            cpu: params.cpu,
+            can_grant: params.can_grant,
         }
     }
 
@@ -161,7 +164,13 @@ mod tests {
     #[test]
     fn records_single_pending_caller() {
         let mut reply = Reply::new();
-        let caller = ReplyCaller::new(object(100), object(200), thread(1), cpu(0), true);
+        let caller = ReplyCaller::new(ReplyCallerParams {
+            caller: object(100),
+            target: object(200),
+            thread: thread(1),
+            cpu: cpu(0),
+            can_grant: true,
+        });
 
         assert_eq!(
             reply.record_caller(caller),
@@ -181,23 +190,23 @@ mod tests {
         let mut reply = Reply::new();
 
         reply
-            .record_caller(ReplyCaller::new(
-                object(100),
-                object(200),
-                thread(1),
-                cpu(0),
-                true,
-            ))
+            .record_caller(ReplyCaller::new(ReplyCallerParams {
+                caller: object(100),
+                target: object(200),
+                thread: thread(1),
+                cpu: cpu(0),
+                can_grant: true,
+            }))
             .unwrap();
 
         assert_eq!(
-            reply.record_caller(ReplyCaller::new(
-                object(101),
-                object(200),
-                thread(2),
-                cpu(1),
-                false,
-            )),
+            reply.record_caller(ReplyCaller::new(ReplyCallerParams {
+                caller: object(101),
+                target: object(200),
+                thread: thread(2),
+                cpu: cpu(1),
+                can_grant: false,
+            })),
             Err(ReplyError::AlreadyPending {
                 existing: thread(1),
             })
@@ -209,13 +218,13 @@ mod tests {
         let mut reply = Reply::new();
 
         reply
-            .record_caller(ReplyCaller::new(
-                object(100),
-                object(200),
-                thread(1),
-                cpu(0),
-                true,
-            ))
+            .record_caller(ReplyCaller::new(ReplyCallerParams {
+                caller: object(100),
+                target: object(200),
+                thread: thread(1),
+                cpu: cpu(0),
+                can_grant: true,
+            }))
             .unwrap();
 
         assert_eq!(

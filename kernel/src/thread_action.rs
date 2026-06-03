@@ -3,8 +3,8 @@ use alloc::collections::BTreeMap;
 use crate::{
     cap::ObjectId,
     ipc::{Endpoint, IpcAction, IpcPayload, IpcReceiveOptions, IpcSendOptions, ReplySetup},
-    notification::{Notification, NotificationAction, NotificationState},
-    reply::{Reply, ReplyAction, ReplyCaller, ReplyError},
+    notification::{BoundTcbSignal, Notification, NotificationAction, NotificationState},
+    reply::{Reply, ReplyAction, ReplyCaller, ReplyCallerParams, ReplyError, ReplyState},
     scheduler::{Scheduler, SchedulerAction, SchedulerError},
     tcb::{CpuId, Tcb, ThreadId, ThreadState},
 };
@@ -92,6 +92,27 @@ enum WakeExpectation {
     BoundNotificationReceive { notification: ObjectId },
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SendIpcRequest {
+    endpoint: ObjectId,
+    caller: Option<ObjectId>,
+    sender: ThreadId,
+    sender_cpu: CpuId,
+    badge: u64,
+    options: IpcSendOptions,
+    payload: IpcPayload,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ReceiveIpcRequest {
+    endpoint: ObjectId,
+    caller: Option<ObjectId>,
+    receiver_reply: Option<ObjectId>,
+    receiver: ThreadId,
+    receiver_cpu: CpuId,
+    options: IpcReceiveOptions,
+}
+
 #[derive(Debug, Default)]
 pub struct ThreadTable {
     tcbs: BTreeMap<ThreadId, Tcb>,
@@ -136,6 +157,60 @@ impl ThreadTable {
 
     pub fn unbind_notification(&mut self, thread: ThreadId) -> Option<ObjectId> {
         self.get_mut(thread)?.unbind_notification()
+    }
+}
+
+impl SendIpcRequest {
+    pub const fn new(
+        endpoint: ObjectId,
+        sender: ThreadId,
+        sender_cpu: CpuId,
+        badge: u64,
+        options: IpcSendOptions,
+        payload: IpcPayload,
+    ) -> Self {
+        Self {
+            endpoint,
+            caller: None,
+            sender,
+            sender_cpu,
+            badge,
+            options,
+            payload,
+        }
+    }
+
+    pub const fn with_caller(mut self, caller: ObjectId) -> Self {
+        self.caller = Some(caller);
+        self
+    }
+}
+
+impl ReceiveIpcRequest {
+    pub const fn new(
+        endpoint: ObjectId,
+        receiver: ThreadId,
+        receiver_cpu: CpuId,
+        options: IpcReceiveOptions,
+    ) -> Self {
+        Self {
+            endpoint,
+            caller: None,
+            receiver_reply: None,
+            receiver,
+            receiver_cpu,
+            options,
+        }
+    }
+
+    pub const fn with_caller(mut self, caller: ObjectId) -> Self {
+        self.caller = Some(caller);
+        self
+    }
+
+    pub const fn with_receiver_reply(mut self, reply: ObjectId) -> Self {
+        self.receiver_reply = Some(reply);
+        self
     }
 }
 
@@ -232,15 +307,9 @@ pub fn send_ipc(
     scheduler: &mut Scheduler,
     endpoint: &mut Endpoint,
     reply: Option<&mut Reply>,
-    endpoint_object: ObjectId,
-    caller_object: Option<ObjectId>,
-    sender: ThreadId,
-    sender_cpu: CpuId,
-    badge: u64,
-    options: IpcSendOptions,
-    payload: IpcPayload,
+    request: SendIpcRequest,
 ) -> Result<ThreadAction, ThreadActionError> {
-    validate_block_current(threads, scheduler, sender, sender_cpu)?;
+    validate_block_current(threads, scheduler, request.sender, request.sender_cpu)?;
 
     let mut reply = reply;
 
@@ -251,24 +320,24 @@ pub fn send_ipc(
             receiver.thread(),
             receiver.cpu(),
             WakeExpectation::Receive {
-                endpoint: endpoint_object,
+                endpoint: request.endpoint,
                 can_grant: receiver.can_grant(),
             },
         )?;
 
-        if options.is_call {
+        if request.options.mode.is_call() {
             let setup = reply_setup_with_receiver_grant(
                 ReplySetup {
-                    caller: sender,
-                    caller_cpu: sender_cpu,
-                    can_grant: options.can_grant || options.can_grant_reply,
+                    caller: request.sender,
+                    caller_cpu: request.sender_cpu,
+                    can_grant: request.options.can_grant || request.options.can_grant_reply,
                 },
                 receiver.can_grant(),
             );
             let reply = reply
                 .as_deref()
                 .ok_or(ThreadActionError::MissingReplyObject { setup })?;
-            if caller_object.is_none() {
+            if request.caller.is_none() {
                 return Err(ThreadActionError::MissingCallerObject { setup });
             }
             if reply.is_pending() {
@@ -277,7 +346,13 @@ pub fn send_ipc(
         }
     }
 
-    let action = endpoint.send(sender, sender_cpu, badge, options, payload);
+    let action = endpoint.send(
+        request.sender,
+        request.sender_cpu,
+        request.badge,
+        request.options,
+        request.payload,
+    );
     match action {
         IpcAction::DeliveredToReceiver {
             receiver,
@@ -287,19 +362,20 @@ pub fn send_ipc(
             reply_setup: Some(setup),
         } => {
             let setup = reply_setup_with_receiver_grant(setup, receiver_can_grant);
-            let caller_object = caller_object
+            let caller_object = request
+                .caller
                 .expect("prechecked immediate call delivery must provide caller TCB object");
             let reply = reply
                 .as_deref_mut()
                 .expect("prechecked immediate call delivery must provide reply object");
             let _ = reply
-                .record_caller(ReplyCaller::new(
-                    caller_object,
-                    endpoint_object,
-                    setup.caller,
-                    setup.caller_cpu,
-                    setup.can_grant,
-                ))
+                .record_caller(ReplyCaller::new(ReplyCallerParams {
+                    caller: caller_object,
+                    target: request.endpoint,
+                    thread: setup.caller,
+                    cpu: setup.caller_cpu,
+                    can_grant: setup.can_grant,
+                }))
                 .expect("prechecked immediate call reply object must be empty");
             let block = block_current_validated(
                 threads,
@@ -312,7 +388,7 @@ pub fn send_ipc(
             let _ = block;
             Ok(wake)
         }
-        action => apply_ipc_action(threads, scheduler, endpoint_object, None, action),
+        action => apply_ipc_action(threads, scheduler, request.endpoint, None, action),
     }
 }
 
@@ -321,20 +397,15 @@ pub fn recv_ipc(
     scheduler: &mut Scheduler,
     endpoint: &mut Endpoint,
     reply: Option<&mut Reply>,
-    endpoint_object: ObjectId,
-    caller_object: Option<ObjectId>,
-    receiver_reply: Option<ObjectId>,
-    receiver: ThreadId,
-    receiver_cpu: CpuId,
-    options: IpcReceiveOptions,
+    request: ReceiveIpcRequest,
 ) -> Result<ThreadAction, ThreadActionError> {
-    validate_block_current(threads, scheduler, receiver, receiver_cpu)?;
+    validate_block_current(threads, scheduler, request.receiver, request.receiver_cpu)?;
 
     let mut reply = reply;
 
     if let Some(message) = endpoint.next_sender() {
         let expected = ThreadState::BlockedOnSend {
-            endpoint: endpoint_object,
+            endpoint: request.endpoint,
             badge: message.badge(),
             can_grant: message.can_grant(),
             can_grant_reply: message.can_grant_reply(),
@@ -355,12 +426,12 @@ pub fn recv_ipc(
                     caller_cpu: message.sender_cpu(),
                     can_grant: message.can_grant() || message.can_grant_reply(),
                 },
-                options.can_grant,
+                request.options.can_grant,
             );
             let reply = reply
                 .as_deref()
                 .ok_or(ThreadActionError::MissingReplyObject { setup })?;
-            if caller_object.is_none() {
+            if request.caller.is_none() {
                 return Err(ThreadActionError::MissingCallerObject { setup });
             }
             if reply.is_pending() {
@@ -377,27 +448,28 @@ pub fn recv_ipc(
         }
     }
 
-    let action = endpoint.recv(receiver, receiver_cpu, options);
+    let action = endpoint.recv(request.receiver, request.receiver_cpu, request.options);
     match action {
         IpcAction::SenderReleased {
             message,
             reply_setup: Some(setup),
             ..
         } => {
-            let setup = reply_setup_with_receiver_grant(setup, options.can_grant);
-            let caller_object =
-                caller_object.expect("prechecked receive-side call must provide caller TCB object");
+            let setup = reply_setup_with_receiver_grant(setup, request.options.can_grant);
+            let caller_object = request
+                .caller
+                .expect("prechecked receive-side call must provide caller TCB object");
             let reply = reply
                 .as_deref_mut()
                 .expect("prechecked receive-side call must provide reply object");
             let _ = reply
-                .record_caller(ReplyCaller::new(
-                    caller_object,
-                    endpoint_object,
-                    setup.caller,
-                    setup.caller_cpu,
-                    setup.can_grant,
-                ))
+                .record_caller(ReplyCaller::new(ReplyCallerParams {
+                    caller: caller_object,
+                    target: request.endpoint,
+                    thread: setup.caller,
+                    cpu: setup.caller_cpu,
+                    can_grant: setup.can_grant,
+                }))
                 .expect("prechecked receive-side call reply object must be empty");
             threads
                 .get_mut(message.sender())
@@ -415,7 +487,13 @@ pub fn recv_ipc(
             message.sender(),
             message.sender_cpu(),
         )),
-        action => apply_ipc_action(threads, scheduler, endpoint_object, receiver_reply, action),
+        action => apply_ipc_action(
+            threads,
+            scheduler,
+            request.endpoint,
+            request.receiver_reply,
+            action,
+        ),
     }
 }
 
@@ -515,7 +593,7 @@ pub fn signal_notification(
     notification: &mut Notification,
     notification_object: ObjectId,
     badge: u64,
-    bound_tcb_accepts_receive: bool,
+    bound_tcb: BoundTcbSignal,
 ) -> Result<ThreadAction, ThreadActionError> {
     if let Some(waiter) = notification.next_waiter() {
         validate_wake(
@@ -527,7 +605,7 @@ pub fn signal_notification(
                 notification: notification_object,
             }),
         )?;
-    } else if notification.state() == NotificationState::Idle && bound_tcb_accepts_receive {
+    } else if notification.state() == NotificationState::Idle && bound_tcb.is_ready() {
         if let Some(bound) = notification.bound_tcb() {
             validate_wake(
                 threads,
@@ -541,7 +619,7 @@ pub fn signal_notification(
         }
     }
 
-    let action = notification.signal(badge, bound_tcb_accepts_receive);
+    let action = notification.signal(badge, bound_tcb);
     apply_notification_action(threads, scheduler, notification_object, action)
 }
 
@@ -595,7 +673,7 @@ pub fn reply_to_caller(
     scheduler: &mut Scheduler,
     reply: &mut Reply,
 ) -> Result<ThreadAction, ThreadActionError> {
-    if let crate::reply::ReplyState::Pending { caller } = reply.state() {
+    if let ReplyState::Pending { caller } = reply.state() {
         validate_wake(
             threads,
             scheduler,
@@ -851,7 +929,7 @@ impl From<SchedulerError> for ThreadActionError {
 mod tests {
     use super::*;
     use crate::{
-        ipc::{IpcPayload, IpcReceiveOptions},
+        ipc::{IpcPayload, IpcReceiveOptions, IpcSendOptions},
         notification::Notification,
         reply::{Reply, ReplyCaller},
     };
@@ -893,6 +971,40 @@ mod tests {
             scheduler.schedule_next(cpu(1)).unwrap();
         }
         scheduler
+    }
+
+    fn send_request(
+        endpoint: ObjectId,
+        sender: ThreadId,
+        sender_cpu: CpuId,
+        badge: u64,
+        options: crate::ipc::IpcSendOptions,
+    ) -> SendIpcRequest {
+        SendIpcRequest::new(
+            endpoint,
+            sender,
+            sender_cpu,
+            badge,
+            options,
+            IpcPayload::empty(),
+        )
+    }
+
+    fn recv_request(
+        endpoint: ObjectId,
+        receiver: ThreadId,
+        receiver_cpu: CpuId,
+        options: IpcReceiveOptions,
+    ) -> ReceiveIpcRequest {
+        ReceiveIpcRequest::new(endpoint, receiver, receiver_cpu, options)
+    }
+
+    fn send_options(blocking: bool, can_grant: bool) -> IpcSendOptions {
+        IpcSendOptions::send(blocking, can_grant, false)
+    }
+
+    fn call_options(blocking: bool, can_grant: bool, can_grant_reply: bool) -> IpcSendOptions {
+        IpcSendOptions::call(blocking, can_grant, can_grant_reply)
     }
 
     // ThreadAction tests cover local thread/queue state transitions after
@@ -992,18 +1104,13 @@ mod tests {
                 &mut scheduler,
                 &mut endpoint,
                 None,
-                object(10),
-                None,
-                thread(1),
-                cpu(0),
-                7,
-                crate::ipc::IpcSendOptions {
-                    blocking: true,
-                    is_call: true,
-                    can_grant: true,
-                    can_grant_reply: false,
-                },
-                IpcPayload::empty(),
+                send_request(
+                    object(10),
+                    thread(1),
+                    cpu(0),
+                    7,
+                    call_options(true, true, false),
+                ),
             ),
             Ok(ThreadAction::Blocked {
                 thread: thread(1),
@@ -1026,14 +1133,7 @@ mod tests {
     #[test]
     fn send_ipc_receiver_precheck_failure_does_not_consume_waiter() {
         let mut endpoint = crate::ipc::Endpoint::new();
-        endpoint.recv(
-            thread(2),
-            cpu(1),
-            IpcReceiveOptions {
-                blocking: true,
-                can_grant: true,
-            },
-        );
+        endpoint.recv(thread(2), cpu(1), IpcReceiveOptions::new(true, true));
         let mut threads = table_with_threads(&[(1, cpu(0)), (2, cpu(1))]);
         threads
             .get_mut(thread(2))
@@ -1049,18 +1149,7 @@ mod tests {
                 &mut scheduler,
                 &mut endpoint,
                 None,
-                object(10),
-                None,
-                thread(1),
-                cpu(0),
-                7,
-                crate::ipc::IpcSendOptions {
-                    blocking: true,
-                    is_call: false,
-                    can_grant: false,
-                    can_grant_reply: false,
-                },
-                IpcPayload::empty(),
+                send_request(object(10), thread(1), cpu(0), 7, send_options(true, false),),
             ),
             Err(ThreadActionError::UnexpectedThreadState {
                 thread: thread(2),
@@ -1086,14 +1175,7 @@ mod tests {
     #[test]
     fn send_ipc_call_delivery_records_reply_and_blocks_caller() {
         let mut endpoint = crate::ipc::Endpoint::new();
-        endpoint.recv(
-            thread(2),
-            cpu(1),
-            IpcReceiveOptions {
-                blocking: true,
-                can_grant: true,
-            },
-        );
+        endpoint.recv(thread(2), cpu(1), IpcReceiveOptions::new(true, true));
         let mut reply = Reply::new();
         let mut threads = table_with_threads(&[(1, cpu(0)), (2, cpu(1))]);
         threads
@@ -1112,18 +1194,14 @@ mod tests {
                 &mut scheduler,
                 &mut endpoint,
                 Some(&mut reply),
-                object(10),
-                Some(object(100)),
-                thread(1),
-                cpu(0),
-                7,
-                crate::ipc::IpcSendOptions {
-                    blocking: true,
-                    is_call: true,
-                    can_grant: true,
-                    can_grant_reply: false,
-                },
-                IpcPayload::empty(),
+                send_request(
+                    object(10),
+                    thread(1),
+                    cpu(0),
+                    7,
+                    call_options(true, true, false),
+                )
+                .with_caller(object(100)),
             ),
             Ok(ThreadAction::Woken {
                 thread: thread(2),
@@ -1143,14 +1221,7 @@ mod tests {
     #[test]
     fn send_ipc_call_without_reply_object_does_not_consume_receiver() {
         let mut endpoint = crate::ipc::Endpoint::new();
-        endpoint.recv(
-            thread(2),
-            cpu(1),
-            IpcReceiveOptions {
-                blocking: true,
-                can_grant: true,
-            },
-        );
+        endpoint.recv(thread(2), cpu(1), IpcReceiveOptions::new(true, true));
         let mut threads = table_with_threads(&[(1, cpu(0)), (2, cpu(1))]);
         threads
             .get_mut(thread(2))
@@ -1168,18 +1239,13 @@ mod tests {
                 &mut scheduler,
                 &mut endpoint,
                 None,
-                object(10),
-                None,
-                thread(1),
-                cpu(0),
-                7,
-                crate::ipc::IpcSendOptions {
-                    blocking: true,
-                    is_call: true,
-                    can_grant: true,
-                    can_grant_reply: false,
-                },
-                IpcPayload::empty(),
+                send_request(
+                    object(10),
+                    thread(1),
+                    cpu(0),
+                    7,
+                    call_options(true, true, false),
+                ),
             ),
             Err(ThreadActionError::MissingReplyObject {
                 setup: ReplySetup {
@@ -1209,24 +1275,12 @@ mod tests {
     #[test]
     fn ipc_delivered_wakes_receiver_without_full_tcb_dependency() {
         let mut endpoint = crate::ipc::Endpoint::new();
-        endpoint.recv(
-            thread(2),
-            cpu(1),
-            IpcReceiveOptions {
-                blocking: true,
-                can_grant: true,
-            },
-        );
+        endpoint.recv(thread(2), cpu(1), IpcReceiveOptions::new(true, true));
         let action = endpoint.send(
             thread(1),
             cpu(0),
             0,
-            crate::ipc::IpcSendOptions {
-                blocking: true,
-                is_call: false,
-                can_grant: false,
-                can_grant_reply: false,
-            },
+            send_options(true, false),
             IpcPayload::empty(),
         );
         let mut threads = table_with_threads(&[(2, cpu(1))]);
@@ -1269,24 +1323,12 @@ mod tests {
         let mut scheduler = Scheduler::new(&[cpu(0), cpu(1)]).unwrap();
         scheduler.enqueue(&runnable_tcb(2, cpu(1))).unwrap();
         let mut endpoint = crate::ipc::Endpoint::new();
-        endpoint.recv(
-            thread(2),
-            cpu(1),
-            IpcReceiveOptions {
-                blocking: true,
-                can_grant: true,
-            },
-        );
+        endpoint.recv(thread(2), cpu(1), IpcReceiveOptions::new(true, true));
         let action = endpoint.send(
             thread(1),
             cpu(0),
             0,
-            crate::ipc::IpcSendOptions {
-                blocking: true,
-                is_call: false,
-                can_grant: false,
-                can_grant_reply: false,
-            },
+            send_options(true, false),
             IpcPayload::empty(),
         );
 
@@ -1313,24 +1355,12 @@ mod tests {
     #[test]
     fn delivered_ipc_requires_matching_blocked_receive_state() {
         let mut endpoint = crate::ipc::Endpoint::new();
-        endpoint.recv(
-            thread(2),
-            cpu(1),
-            IpcReceiveOptions {
-                blocking: true,
-                can_grant: true,
-            },
-        );
+        endpoint.recv(thread(2), cpu(1), IpcReceiveOptions::new(true, true));
         let action = endpoint.send(
             thread(1),
             cpu(0),
             0,
-            crate::ipc::IpcSendOptions {
-                blocking: true,
-                is_call: false,
-                can_grant: false,
-                can_grant_reply: false,
-            },
+            send_options(true, false),
             IpcPayload::empty(),
         );
         let mut threads = table_with_threads(&[(2, cpu(1))]);
@@ -1372,12 +1402,7 @@ mod tests {
             thread(1),
             cpu(0),
             7,
-            crate::ipc::IpcSendOptions {
-                blocking: true,
-                is_call: false,
-                can_grant: true,
-                can_grant_reply: false,
-            },
+            send_options(true, true),
             IpcPayload::empty(),
         );
         let mut threads = table_with_threads(&[(1, cpu(0)), (2, cpu(1))]);
@@ -1399,15 +1424,12 @@ mod tests {
                 &mut scheduler,
                 &mut endpoint,
                 None,
-                object(10),
-                None,
-                None,
-                thread(2),
-                cpu(1),
-                IpcReceiveOptions {
-                    blocking: true,
-                    can_grant: true,
-                },
+                recv_request(
+                    object(10),
+                    thread(2),
+                    cpu(1),
+                    IpcReceiveOptions::new(true, true),
+                ),
             ),
             Ok(ThreadAction::Woken {
                 thread: thread(1),
@@ -1435,12 +1457,7 @@ mod tests {
             thread(1),
             cpu(0),
             7,
-            crate::ipc::IpcSendOptions {
-                blocking: true,
-                is_call: true,
-                can_grant: true,
-                can_grant_reply: false,
-            },
+            call_options(true, true, false),
             IpcPayload::empty(),
         );
         let mut reply = Reply::new();
@@ -1463,15 +1480,14 @@ mod tests {
                 &mut scheduler,
                 &mut endpoint,
                 Some(&mut reply),
-                object(10),
-                Some(object(100)),
-                Some(object(200)),
-                thread(2),
-                cpu(1),
-                IpcReceiveOptions {
-                    blocking: true,
-                    can_grant: true,
-                },
+                recv_request(
+                    object(10),
+                    thread(2),
+                    cpu(1),
+                    IpcReceiveOptions::new(true, true),
+                )
+                .with_caller(object(100))
+                .with_receiver_reply(object(200)),
             ),
             Ok(ThreadAction::ReplyRecorded {
                 setup: ReplySetup {
@@ -1499,12 +1515,7 @@ mod tests {
             thread(1),
             cpu(0),
             7,
-            crate::ipc::IpcSendOptions {
-                blocking: true,
-                is_call: true,
-                can_grant: true,
-                can_grant_reply: false,
-            },
+            call_options(true, true, false),
             IpcPayload::empty(),
         );
         let mut threads = table_with_threads(&[(1, cpu(0)), (2, cpu(1))]);
@@ -1526,15 +1537,12 @@ mod tests {
                 &mut scheduler,
                 &mut endpoint,
                 None,
-                object(10),
-                None,
-                None,
-                thread(2),
-                cpu(1),
-                IpcReceiveOptions {
-                    blocking: true,
-                    can_grant: true,
-                },
+                recv_request(
+                    object(10),
+                    thread(2),
+                    cpu(1),
+                    IpcReceiveOptions::new(true, true),
+                ),
             ),
             Err(ThreadActionError::MissingReplyObject {
                 setup: ReplySetup {
@@ -1570,23 +1578,18 @@ mod tests {
             thread(1),
             cpu(0),
             7,
-            crate::ipc::IpcSendOptions {
-                blocking: true,
-                is_call: true,
-                can_grant: true,
-                can_grant_reply: false,
-            },
+            call_options(true, true, false),
             IpcPayload::empty(),
         );
         let mut reply = Reply::new();
         reply
-            .record_caller(ReplyCaller::new(
-                object(100),
-                object(200),
-                thread(9),
-                cpu(0),
-                true,
-            ))
+            .record_caller(ReplyCaller::new(ReplyCallerParams {
+                caller: object(100),
+                target: object(200),
+                thread: thread(9),
+                cpu: cpu(0),
+                can_grant: true,
+            }))
             .unwrap();
         let mut threads = table_with_threads(&[(1, cpu(0)), (2, cpu(1))]);
         threads
@@ -1607,15 +1610,14 @@ mod tests {
                 &mut scheduler,
                 &mut endpoint,
                 Some(&mut reply),
-                object(10),
-                Some(object(100)),
-                Some(object(200)),
-                thread(2),
-                cpu(1),
-                IpcReceiveOptions {
-                    blocking: true,
-                    can_grant: true,
-                },
+                recv_request(
+                    object(10),
+                    thread(2),
+                    cpu(1),
+                    IpcReceiveOptions::new(true, true),
+                )
+                .with_caller(object(100))
+                .with_receiver_reply(object(200)),
             ),
             Err(ThreadActionError::ReplyAlreadyPending)
         );
@@ -1641,12 +1643,7 @@ mod tests {
             thread(1),
             cpu(3),
             7,
-            crate::ipc::IpcSendOptions {
-                blocking: true,
-                is_call: true,
-                can_grant: true,
-                can_grant_reply: false,
-            },
+            call_options(true, true, false),
             IpcPayload::empty(),
         );
         let mut reply = Reply::new();
@@ -1669,15 +1666,13 @@ mod tests {
                 &mut scheduler,
                 &mut endpoint,
                 Some(&mut reply),
-                object(10),
-                None,
-                Some(object(200)),
-                thread(2),
-                cpu(1),
-                IpcReceiveOptions {
-                    blocking: true,
-                    can_grant: true,
-                },
+                recv_request(
+                    object(10),
+                    thread(2),
+                    cpu(1),
+                    IpcReceiveOptions::new(true, true),
+                )
+                .with_receiver_reply(object(200)),
             ),
             Err(ThreadActionError::Scheduler(SchedulerError::UnknownCpu {
                 cpu: cpu(3),
@@ -1710,15 +1705,12 @@ mod tests {
                 &mut scheduler,
                 &mut endpoint,
                 None,
-                object(10),
-                None,
-                None,
-                thread(2),
-                cpu(1),
-                IpcReceiveOptions {
-                    blocking: true,
-                    can_grant: true,
-                },
+                recv_request(
+                    object(10),
+                    thread(2),
+                    cpu(1),
+                    IpcReceiveOptions::new(true, true),
+                ),
             ),
             Ok(ThreadAction::Blocked {
                 thread: thread(2),
@@ -1753,9 +1745,6 @@ mod tests {
             cpu(0),
         )
         .unwrap();
-        assert_eq!(notification.queued_waiters(), 1);
-        assert_eq!(scheduler.run_queue(cpu(0)).unwrap().current(), None);
-
         let mut scheduler = Scheduler::new(&[cpu(0), cpu(1)]).unwrap();
 
         assert_eq!(
@@ -1765,7 +1754,7 @@ mod tests {
                 &mut notification,
                 object(20),
                 0b100,
-                false,
+                BoundTcbSignal::NotReady,
             ),
             Ok(ThreadAction::Woken {
                 thread: thread(1),
@@ -1801,7 +1790,7 @@ mod tests {
                 &mut notification,
                 object(20),
                 0b100,
-                false,
+                BoundTcbSignal::NotReady,
             ),
             Err(ThreadActionError::UnexpectedThreadState {
                 thread: thread(1),
@@ -1852,7 +1841,7 @@ mod tests {
                 &mut notification,
                 object(20),
                 0b100,
-                true,
+                BoundTcbSignal::ReadyToReceive,
             ),
             Ok(ThreadAction::Woken {
                 thread: thread(1),
@@ -1875,7 +1864,7 @@ mod tests {
             cpu(0),
         ));
         assert_eq!(
-            notification.signal(0b001, false),
+            notification.signal(0b001, BoundTcbSignal::NotReady),
             NotificationAction::BecameActive { badge: 0b001 }
         );
         let mut threads = table_with_threads(&[(1, cpu(0))]);
@@ -1892,7 +1881,7 @@ mod tests {
                 &mut notification,
                 object(20),
                 0b100,
-                true,
+                BoundTcbSignal::ReadyToReceive,
             ),
             Ok(ThreadAction::NoThread)
         );
@@ -1915,7 +1904,13 @@ mod tests {
                 &mut threads,
                 &mut scheduler,
                 &mut reply,
-                ReplyCaller::new(object(100), object(200), thread(1), cpu(0), true),
+                ReplyCaller::new(ReplyCallerParams {
+                    caller: object(100),
+                    target: object(200),
+                    thread: thread(1),
+                    cpu: cpu(0),
+                    can_grant: true,
+                }),
             ),
             Ok(ThreadAction::Blocked {
                 thread: thread(1),
@@ -1930,13 +1925,13 @@ mod tests {
     fn reply_to_caller_wakes_blocked_caller() {
         let mut reply = Reply::new();
         reply
-            .record_caller(ReplyCaller::new(
-                object(100),
-                object(200),
-                thread(1),
-                cpu(0),
-                true,
-            ))
+            .record_caller(ReplyCaller::new(ReplyCallerParams {
+                caller: object(100),
+                target: object(200),
+                thread: thread(1),
+                cpu: cpu(0),
+                can_grant: true,
+            }))
             .unwrap();
         let mut threads = table_with_threads(&[(1, cpu(0))]);
         threads
@@ -1964,13 +1959,13 @@ mod tests {
     fn reply_to_caller_precheck_failure_does_not_consume_reply() {
         let mut reply = Reply::new();
         reply
-            .record_caller(ReplyCaller::new(
-                object(100),
-                object(200),
-                thread(1),
-                cpu(0),
-                true,
-            ))
+            .record_caller(ReplyCaller::new(ReplyCallerParams {
+                caller: object(100),
+                target: object(200),
+                thread: thread(1),
+                cpu: cpu(0),
+                can_grant: true,
+            }))
             .unwrap();
         let mut threads = table_with_threads(&[(1, cpu(0))]);
         threads

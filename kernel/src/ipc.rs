@@ -29,14 +29,20 @@ pub struct IpcMessage {
     badge: u64,
     can_grant: bool,
     can_grant_reply: bool,
-    is_call: bool,
+    mode: IpcSendMode,
     payload: IpcPayload,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum IpcSendMode {
+    Send,
+    Call,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct IpcSendOptions {
     pub blocking: bool,
-    pub is_call: bool,
+    pub mode: IpcSendMode,
     pub can_grant: bool,
     pub can_grant_reply: bool,
 }
@@ -184,11 +190,46 @@ impl IpcMessage {
     }
 
     pub const fn is_call(self) -> bool {
-        self.is_call
+        self.mode.is_call()
     }
 
     pub const fn payload(self) -> IpcPayload {
         self.payload
+    }
+}
+
+impl IpcSendMode {
+    pub const fn is_call(self) -> bool {
+        matches!(self, Self::Call)
+    }
+}
+
+impl IpcSendOptions {
+    pub const fn send(blocking: bool, can_grant: bool, can_grant_reply: bool) -> Self {
+        Self {
+            blocking,
+            mode: IpcSendMode::Send,
+            can_grant,
+            can_grant_reply,
+        }
+    }
+
+    pub const fn call(blocking: bool, can_grant: bool, can_grant_reply: bool) -> Self {
+        Self {
+            blocking,
+            mode: IpcSendMode::Call,
+            can_grant,
+            can_grant_reply,
+        }
+    }
+}
+
+impl IpcReceiveOptions {
+    pub const fn new(blocking: bool, can_grant: bool) -> Self {
+        Self {
+            blocking,
+            can_grant,
+        }
     }
 }
 
@@ -215,7 +256,7 @@ impl Endpoint {
             badge,
             can_grant: options.can_grant,
             can_grant_reply: options.can_grant_reply,
-            is_call: options.is_call,
+            mode: options.mode,
             payload,
         };
 
@@ -236,7 +277,7 @@ impl Endpoint {
                     badge,
                     can_grant: options.can_grant,
                     can_grant_reply: options.can_grant_reply,
-                    is_call: options.is_call,
+                    is_call: options.mode.is_call(),
                 }
             }
             EndpointState::Recv => {
@@ -355,7 +396,7 @@ impl Endpoint {
 }
 
 fn reply_setup_for(message: IpcMessage) -> Option<ReplySetup> {
-    message.is_call.then_some(ReplySetup {
+    message.mode.is_call().then_some(ReplySetup {
         caller: message.sender,
         caller_cpu: message.sender_cpu,
         can_grant: message.can_grant || message.can_grant_reply,
@@ -375,44 +416,23 @@ mod tests {
     }
 
     fn blocking_send() -> IpcSendOptions {
-        IpcSendOptions {
-            blocking: true,
-            is_call: false,
-            can_grant: true,
-            can_grant_reply: false,
-        }
+        IpcSendOptions::send(true, true, false)
     }
 
     fn blocking_call() -> IpcSendOptions {
-        IpcSendOptions {
-            blocking: true,
-            is_call: true,
-            can_grant: true,
-            can_grant_reply: true,
-        }
+        IpcSendOptions::call(true, true, true)
     }
 
     fn nonblocking_send() -> IpcSendOptions {
-        IpcSendOptions {
-            blocking: false,
-            is_call: false,
-            can_grant: false,
-            can_grant_reply: false,
-        }
+        IpcSendOptions::send(false, false, false)
     }
 
     fn blocking_recv() -> IpcReceiveOptions {
-        IpcReceiveOptions {
-            blocking: true,
-            can_grant: true,
-        }
+        IpcReceiveOptions::new(true, true)
     }
 
     fn nonblocking_recv() -> IpcReceiveOptions {
-        IpcReceiveOptions {
-            blocking: false,
-            can_grant: false,
-        }
+        IpcReceiveOptions::new(false, false)
     }
 
     #[test]
@@ -488,7 +508,7 @@ mod tests {
                     badge: 7,
                     can_grant: true,
                     can_grant_reply: true,
-                    is_call: true,
+                    mode: IpcSendMode::Call,
                     payload: IpcPayload::new(&[10]).unwrap(),
                 },
             }
@@ -545,7 +565,7 @@ mod tests {
                     badge: 7,
                     can_grant: true,
                     can_grant_reply: true,
-                    is_call: true,
+                    mode: IpcSendMode::Call,
                     payload: IpcPayload::new(&[10]).unwrap(),
                 },
             }
@@ -611,7 +631,7 @@ mod tests {
                     badge: 7,
                     can_grant: true,
                     can_grant_reply: false,
-                    is_call: false,
+                    mode: IpcSendMode::Send,
                     payload: IpcPayload::new(&[10]).unwrap(),
                 },
             }

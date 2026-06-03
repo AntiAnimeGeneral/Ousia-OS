@@ -2,18 +2,20 @@ use alloc::vec::Vec;
 
 use crate::{
     cap::{
-        CapabilityDescriptor, CapabilitySpace, MintParams, ObjectId, ReplyCap, RetypeTarget, Rights,
+        CapabilityDescriptor, CapabilitySpace, MintParams, ObjectId, ReplyCap, RetypeDestination,
+        RetypeResult, RetypeTarget, Rights, SlotId,
     },
     invocation::{Invocation, InvocationError, InvocationOutcome, invoke},
     ipc::{Endpoint, IpcPayload, IpcReceiveOptions, IpcSendOptions},
-    notification::Notification,
+    notification::{BoundTcbSignal, Notification},
     object::{FrameObject, KernelObjectKind, KernelObjectRef, ObjectTable, ObjectTableError},
     reply::ReplyState,
     scheduler::{Scheduler, SchedulerError},
     tcb::{CpuId, Tcb, ThreadId, ThreadState},
     thread_action::{
-        ThreadAction, ThreadActionError, ThreadTable, poll_notification, recv_ipc, reply_to_caller,
-        resume_tcb, send_ipc, signal_notification, wait_notification,
+        ReceiveIpcRequest, SendIpcRequest, ThreadAction, ThreadActionError, ThreadTable,
+        poll_notification, recv_ipc, reply_to_caller, resume_tcb, send_ipc, signal_notification,
+        wait_notification,
     },
 };
 
@@ -200,17 +202,14 @@ impl KernelState {
                 can_grant,
                 can_grant_reply,
                 ..
-            } => self.execute_endpoint_send(
-                context,
-                endpoint,
-                badge,
-                IpcSendOptions {
-                    blocking,
-                    is_call,
-                    can_grant,
-                    can_grant_reply,
-                },
-            ),
+            } => {
+                let options = if is_call {
+                    IpcSendOptions::call(blocking, can_grant, can_grant_reply)
+                } else {
+                    IpcSendOptions::send(blocking, can_grant, can_grant_reply)
+                };
+                self.execute_endpoint_send(context, endpoint, badge, options)
+            }
             InvocationOutcome::ReceiveIpcAuthorized {
                 endpoint,
                 blocking,
@@ -218,10 +217,7 @@ impl KernelState {
             } => self.execute_endpoint_recv(
                 context,
                 endpoint,
-                IpcReceiveOptions {
-                    blocking,
-                    can_grant,
-                },
+                IpcReceiveOptions::new(blocking, can_grant),
             ),
             InvocationOutcome::NotificationSignalAuthorized {
                 notification,
@@ -279,7 +275,7 @@ impl KernelState {
         &mut self,
         source: CapabilityDescriptor,
         target: RetypeTarget,
-        destination: Option<crate::cap::RetypeDestination>,
+        destination: Option<RetypeDestination>,
     ) -> Result<ExecutionOutcome, KernelExecutionError> {
         let objects = match destination {
             Some(destination) => self
@@ -310,7 +306,7 @@ impl KernelState {
                     .lookup(descriptor)
                     .map_err(InvocationError::Cap)?
                     .object;
-                crate::cap::RetypeResult {
+                RetypeResult {
                     descriptors: alloc::vec![descriptor],
                     objects: alloc::vec![object],
                 }
@@ -368,7 +364,7 @@ impl KernelState {
     fn validate_retype_runtime_destinations(
         &self,
         target: &RetypeTarget,
-        objects: &[crate::cap::ObjectId],
+        objects: &[ObjectId],
     ) -> Result<(), KernelExecutionError> {
         match target {
             RetypeTarget::Endpoint
@@ -388,7 +384,7 @@ impl KernelState {
     fn execute_cnode_copy(
         &mut self,
         source: CapabilityDescriptor,
-        destination: crate::cap::SlotId,
+        destination: SlotId,
         requested_rights: Rights,
     ) -> Result<ExecutionOutcome, KernelExecutionError> {
         let descriptor = self
@@ -401,7 +397,7 @@ impl KernelState {
     fn execute_cnode_mint(
         &mut self,
         source: CapabilityDescriptor,
-        destination: crate::cap::SlotId,
+        destination: SlotId,
         requested_rights: Rights,
         params: MintParams,
     ) -> Result<ExecutionOutcome, KernelExecutionError> {
@@ -415,7 +411,7 @@ impl KernelState {
     fn execute_cnode_move(
         &mut self,
         source: CapabilityDescriptor,
-        destination: crate::cap::SlotId,
+        destination: SlotId,
     ) -> Result<ExecutionOutcome, KernelExecutionError> {
         let descriptor = self
             .cspace
@@ -552,7 +548,7 @@ impl KernelState {
         self.objects
             .expect_kind(endpoint, KernelObjectKind::Endpoint)?;
         let waiting_receiver = self.objects.endpoint(endpoint)?.next_receiver();
-        let reply = if options.is_call {
+        let reply = if options.mode.is_call() {
             match waiting_receiver {
                 Some(receiver) => self.reply_from_receiver_state(endpoint, receiver.thread())?,
                 None => None,
@@ -583,35 +579,42 @@ impl KernelState {
                 endpoint,
                 reply,
                 |endpoint_ref, reply_ref| {
-                    send_ipc(
-                        &mut self.threads,
-                        &mut self.scheduler,
-                        endpoint_ref,
-                        Some(reply_ref),
+                    let request = SendIpcRequest::new(
                         endpoint,
-                        caller_object,
                         context.current(),
                         context.cpu(),
                         badge,
                         options,
                         context.payload(),
                     )
+                    .with_caller(caller_object.expect("reply path must have caller object"));
+
+                    send_ipc(
+                        &mut self.threads,
+                        &mut self.scheduler,
+                        endpoint_ref,
+                        Some(reply_ref),
+                        request,
+                    )
                 },
             )??,
             None => {
                 let endpoint_ref = self.objects.endpoint_mut(endpoint)?;
-                send_ipc(
-                    &mut self.threads,
-                    &mut self.scheduler,
-                    endpoint_ref,
-                    None,
+                let request = SendIpcRequest::new(
                     endpoint,
-                    caller_object,
                     context.current(),
                     context.cpu(),
                     badge,
                     options,
                     context.payload(),
+                );
+
+                send_ipc(
+                    &mut self.threads,
+                    &mut self.scheduler,
+                    endpoint_ref,
+                    None,
+                    request,
                 )?
             }
         };
@@ -675,33 +678,40 @@ impl KernelState {
                 endpoint,
                 reply,
                 |endpoint_ref, reply_ref| {
+                    let mut request =
+                        ReceiveIpcRequest::new(endpoint, context.current(), context.cpu(), options)
+                            .with_receiver_reply(
+                                context
+                                    .reply()
+                                    .expect("reply path must provide receiver reply object"),
+                            );
+                    if let Some(caller_object) = caller_object {
+                        request = request.with_caller(caller_object);
+                    }
+
                     recv_ipc(
                         &mut self.threads,
                         &mut self.scheduler,
                         endpoint_ref,
                         Some(reply_ref),
-                        endpoint,
-                        caller_object,
-                        context.reply(),
-                        context.current(),
-                        context.cpu(),
-                        options,
+                        request,
                     )
                 },
             )??,
             None => {
                 let endpoint_ref = self.objects.endpoint_mut(endpoint)?;
+                let mut request =
+                    ReceiveIpcRequest::new(endpoint, context.current(), context.cpu(), options);
+                if let Some(receiver_reply) = context.reply() {
+                    request = request.with_receiver_reply(receiver_reply);
+                }
+
                 recv_ipc(
                     &mut self.threads,
                     &mut self.scheduler,
                     endpoint_ref,
                     None,
-                    endpoint,
-                    caller_object,
-                    context.reply(),
-                    context.current(),
-                    context.cpu(),
-                    options,
+                    request,
                 )?
             }
         };
@@ -728,15 +738,16 @@ impl KernelState {
     ) -> Result<ExecutionOutcome, KernelExecutionError> {
         self.objects
             .expect_kind(notification, KernelObjectKind::Notification)?;
-        let bound_tcb_accepts_receive = self
-            .objects
-            .notification(notification)?
-            .bound_tcb()
-            .is_some_and(|bound| {
-                self.threads
-                    .get(bound.thread())
-                    .is_some_and(|tcb| tcb.waits_on_bound_notification_receive(notification))
-            });
+        let bound_tcb = BoundTcbSignal::from_ready(
+            self.objects
+                .notification(notification)?
+                .bound_tcb()
+                .is_some_and(|bound| {
+                    self.threads
+                        .get(bound.thread())
+                        .is_some_and(|tcb| tcb.waits_on_bound_notification_receive(notification))
+                }),
+        );
         let notification_ref = self.objects.notification_mut(notification)?;
         let action = signal_notification(
             &mut self.threads,
@@ -744,7 +755,7 @@ impl KernelState {
             notification_ref,
             notification,
             badge,
-            bound_tcb_accepts_receive,
+            bound_tcb,
         )?;
         Ok(ExecutionOutcome::Thread(action))
     }
@@ -918,7 +929,7 @@ mod tests {
         cap::{Capability, EndpointCap, NotificationCap, ReplyCap, Rights},
         ipc::Endpoint,
         notification::{Notification, NotificationState},
-        reply::{Reply, ReplyCaller},
+        reply::{Reply, ReplyCaller, ReplyCallerParams},
         scheduler::{Scheduler, SchedulerAction},
         tcb::{Tcb, ThreadState},
     };
@@ -1093,7 +1104,7 @@ mod tests {
             .unwrap();
         let notification_object = cspace.object_of(notification_descriptor).unwrap();
         let mut notification = Notification::new();
-        notification.signal(0b100, false);
+        notification.signal(0b100, BoundTcbSignal::NotReady);
         let mut objects = ObjectTable::new();
         objects
             .insert_notification(notification_object, notification)
@@ -1186,13 +1197,13 @@ mod tests {
         let reply_object = cspace.object_of(reply_descriptor).unwrap();
         let mut reply = Reply::new();
         reply
-            .record_caller(ReplyCaller::new(
-                object(100),
-                object(200),
-                thread(1),
-                cpu(0),
-                true,
-            ))
+            .record_caller(ReplyCaller::new(ReplyCallerParams {
+                caller: object(100),
+                target: object(200),
+                thread: thread(1),
+                cpu: cpu(0),
+                can_grant: true,
+            }))
             .unwrap();
         let mut objects = ObjectTable::new();
         objects.insert_reply(reply_object, reply).unwrap();
@@ -1241,13 +1252,13 @@ mod tests {
         let reply_object = cspace.object_of(reply_descriptor).unwrap();
         let mut reply = Reply::new();
         reply
-            .record_caller(ReplyCaller::new(
-                object(100),
-                object(200),
-                thread(1),
-                cpu(0),
-                true,
-            ))
+            .record_caller(ReplyCaller::new(ReplyCallerParams {
+                caller: object(100),
+                target: object(200),
+                thread: thread(1),
+                cpu: cpu(0),
+                can_grant: true,
+            }))
             .unwrap();
         let mut objects = ObjectTable::new();
         objects.insert_reply(reply_object, reply).unwrap();
@@ -1377,13 +1388,13 @@ mod tests {
         assert_eq!(
             state.objects().reply(reply_object).unwrap().state(),
             ReplyState::Pending {
-                caller: ReplyCaller::new(
-                    caller_tcb_object,
-                    endpoint_object,
-                    thread(1),
-                    cpu(0),
-                    true
-                ),
+                caller: ReplyCaller::new(ReplyCallerParams {
+                    caller: caller_tcb_object,
+                    target: endpoint_object,
+                    thread: thread(1),
+                    cpu: cpu(0),
+                    can_grant: true,
+                }),
             }
         );
     }
@@ -1477,13 +1488,13 @@ mod tests {
         assert_eq!(
             state.objects().reply(reply_object).unwrap().state(),
             ReplyState::Pending {
-                caller: ReplyCaller::new(
-                    caller_tcb_object,
-                    endpoint_object,
-                    thread(1),
-                    cpu(0),
-                    false
-                ),
+                caller: ReplyCaller::new(ReplyCallerParams {
+                    caller: caller_tcb_object,
+                    target: endpoint_object,
+                    thread: thread(1),
+                    cpu: cpu(0),
+                    can_grant: false,
+                }),
             }
         );
     }

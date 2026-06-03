@@ -163,7 +163,7 @@ mod tests {
     use crate::invocation::{Invocation, invoke};
     use crate::ipc::{IpcError, IpcPayload, MAX_IPC_WORDS};
     use crate::object::{ObjectTable, ObjectTableError};
-    use crate::reply::{Reply, ReplyCaller, ReplyError};
+    use crate::reply::{Reply, ReplyCaller, ReplyCallerParams, ReplyError};
     use crate::scheduler::Scheduler;
     use crate::state::{InvocationContext, KernelState};
     use crate::tcb::{CpuId, Tcb, ThreadId, ThreadState};
@@ -425,24 +425,24 @@ mod tests {
         );
 
         reply
-            .record_caller(ReplyCaller::new(
-                ObjectId::new(1),
-                ObjectId::new(2),
-                crate::tcb::ThreadId::new(3),
-                crate::tcb::CpuId::new(0),
-                false,
-            ))
+            .record_caller(ReplyCaller::new(ReplyCallerParams {
+                caller: ObjectId::new(1),
+                target: ObjectId::new(2),
+                thread: ThreadId::new(3),
+                cpu: CpuId::new(0),
+                can_grant: false,
+            }))
             .unwrap();
 
         assert_eq!(
             reply
-                .record_caller(ReplyCaller::new(
-                    ObjectId::new(4),
-                    ObjectId::new(2),
-                    crate::tcb::ThreadId::new(5),
-                    crate::tcb::CpuId::new(1),
-                    true,
-                ))
+                .record_caller(ReplyCaller::new(ReplyCallerParams {
+                    caller: ObjectId::new(4),
+                    target: ObjectId::new(2),
+                    thread: ThreadId::new(5),
+                    cpu: CpuId::new(1),
+                    can_grant: true,
+                }))
                 .unwrap_err()
                 .error_code(),
             KernelErrorCode::IllegalOperation,

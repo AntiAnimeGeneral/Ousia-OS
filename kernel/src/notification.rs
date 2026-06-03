@@ -25,6 +25,12 @@ pub struct BoundTcb {
     cpu: CpuId,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BoundTcbSignal {
+    NotReady,
+    ReadyToReceive,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum NotificationAction {
     Delivered {
@@ -98,6 +104,20 @@ impl BoundTcb {
     }
 }
 
+impl BoundTcbSignal {
+    pub const fn from_ready(ready: bool) -> Self {
+        if ready {
+            Self::ReadyToReceive
+        } else {
+            Self::NotReady
+        }
+    }
+
+    pub const fn is_ready(self) -> bool {
+        matches!(self, Self::ReadyToReceive)
+    }
+}
+
 impl Notification {
     pub fn new() -> Self {
         Self {
@@ -116,11 +136,11 @@ impl Notification {
         self.bound_tcb.take()
     }
 
-    pub fn signal(&mut self, badge: u64, bound_tcb_accepts_receive: bool) -> NotificationAction {
+    pub fn signal(&mut self, badge: u64, bound_tcb: BoundTcbSignal) -> NotificationAction {
         match self.state {
             NotificationState::Idle | NotificationState::Active => {
                 if let (NotificationState::Idle, Some(bound_tcb), true) =
-                    (self.state, self.bound_tcb, bound_tcb_accepts_receive)
+                    (self.state, self.bound_tcb, bound_tcb.is_ready())
                 {
                     return NotificationAction::BoundReceiveCompleted {
                         tcb: bound_tcb.tcb,
@@ -259,11 +279,11 @@ mod tests {
         let mut notification = Notification::new();
 
         assert_eq!(
-            notification.signal(0b0010, false),
+            notification.signal(0b0010, BoundTcbSignal::NotReady),
             NotificationAction::BecameActive { badge: 0b0010 }
         );
         assert_eq!(
-            notification.signal(0b0100, false),
+            notification.signal(0b0100, BoundTcbSignal::NotReady),
             NotificationAction::BecameActive { badge: 0b0110 }
         );
         assert_eq!(notification.state(), NotificationState::Active);
@@ -274,7 +294,7 @@ mod tests {
     fn wait_consumes_active_badge() {
         let mut notification = Notification::new();
 
-        notification.signal(0b1010, false);
+        notification.signal(0b1010, BoundTcbSignal::NotReady);
 
         assert_eq!(
             notification.wait(thread(1), cpu(0)),
@@ -311,7 +331,7 @@ mod tests {
         notification.wait(thread(2), cpu(1));
 
         assert_eq!(
-            notification.signal(0b1000, false),
+            notification.signal(0b1000, BoundTcbSignal::NotReady),
             NotificationAction::Delivered {
                 receiver: thread(1),
                 receiver_cpu: cpu(0),
@@ -346,7 +366,7 @@ mod tests {
         notification.bind_tcb(bound);
 
         assert_eq!(
-            notification.signal(0b1000, true),
+            notification.signal(0b1000, BoundTcbSignal::ReadyToReceive),
             NotificationAction::BoundReceiveCompleted {
                 tcb: object(100),
                 receiver: thread(1),
@@ -366,7 +386,7 @@ mod tests {
         notification.bind_tcb(BoundTcb::new(object(100), thread(1), cpu(0)));
 
         assert_eq!(
-            notification.signal(0b0100, false),
+            notification.signal(0b0100, BoundTcbSignal::NotReady),
             NotificationAction::BecameActive { badge: 0b0100 }
         );
         assert_eq!(notification.state(), NotificationState::Active);
@@ -377,11 +397,11 @@ mod tests {
     fn active_bound_notification_accumulates_badge() {
         let mut notification = Notification::new();
 
-        notification.signal(0b0010, false);
+        notification.signal(0b0010, BoundTcbSignal::NotReady);
         notification.bind_tcb(BoundTcb::new(object(100), thread(1), cpu(0)));
 
         assert_eq!(
-            notification.signal(0b0100, true),
+            notification.signal(0b0100, BoundTcbSignal::ReadyToReceive),
             NotificationAction::BecameActive { badge: 0b0110 }
         );
         assert_eq!(notification.state(), NotificationState::Active);

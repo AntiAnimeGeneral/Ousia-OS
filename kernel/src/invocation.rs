@@ -1,6 +1,6 @@
 use crate::cap::{
     CapError, Capability, CapabilityDescriptor, CapabilitySpace, MintParams, ObjectId,
-    RetypeDestination, RetypeTarget, Rights,
+    RetypeDestination, RetypeTarget, Rights, SlotId,
 };
 use crate::tcb::{CpuId, ThreadId};
 
@@ -27,18 +27,18 @@ pub enum Invocation {
     },
     CNodeCopyInto {
         source: CapabilityDescriptor,
-        destination: crate::cap::SlotId,
+        destination: SlotId,
         requested_rights: Rights,
     },
     CNodeMintInto {
         source: CapabilityDescriptor,
-        destination: crate::cap::SlotId,
+        destination: SlotId,
         requested_rights: Rights,
         params: MintParams,
     },
     CNodeMoveInto {
         source: CapabilityDescriptor,
-        destination: crate::cap::SlotId,
+        destination: SlotId,
     },
     CNodeDelete {
         target: CapabilityDescriptor,
@@ -88,18 +88,18 @@ pub enum InvocationOutcome {
     },
     CNodeCopyAuthorized {
         source: CapabilityDescriptor,
-        destination: crate::cap::SlotId,
+        destination: SlotId,
         requested_rights: Rights,
     },
     CNodeMintAuthorized {
         source: CapabilityDescriptor,
-        destination: crate::cap::SlotId,
+        destination: SlotId,
         requested_rights: Rights,
         params: MintParams,
     },
     CNodeMoveAuthorized {
         source: CapabilityDescriptor,
-        destination: crate::cap::SlotId,
+        destination: SlotId,
     },
     CNodeDeleteAuthorized {
         target: CapabilityDescriptor,
@@ -731,7 +731,7 @@ mod tests {
         let source = cspace
             .insert_initial_capability(endpoint(Rights::READ | Rights::WRITE, 0x55))
             .unwrap();
-        let destination = crate::cap::SlotId::from_raw(30);
+        let destination = SlotId::from_raw(30);
 
         assert_eq!(
             invoke(
