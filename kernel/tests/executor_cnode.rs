@@ -77,7 +77,7 @@ fn cnode_copy_commits_derived_capability_through_executor() {
         .cspace_mut()
         .insert_initial_capability(endpoint(Rights::READ | Rights::WRITE, 0x42))
         .unwrap();
-    let destination = kernel::cap::SlotId::from_raw(39);
+    let destination = kernel::cap::SlotId::new(39);
 
     let copied = capability_descriptor(
         state
@@ -111,7 +111,7 @@ fn cnode_copy_into_commits_to_requested_empty_slot() {
         .cspace_mut()
         .insert_initial_capability(endpoint(Rights::READ | Rights::WRITE, 0x42))
         .unwrap();
-    let destination = kernel::cap::SlotId::from_raw(40);
+    let destination = kernel::cap::SlotId::new(40);
 
     let copied = capability_descriptor(
         state
@@ -185,7 +185,7 @@ fn cnode_mint_sets_badge_without_escalating_rights() {
         .cspace_mut()
         .insert_initial_capability(endpoint(Rights::READ | Rights::WRITE, 0))
         .unwrap();
-    let destination = kernel::cap::SlotId::from_raw(43);
+    let destination = kernel::cap::SlotId::new(43);
 
     let minted = capability_descriptor(
         state
@@ -219,7 +219,7 @@ fn cnode_mint_into_commits_badged_cap_to_requested_slot() {
         .cspace_mut()
         .insert_initial_capability(endpoint(Rights::READ | Rights::WRITE, 0))
         .unwrap();
-    let destination = kernel::cap::SlotId::from_raw(41);
+    let destination = kernel::cap::SlotId::new(41);
 
     let minted = capability_descriptor(
         state
@@ -290,7 +290,7 @@ fn cnode_mint_rejects_rebadging_badged_endpoint() {
         .cspace_mut()
         .insert_initial_capability(endpoint(Rights::READ | Rights::WRITE, 0x11))
         .unwrap();
-    let destination = kernel::cap::SlotId::from_raw(44);
+    let destination = kernel::cap::SlotId::new(44);
 
     assert_eq!(
         state.execute_invocation(
@@ -328,7 +328,7 @@ fn cnode_move_transfers_authority_and_invalidates_source_descriptor() {
         .insert_initial_capability(endpoint(Rights::READ, 0x22))
         .unwrap();
     let source_object = state.cspace().lookup(source).unwrap().object;
-    let destination = kernel::cap::SlotId::from_raw(45);
+    let destination = kernel::cap::SlotId::new(45);
 
     let moved = capability_descriptor(
         state
@@ -362,7 +362,7 @@ fn cnode_move_into_transfers_authority_to_requested_slot() {
         .insert_initial_capability(endpoint(Rights::READ, 0x22))
         .unwrap();
     let source_object = state.cspace().lookup(source).unwrap().object;
-    let destination = kernel::cap::SlotId::from_raw(42);
+    let destination = kernel::cap::SlotId::new(42);
 
     let moved = capability_descriptor(
         state
@@ -639,7 +639,7 @@ fn cnode_revoke_typed_descendants_keeps_target_runtime_object() {
                 cnode,
                 Invocation::CNodeMintInto {
                     source: endpoint,
-                    destination: kernel::cap::SlotId::from_raw(46),
+                    destination: kernel::cap::SlotId::new(46),
                     requested_rights: Rights::READ,
                     params: MintParams::badge(0x77),
                 },
@@ -960,7 +960,7 @@ fn cnode_copy_rejects_untyped_with_children_without_recovering_capacity() {
             cnode,
             Invocation::CNodeCopyInto {
                 source: root,
-                destination: kernel::cap::SlotId::from_raw(47),
+                destination: kernel::cap::SlotId::new(47),
                 requested_rights: Rights::NONE,
             },
         ),
@@ -994,7 +994,7 @@ fn cnode_copy_rights_failure_does_not_consume_new_slot() {
         .cspace_mut()
         .insert_initial_capability(endpoint(Rights::READ, 0x33))
         .unwrap();
-    let destination = kernel::cap::SlotId::from_raw(48);
+    let destination = kernel::cap::SlotId::new(48);
 
     assert_eq!(
         state.execute_invocation(
@@ -1050,18 +1050,18 @@ fn cnode_operation_requires_cnode_capability_without_mutating_source() {
     let cases = [
         Invocation::CNodeCopyInto {
             source: target,
-            destination: kernel::cap::SlotId::from_raw(49),
+            destination: kernel::cap::SlotId::new(49),
             requested_rights: Rights::READ,
         },
         Invocation::CNodeMintInto {
             source: target,
-            destination: kernel::cap::SlotId::from_raw(50),
+            destination: kernel::cap::SlotId::new(50),
             requested_rights: Rights::READ,
             params: MintParams::badge(0x45),
         },
         Invocation::CNodeMoveInto {
             source: target,
-            destination: kernel::cap::SlotId::from_raw(51),
+            destination: kernel::cap::SlotId::new(51),
         },
         Invocation::CNodeDelete { target },
         Invocation::CNodeRevoke { target },

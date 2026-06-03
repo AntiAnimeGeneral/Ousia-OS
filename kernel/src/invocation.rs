@@ -745,7 +745,7 @@ mod tests {
         let source = cspace
             .insert_initial_capability(endpoint(Rights::READ | Rights::WRITE, 0x55))
             .unwrap();
-        let destination = SlotId::from_raw(30);
+        let destination = SlotId::new(30);
 
         assert_eq!(
             invoke(

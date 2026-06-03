@@ -44,7 +44,7 @@ impl ObjectId {
 pub struct SlotId(u64);
 
 impl SlotId {
-    pub const fn from_raw(raw: u64) -> Self {
+    pub const fn new(raw: u64) -> Self {
         Self(raw)
     }
 
@@ -1726,7 +1726,7 @@ mod tests {
         let root = cspace
             .insert_initial_capability(badged_endpoint(Rights::READ | Rights::WRITE, 0x44))
             .unwrap();
-        let destination = SlotId::from_raw(30);
+        let destination = SlotId::new(30);
 
         let copy = cspace.copy_into(root, destination, Rights::READ).unwrap();
 

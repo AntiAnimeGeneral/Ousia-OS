@@ -271,7 +271,7 @@ fn untyped_retype_into_window_creates_all_runtime_objects() {
                     rights: Rights::READ,
                 },
                 destination: RetypeDestination {
-                    start: kernel::cap::SlotId::from_raw(30),
+                    start: kernel::cap::SlotId::new(30),
                     count: 2,
                 },
             },
@@ -307,7 +307,7 @@ fn untyped_retype_into_runtime_conflict_fails_before_cspace_commit() {
         .objects_mut()
         .insert_frame(kernel::cap::ObjectId::new(2), FrameObject::new(12))
         .unwrap();
-    let start = kernel::cap::SlotId::from_raw(40);
+    let start = kernel::cap::SlotId::new(40);
 
     assert_eq!(
         state.execute_invocation(
@@ -334,7 +334,7 @@ fn untyped_retype_into_runtime_conflict_fails_before_cspace_commit() {
         }),
         Err(CapError::SlotNotFound(start))
     );
-    let next = kernel::cap::SlotId::from_raw(start.raw() + 1);
+    let next = kernel::cap::SlotId::new(start.raw() + 1);
     assert_eq!(
         state.cspace().lookup(CapabilityDescriptor {
             slot: next,
