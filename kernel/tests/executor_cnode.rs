@@ -5,7 +5,7 @@ use kernel::{
         CNodeCap, CapError, Capability, CapabilityDescriptor, EndpointCap, FrameCap, MintParams,
         RetypeTarget, Rights, TcbCap, UntypedCap,
     },
-    invocation::Invocation,
+    invocation::{CNodePathTarget, Invocation},
     object::{KernelObjectRef, ObjectTableError},
     state::{ExecutionOutcome, InvocationContext, KernelExecutionError},
     tcb::{Tcb, ThreadState},
@@ -16,8 +16,25 @@ fn cnode() -> Capability {
     Capability::CNode(CNodeCap::new(4))
 }
 
+fn guarded_cnode(radix: u8, guard: u64, guard_size: u8) -> Capability {
+    Capability::CNode(CNodeCap::with_guard(radix, guard, guard_size))
+}
+
+fn windowed_cnode(radix: u8, guard: u64, guard_size: u8, window_start: u64) -> Capability {
+    Capability::CNode(CNodeCap::with_window(
+        radix,
+        guard,
+        guard_size,
+        kernel::cap::SlotId::new(window_start),
+    ))
+}
+
 fn endpoint(rights: Rights, badge: u64) -> Capability {
     Capability::Endpoint(EndpointCap { badge, rights })
+}
+
+fn frame(rights: Rights) -> Capability {
+    Capability::Frame(FrameCap { rights })
 }
 
 fn untyped(size_bits: u8) -> Capability {
@@ -133,6 +150,264 @@ fn cnode_copy_into_commits_to_requested_empty_slot() {
         state.cspace().lookup(copied).unwrap().capability,
         endpoint(Rights::READ, 0x42)
     );
+}
+
+#[test]
+fn cnode_copy_path_resolves_destination_guard_and_radix() {
+    // Goal: CNode operations can resolve the destination slot through guard/radix path lookup.
+    // Scope: host integration through KernelState::execute_invocation.
+    // Semantics: the copied cap lands in the slot selected by the CNode path, not a raw slot argument.
+    let mut state = kernel::state::KernelState::new(&[cpu(0), cpu(1)]).unwrap();
+    let cnode = state
+        .cspace_mut()
+        .insert_initial_capability(windowed_cnode(4, 0b10, 2, 32))
+        .unwrap();
+    let source = state
+        .cspace_mut()
+        .insert_initial_capability(endpoint(Rights::READ | Rights::WRITE, 0x42))
+        .unwrap();
+
+    let copied = capability_descriptor(
+        state
+            .execute_invocation(
+                InvocationContext::new(thread(1), cpu(0)),
+                cnode,
+                Invocation::CNodeCopyPath {
+                    source,
+                    destination: CNodePathTarget {
+                        capptr: 0b10_0110,
+                        depth: 6,
+                    },
+                    requested_rights: Rights::READ,
+                },
+            )
+            .unwrap(),
+        "CNode copy path",
+    );
+
+    assert_eq!(copied.slot, kernel::cap::SlotId::new(32 + 0b0110));
+    assert_eq!(
+        state.cspace().lookup(copied).unwrap().capability,
+        endpoint(Rights::READ, 0x42)
+    );
+}
+
+#[test]
+fn cnode_copy_path_guard_mismatch_fails_without_source_mutation() {
+    // Goal: path lookup faults are preflight failures for CNode copy.
+    // Scope: host integration through KernelState::execute_invocation.
+    // Semantics: guard mismatch does not derive source authority or occupy the selected slot.
+    let mut state = kernel::state::KernelState::new(&[cpu(0), cpu(1)]).unwrap();
+    let cnode = state
+        .cspace_mut()
+        .insert_initial_capability(guarded_cnode(4, 0b10, 2))
+        .unwrap();
+    let source = state
+        .cspace_mut()
+        .insert_initial_capability(endpoint(Rights::READ | Rights::WRITE, 0x42))
+        .unwrap();
+
+    assert_eq!(
+        state.execute_invocation(
+            InvocationContext::new(thread(1), cpu(0)),
+            cnode,
+            Invocation::CNodeCopyPath {
+                source,
+                destination: CNodePathTarget {
+                    capptr: 0b11_0110,
+                    depth: 6,
+                },
+                requested_rights: Rights::READ,
+            },
+        ),
+        Err(KernelExecutionError::Invocation(
+            kernel::invocation::InvocationError::Cap(CapError::CNodeGuardMismatch {
+                expected_guard: 0b10,
+                actual_guard: 0b11,
+                bits_remaining: 6,
+                guard_size: 2,
+            })
+        ))
+    );
+    assert_eq!(
+        state.cspace().lookup(source).unwrap().capability,
+        endpoint(Rights::READ | Rights::WRITE, 0x42)
+    );
+    assert_eq!(
+        state.cspace().lookup(CapabilityDescriptor {
+            slot: kernel::cap::SlotId::new(0b0110),
+            slot_generation: 1,
+        }),
+        Err(CapError::SlotNotFound(kernel::cap::SlotId::new(0b0110)))
+    );
+}
+
+#[test]
+fn cnode_mint_path_resolves_destination_window() {
+    // Goal: path-based CNode mint resolves the target slot under the invoked CNode root.
+    // Scope: host integration through KernelState::execute_invocation.
+    // Semantics: badge minting commits to the windowed target slot after path lookup.
+    let mut state = kernel::state::KernelState::new(&[cpu(0), cpu(1)]).unwrap();
+    let cnode = state
+        .cspace_mut()
+        .insert_initial_capability(windowed_cnode(4, 0b10, 2, 48))
+        .unwrap();
+    let source = state
+        .cspace_mut()
+        .insert_initial_capability(endpoint(Rights::READ | Rights::WRITE, 0))
+        .unwrap();
+
+    let minted = capability_descriptor(
+        state
+            .execute_invocation(
+                InvocationContext::new(thread(1), cpu(0)),
+                cnode,
+                Invocation::CNodeMintPath {
+                    source,
+                    destination: CNodePathTarget {
+                        capptr: 0b10_0011,
+                        depth: 6,
+                    },
+                    requested_rights: Rights::READ,
+                    params: MintParams::badge(0x77),
+                },
+            )
+            .unwrap(),
+        "CNode mint path",
+    );
+
+    assert_eq!(minted.slot, kernel::cap::SlotId::new(48 + 0b0011));
+    assert_eq!(
+        state.cspace().lookup(minted).unwrap().capability,
+        endpoint(Rights::READ, 0x77)
+    );
+}
+
+#[test]
+fn cnode_move_path_transfers_authority_to_resolved_slot() {
+    // Goal: path-based CNode move resolves destination before transferring authority.
+    // Scope: host integration through KernelState::execute_invocation.
+    // Semantics: source is invalidated only after the destination path resolves to an empty slot.
+    let mut state = kernel::state::KernelState::new(&[cpu(0), cpu(1)]).unwrap();
+    let cnode = state
+        .cspace_mut()
+        .insert_initial_capability(windowed_cnode(4, 0b10, 2, 64))
+        .unwrap();
+    let source = state
+        .cspace_mut()
+        .insert_initial_capability(endpoint(Rights::READ, 0x22))
+        .unwrap();
+    let source_object = state.cspace().lookup(source).unwrap().object;
+
+    let moved = capability_descriptor(
+        state
+            .execute_invocation(
+                InvocationContext::new(thread(1), cpu(0)),
+                cnode,
+                Invocation::CNodeMovePath {
+                    source,
+                    destination: CNodePathTarget {
+                        capptr: 0b10_0010,
+                        depth: 6,
+                    },
+                },
+            )
+            .unwrap(),
+        "CNode move path",
+    );
+
+    assert_eq!(moved.slot, kernel::cap::SlotId::new(64 + 0b0010));
+    assert_eq!(state.cspace().lookup(moved).unwrap().object, source_object);
+    assert!(matches!(
+        state.cspace().lookup(source),
+        Err(CapError::SlotNotFound(_))
+    ));
+}
+
+#[test]
+fn cnode_delete_path_invalidates_resolved_target() {
+    // Goal: path-based CNode delete resolves a live descriptor before mutation.
+    // Scope: host integration through KernelState::execute_invocation.
+    // Semantics: deleting a resolved target slot leaves sibling slots intact.
+    let mut state = kernel::state::KernelState::new(&[cpu(0), cpu(1)]).unwrap();
+    let cnode = state
+        .cspace_mut()
+        .insert_initial_capability(windowed_cnode(4, 0b10, 2, 80))
+        .unwrap();
+    let source = state
+        .cspace_mut()
+        .insert_initial_capability(endpoint(Rights::READ, 0x1))
+        .unwrap();
+    let target = state
+        .cspace_mut()
+        .copy_into(source, kernel::cap::SlotId::new(80 + 0b0101), Rights::READ)
+        .unwrap();
+    let sibling = state
+        .cspace_mut()
+        .insert_initial_capability(endpoint(Rights::READ, 0x2))
+        .unwrap();
+
+    assert_eq!(
+        state.execute_invocation(
+            InvocationContext::new(thread(1), cpu(0)),
+            cnode,
+            Invocation::CNodeDeletePath {
+                target: CNodePathTarget {
+                    capptr: 0b10_0101,
+                    depth: 6,
+                },
+            },
+        ),
+        Ok(ExecutionOutcome::CapabilityMutation)
+    );
+
+    assert!(matches!(
+        state.cspace().lookup(target),
+        Err(CapError::SlotNotFound(_))
+    ));
+    assert_eq!(
+        state.cspace().lookup(sibling).unwrap().capability,
+        endpoint(Rights::READ, 0x2)
+    );
+}
+
+#[test]
+fn cnode_revoke_path_removes_descendants_but_keeps_resolved_target() {
+    // Goal: path-based CNode revoke resolves target authority before descendant traversal.
+    // Scope: host integration through KernelState::execute_invocation.
+    // Semantics: revoke keeps the resolved target slot and removes MDB descendants.
+    let mut state = kernel::state::KernelState::new(&[cpu(0), cpu(1)]).unwrap();
+    // The transitional descriptor facade allocates the invoked CNode at slot 1;
+    // this window starts at the next initial slot so the path resolves to root.
+    let cnode = state
+        .cspace_mut()
+        .insert_initial_capability(windowed_cnode(4, 0b10, 2, 2))
+        .unwrap();
+    let root = state
+        .cspace_mut()
+        .insert_initial_capability(frame(Rights::READ | Rights::WRITE))
+        .unwrap();
+    let child = state.cspace_mut().copy(root, Rights::READ).unwrap();
+
+    assert_eq!(
+        state.execute_invocation(
+            InvocationContext::new(thread(1), cpu(0)),
+            cnode,
+            Invocation::CNodeRevokePath {
+                target: CNodePathTarget {
+                    capptr: 0b10_0000,
+                    depth: 6,
+                },
+            },
+        ),
+        Ok(ExecutionOutcome::CapabilityMutation)
+    );
+
+    assert!(state.cspace().lookup(root).is_ok());
+    assert!(matches!(
+        state.cspace().lookup(child),
+        Err(CapError::SlotNotFound(_))
+    ));
 }
 
 #[test]

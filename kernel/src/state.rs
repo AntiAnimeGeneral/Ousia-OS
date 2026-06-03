@@ -2,8 +2,8 @@ use alloc::vec::Vec;
 
 use crate::{
     cap::{
-        CapabilityDescriptor, CapabilitySpace, MintParams, ObjectId, ReplyCap, RetypeDestination,
-        RetypeResult, RetypeTarget, Rights, SlotId,
+        CNodePath, CapabilityDescriptor, CapabilitySpace, MintParams, ObjectId, ReplyCap,
+        RetypeDestination, RetypeResult, RetypeTarget, Rights, SlotId,
     },
     invocation::{EndpointSendOp, Invocation, InvocationError, InvocationOutcome, invoke},
     ipc::{Endpoint, IpcPayload, IpcReceiveOptions, IpcSendOptions},
@@ -245,20 +245,52 @@ impl KernelState {
                 destination,
                 requested_rights,
             } => self.execute_cnode_copy(source, destination, requested_rights),
+            InvocationOutcome::CNodeCopyPathAuthorized {
+                source,
+                destination,
+                requested_rights,
+            } => {
+                let destination = self.resolve_cnode_slot(destination)?;
+                self.execute_cnode_copy(source, destination, requested_rights)
+            }
             InvocationOutcome::CNodeMintAuthorized {
                 source,
                 destination,
                 requested_rights,
                 params,
             } => self.execute_cnode_mint(source, destination, requested_rights, params),
+            InvocationOutcome::CNodeMintPathAuthorized {
+                source,
+                destination,
+                requested_rights,
+                params,
+            } => {
+                let destination = self.resolve_cnode_slot(destination)?;
+                self.execute_cnode_mint(source, destination, requested_rights, params)
+            }
             InvocationOutcome::CNodeMoveAuthorized {
                 source,
                 destination,
             } => self.execute_cnode_move(source, destination),
+            InvocationOutcome::CNodeMovePathAuthorized {
+                source,
+                destination,
+            } => {
+                let destination = self.resolve_cnode_slot(destination)?;
+                self.execute_cnode_move(source, destination)
+            }
             InvocationOutcome::CNodeDeleteAuthorized { target } => {
                 self.execute_cnode_delete(target)
             }
+            InvocationOutcome::CNodeDeletePathAuthorized { target } => {
+                let target = self.resolve_cnode_descriptor(target)?;
+                self.execute_cnode_delete(target)
+            }
             InvocationOutcome::CNodeRevokeAuthorized { target } => {
+                self.execute_cnode_revoke(target)
+            }
+            InvocationOutcome::CNodeRevokePathAuthorized { target } => {
+                let target = self.resolve_cnode_descriptor(target)?;
                 self.execute_cnode_revoke(target)
             }
             InvocationOutcome::TcbResumeAuthorized { tcb } => self.execute_tcb_resume(tcb),
@@ -442,6 +474,24 @@ impl KernelState {
             self.finalise_unreferenced_object(object);
         }
         Ok(ExecutionOutcome::CapabilityMutation)
+    }
+
+    fn resolve_cnode_slot(&self, path: CNodePath) -> Result<SlotId, KernelExecutionError> {
+        self.cspace
+            .lookup_cnode_slot(path)
+            .map_err(InvocationError::Cap)
+            .map_err(KernelExecutionError::Invocation)
+    }
+
+    fn resolve_cnode_descriptor(
+        &self,
+        path: CNodePath,
+    ) -> Result<CapabilityDescriptor, KernelExecutionError> {
+        let slot = self.resolve_cnode_slot(path)?;
+        self.cspace
+            .descriptor_for_live_slot(slot)
+            .map_err(InvocationError::Cap)
+            .map_err(KernelExecutionError::Invocation)
     }
 
     fn finalise_unreferenced_object(&mut self, object: ObjectId) {

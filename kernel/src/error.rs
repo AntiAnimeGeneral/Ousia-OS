@@ -56,6 +56,10 @@ impl CapError {
             Self::WrongCapability { .. } => KernelErrorCode::InvalidCapability,
             Self::InvalidRetypeSize { .. } => KernelErrorCode::RangeError,
             Self::UntypedCapacityExhausted { .. } => KernelErrorCode::NotEnoughMemory,
+            Self::InvalidCNodeDepth { .. } => KernelErrorCode::RangeError,
+            Self::CNodeGuardMismatch { .. }
+            | Self::CNodeDepthMismatch { .. }
+            | Self::CNodeLookupUnresolved { .. } => KernelErrorCode::FailedLookup,
         }
     }
 }

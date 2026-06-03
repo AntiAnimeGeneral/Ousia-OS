@@ -97,6 +97,7 @@ const TCB_ALLOWED_RIGHTS: Rights = Rights::MANAGE;
 const NOTIFICATION_ALLOWED_RIGHTS: Rights = Rights::READ.union(Rights::WRITE);
 const REPLY_ALLOWED_RIGHTS: Rights = Rights::NONE;
 const MIN_RETYPE_BYTES: u128 = 1;
+const CSPACE_WORD_BITS: u8 = u64::BITS as u8;
 
 impl Rights {
     pub const fn is_subset_of(self, allowed: Self) -> bool {
@@ -149,6 +150,7 @@ pub struct CNodeCap {
     pub radix: u8,
     pub guard: u64,
     pub guard_size: u8,
+    pub window_start: SlotId,
 }
 
 impl CNodeCap {
@@ -157,6 +159,25 @@ impl CNodeCap {
             radix,
             guard: 0,
             guard_size: 0,
+            window_start: SlotId::new(0),
+        }
+    }
+
+    pub const fn with_guard(radix: u8, guard: u64, guard_size: u8) -> Self {
+        Self {
+            radix,
+            guard,
+            guard_size,
+            window_start: SlotId::new(0),
+        }
+    }
+
+    pub const fn with_window(radix: u8, guard: u64, guard_size: u8, window_start: SlotId) -> Self {
+        Self {
+            radix,
+            guard,
+            guard_size,
+            window_start,
         }
     }
 }
@@ -215,6 +236,19 @@ pub enum ObjectKind {
 pub struct CapabilityDescriptor {
     pub slot: SlotId,
     pub slot_generation: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CNodePath {
+    pub root: CapabilityDescriptor,
+    pub capptr: u64,
+    pub depth: u8,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CNodeLookup {
+    pub slot: SlotId,
+    pub bits_remaining: u8,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -386,6 +420,23 @@ pub enum CapError {
     },
     SlotOccupied(SlotId),
     EmptyRetypeWindow,
+    InvalidCNodeDepth {
+        depth: u8,
+    },
+    CNodeGuardMismatch {
+        expected_guard: u64,
+        actual_guard: u64,
+        bits_remaining: u8,
+        guard_size: u8,
+    },
+    CNodeDepthMismatch {
+        level_bits: u8,
+        bits_remaining: u8,
+    },
+    CNodeLookupUnresolved {
+        slot: SlotId,
+        bits_remaining: u8,
+    },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -749,6 +800,42 @@ impl CapabilitySpace {
             rights: slot.rights,
             descriptor,
             parent: slot.parent,
+        })
+    }
+
+    pub fn resolve_cnode_path(&self, path: CNodePath) -> Result<CNodeLookup, CapError> {
+        let (root_slot, _) = self.validated_slot(path.root)?;
+        let Capability::CNode(root) = &root_slot.capability else {
+            return Err(CapError::WrongCapability {
+                expected: ObjectKind::CNode,
+                actual: capability_kind(&root_slot.capability),
+            });
+        };
+
+        if path.depth == 0 || path.depth > CSPACE_WORD_BITS {
+            return Err(CapError::InvalidCNodeDepth { depth: path.depth });
+        }
+
+        self.resolve_address_bits(root, path.capptr, path.depth)
+    }
+
+    pub fn lookup_cnode_slot(&self, path: CNodePath) -> Result<SlotId, CapError> {
+        let lookup = self.resolve_cnode_path(path)?;
+        if lookup.bits_remaining != 0 {
+            return Err(CapError::CNodeLookupUnresolved {
+                slot: lookup.slot,
+                bits_remaining: lookup.bits_remaining,
+            });
+        }
+
+        Ok(lookup.slot)
+    }
+
+    pub fn descriptor_for_live_slot(&self, slot: SlotId) -> Result<CapabilityDescriptor, CapError> {
+        let slot_ref = self.live_slot(slot)?;
+        Ok(CapabilityDescriptor {
+            slot,
+            slot_generation: slot_ref.slot_generation,
         })
     }
 
@@ -1142,6 +1229,66 @@ impl CapabilitySpace {
             parent_object: source_object,
             next_watermark,
         })
+    }
+
+    fn resolve_address_bits(
+        &self,
+        root: &CNodeCap,
+        capptr: u64,
+        depth: u8,
+    ) -> Result<CNodeLookup, CapError> {
+        let mut node = root.clone();
+        let mut bits_remaining = depth;
+
+        loop {
+            let level_bits = node.radix.saturating_add(node.guard_size);
+            if level_bits == 0 {
+                return Err(CapError::CNodeDepthMismatch {
+                    level_bits,
+                    bits_remaining,
+                });
+            }
+
+            let actual_guard = extract_cptr_bits(capptr, bits_remaining, node.guard_size);
+            if node.guard_size > bits_remaining || actual_guard != node.guard {
+                return Err(CapError::CNodeGuardMismatch {
+                    expected_guard: node.guard,
+                    actual_guard,
+                    bits_remaining,
+                    guard_size: node.guard_size,
+                });
+            }
+            if level_bits > bits_remaining {
+                return Err(CapError::CNodeDepthMismatch {
+                    level_bits,
+                    bits_remaining,
+                });
+            }
+
+            let offset = extract_cptr_bits(capptr, bits_remaining - node.guard_size, node.radix);
+            let slot = SlotId(node.window_start.raw() + offset);
+            if bits_remaining == level_bits {
+                return Ok(CNodeLookup {
+                    slot,
+                    bits_remaining: 0,
+                });
+            }
+
+            bits_remaining -= level_bits;
+            let Some(slot_ref) = self.slots.get(slot).filter(|slot| slot.alive) else {
+                return Ok(CNodeLookup {
+                    slot,
+                    bits_remaining,
+                });
+            };
+            let Capability::CNode(next_node) = &slot_ref.capability else {
+                return Ok(CNodeLookup {
+                    slot,
+                    bits_remaining,
+                });
+            };
+            node = next_node.clone();
+        }
     }
 
     fn alloc_object(&mut self, kind: ObjectKind) -> (ObjectId, u64) {
@@ -1782,6 +1929,15 @@ fn guard_mask(guard_size: u8) -> u64 {
     (1u64 << guard_size) - 1
 }
 
+fn extract_cptr_bits(capptr: u64, bits_remaining: u8, width: u8) -> u64 {
+    if width == 0 {
+        return 0;
+    }
+
+    let shift = bits_remaining.saturating_sub(width);
+    (capptr >> shift) & guard_mask(width)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1825,6 +1981,133 @@ mod tests {
     // CapabilitySpace tests protect authority, slot lineage, badge minting,
     // stale descriptor handling, and retype lineage. Runtime ObjectTable entries
     // and executor transaction ordering are tested at the host integration layer.
+
+    #[test]
+    fn cnode_path_lookup_resolves_guard_and_radix_bits_to_slot() {
+        // Goal: CNode lookup consumes guard then radix bits like seL4 resolveAddressBits.
+        // Scope: capability-space CNode path lookup API.
+        // Semantics: with depth equal to guard+radix, lookup returns the selected CTE slot.
+        let mut cspace = CapabilitySpace::new();
+        let root = cspace
+            .insert_initial_capability(Capability::CNode(CNodeCap::with_window(
+                4,
+                0b10,
+                2,
+                SlotId::new(32),
+            )))
+            .unwrap();
+
+        assert_eq!(
+            cspace.lookup_cnode_slot(CNodePath {
+                root,
+                capptr: 0b10_0110,
+                depth: 6,
+            }),
+            Ok(SlotId::new(32 + 0b0110))
+        );
+    }
+
+    #[test]
+    fn cnode_path_lookup_rejects_guard_mismatch_before_slot_access() {
+        // Goal: guard mismatch is a lookup fault before touching the target CTE.
+        // Scope: capability-space CNode path lookup API.
+        // Semantics: the error reports expected and actual guard at the current depth.
+        let mut cspace = CapabilitySpace::new();
+        let root = cspace
+            .insert_initial_capability(Capability::CNode(CNodeCap::with_guard(4, 0b10, 2)))
+            .unwrap();
+
+        assert_eq!(
+            cspace.lookup_cnode_slot(CNodePath {
+                root,
+                capptr: 0b11_0110,
+                depth: 6,
+            }),
+            Err(CapError::CNodeGuardMismatch {
+                expected_guard: 0b10,
+                actual_guard: 0b11,
+                bits_remaining: 6,
+                guard_size: 2,
+            })
+        );
+    }
+
+    #[test]
+    fn cnode_path_lookup_rejects_depth_shorter_than_level() {
+        // Goal: CNode depth mismatch mirrors seL4 when guard+radix exceeds remaining bits.
+        // Scope: capability-space CNode path lookup API.
+        // Semantics: the lookup fails before producing a target slot.
+        let mut cspace = CapabilitySpace::new();
+        let root = cspace
+            .insert_initial_capability(Capability::CNode(CNodeCap::with_guard(4, 0b10, 2)))
+            .unwrap();
+
+        assert_eq!(
+            cspace.lookup_cnode_slot(CNodePath {
+                root,
+                capptr: 0b10_011,
+                depth: 5,
+            }),
+            Err(CapError::CNodeDepthMismatch {
+                level_bits: 6,
+                bits_remaining: 5,
+            })
+        );
+    }
+
+    #[test]
+    fn cnode_path_lookup_reports_guard_mismatch_when_guard_exceeds_remaining_bits() {
+        // Goal: guard mismatch is reported before depth mismatch when guard bits do not fit.
+        // Scope: capability-space CNode path lookup API.
+        // Semantics: the lookup fault preserves expected/actual guard diagnostics.
+        let mut cspace = CapabilitySpace::new();
+        let root = cspace
+            .insert_initial_capability(Capability::CNode(CNodeCap::with_guard(4, 0b10, 3)))
+            .unwrap();
+
+        assert_eq!(
+            cspace.lookup_cnode_slot(CNodePath {
+                root,
+                capptr: 0b10_0110,
+                depth: 5,
+            }),
+            Err(CapError::CNodeGuardMismatch {
+                expected_guard: 0b10,
+                actual_guard: 0b001,
+                bits_remaining: 5,
+                guard_size: 3,
+            })
+        );
+    }
+
+    #[test]
+    fn cnode_path_lookup_reports_unresolved_non_cnode_slot() {
+        // Goal: multi-level lookup stops at the first non-CNode slot with remaining bits.
+        // Scope: capability-space CNode path lookup API.
+        // Semantics: full slot lookup requires all bits to resolve through CNode caps.
+        let mut cspace = CapabilitySpace::new();
+        let root = cspace
+            .insert_initial_capability(Capability::CNode(CNodeCap::new(4)))
+            .unwrap();
+        let source = cspace
+            .insert_initial_capability(endpoint(Rights::READ))
+            .unwrap();
+        cspace
+            .copy_into(source, SlotId::new(3), Rights::READ)
+            .unwrap();
+
+        assert_eq!(
+            cspace.lookup_cnode_slot(CNodePath {
+                root,
+                capptr: 0b0011_1010,
+                depth: 8,
+            }),
+            Err(CapError::CNodeLookupUnresolved {
+                slot: SlotId::new(3),
+                bits_remaining: 4,
+            })
+        );
+    }
 
     #[test]
     fn root_capability_can_be_created_and_looked_up() {

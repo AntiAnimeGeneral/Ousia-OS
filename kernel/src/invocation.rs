@@ -1,7 +1,23 @@
 use crate::cap::{
-    CapError, Capability, CapabilityDescriptor, CapabilitySpace, MintParams, ObjectId,
+    CNodePath, CapError, Capability, CapabilityDescriptor, CapabilitySpace, MintParams, ObjectId,
     RetypeDestination, RetypeTarget, Rights, SlotId,
 };
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CNodePathTarget {
+    pub capptr: u64,
+    pub depth: u8,
+}
+
+impl CNodePathTarget {
+    pub const fn under_root(self, root: CapabilityDescriptor) -> CNodePath {
+        CNodePath {
+            root,
+            capptr: self.capptr,
+            depth: self.depth,
+        }
+    }
+}
 use crate::tcb::{CpuId, ThreadId};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -29,9 +45,20 @@ pub enum Invocation {
         destination: SlotId,
         requested_rights: Rights,
     },
+    CNodeCopyPath {
+        source: CapabilityDescriptor,
+        destination: CNodePathTarget,
+        requested_rights: Rights,
+    },
     CNodeMintInto {
         source: CapabilityDescriptor,
         destination: SlotId,
+        requested_rights: Rights,
+        params: MintParams,
+    },
+    CNodeMintPath {
+        source: CapabilityDescriptor,
+        destination: CNodePathTarget,
         requested_rights: Rights,
         params: MintParams,
     },
@@ -39,11 +66,21 @@ pub enum Invocation {
         source: CapabilityDescriptor,
         destination: SlotId,
     },
+    CNodeMovePath {
+        source: CapabilityDescriptor,
+        destination: CNodePathTarget,
+    },
     CNodeDelete {
         target: CapabilityDescriptor,
     },
+    CNodeDeletePath {
+        target: CNodePathTarget,
+    },
     CNodeRevoke {
         target: CapabilityDescriptor,
+    },
+    CNodeRevokePath {
+        target: CNodePathTarget,
     },
     TcbResume,
     TcbConfigure {
@@ -89,9 +126,20 @@ pub enum InvocationOutcome {
         destination: SlotId,
         requested_rights: Rights,
     },
+    CNodeCopyPathAuthorized {
+        source: CapabilityDescriptor,
+        destination: CNodePath,
+        requested_rights: Rights,
+    },
     CNodeMintAuthorized {
         source: CapabilityDescriptor,
         destination: SlotId,
+        requested_rights: Rights,
+        params: MintParams,
+    },
+    CNodeMintPathAuthorized {
+        source: CapabilityDescriptor,
+        destination: CNodePath,
         requested_rights: Rights,
         params: MintParams,
     },
@@ -99,11 +147,21 @@ pub enum InvocationOutcome {
         source: CapabilityDescriptor,
         destination: SlotId,
     },
+    CNodeMovePathAuthorized {
+        source: CapabilityDescriptor,
+        destination: CNodePath,
+    },
     CNodeDeleteAuthorized {
         target: CapabilityDescriptor,
     },
+    CNodeDeletePathAuthorized {
+        target: CNodePath,
+    },
     CNodeRevokeAuthorized {
         target: CapabilityDescriptor,
+    },
+    CNodeRevokePathAuthorized {
+        target: CNodePath,
     },
     TcbResumeAuthorized {
         tcb: ObjectId,
@@ -298,6 +356,18 @@ pub fn invoke(
             }),
             actual => Err(wrong_capability(InvocationTarget::CNode, actual)),
         },
+        Invocation::CNodeCopyPath {
+            source,
+            destination,
+            requested_rights,
+        } => match view.capability {
+            Capability::CNode(_) => Ok(InvocationOutcome::CNodeCopyPathAuthorized {
+                source,
+                destination: destination.under_root(descriptor),
+                requested_rights,
+            }),
+            actual => Err(wrong_capability(InvocationTarget::CNode, actual)),
+        },
         Invocation::CNodeMintInto {
             source,
             destination,
@@ -307,6 +377,20 @@ pub fn invoke(
             Capability::CNode(_) => Ok(InvocationOutcome::CNodeMintAuthorized {
                 source,
                 destination,
+                requested_rights,
+                params,
+            }),
+            actual => Err(wrong_capability(InvocationTarget::CNode, actual)),
+        },
+        Invocation::CNodeMintPath {
+            source,
+            destination,
+            requested_rights,
+            params,
+        } => match view.capability {
+            Capability::CNode(_) => Ok(InvocationOutcome::CNodeMintPathAuthorized {
+                source,
+                destination: destination.under_root(descriptor),
                 requested_rights,
                 params,
             }),
@@ -322,12 +406,34 @@ pub fn invoke(
             }),
             actual => Err(wrong_capability(InvocationTarget::CNode, actual)),
         },
+        Invocation::CNodeMovePath {
+            source,
+            destination,
+        } => match view.capability {
+            Capability::CNode(_) => Ok(InvocationOutcome::CNodeMovePathAuthorized {
+                source,
+                destination: destination.under_root(descriptor),
+            }),
+            actual => Err(wrong_capability(InvocationTarget::CNode, actual)),
+        },
         Invocation::CNodeDelete { target } => match view.capability {
             Capability::CNode(_) => Ok(InvocationOutcome::CNodeDeleteAuthorized { target }),
             actual => Err(wrong_capability(InvocationTarget::CNode, actual)),
         },
+        Invocation::CNodeDeletePath { target } => match view.capability {
+            Capability::CNode(_) => Ok(InvocationOutcome::CNodeDeletePathAuthorized {
+                target: target.under_root(descriptor),
+            }),
+            actual => Err(wrong_capability(InvocationTarget::CNode, actual)),
+        },
         Invocation::CNodeRevoke { target } => match view.capability {
             Capability::CNode(_) => Ok(InvocationOutcome::CNodeRevokeAuthorized { target }),
+            actual => Err(wrong_capability(InvocationTarget::CNode, actual)),
+        },
+        Invocation::CNodeRevokePath { target } => match view.capability {
+            Capability::CNode(_) => Ok(InvocationOutcome::CNodeRevokePathAuthorized {
+                target: target.under_root(descriptor),
+            }),
             actual => Err(wrong_capability(InvocationTarget::CNode, actual)),
         },
         Invocation::TcbResume => match view.capability {
@@ -775,6 +881,42 @@ mod tests {
                 },
             )
             .is_ok()
+        );
+    }
+
+    #[test]
+    fn cnode_copy_path_targets_invoked_cnode_root() {
+        // Goal: target CNode paths cannot name an arbitrary root distinct from the invoked cap.
+        // Scope: unit test for CNode invocation authorization before CSpace mutation.
+        // Semantics: the authorized path root is always the invoked CNode descriptor.
+        let mut cspace = CapabilitySpace::new();
+        let cnode_cap = cspace.insert_initial_capability(cnode()).unwrap();
+        let source = cspace
+            .insert_initial_capability(endpoint(Rights::READ | Rights::WRITE, 0x55))
+            .unwrap();
+
+        assert_eq!(
+            invoke(
+                &cspace,
+                cnode_cap,
+                Invocation::CNodeCopyPath {
+                    source,
+                    destination: CNodePathTarget {
+                        capptr: 0b10_0110,
+                        depth: 6,
+                    },
+                    requested_rights: Rights::READ,
+                },
+            ),
+            Ok(InvocationOutcome::CNodeCopyPathAuthorized {
+                source,
+                destination: CNodePath {
+                    root: cnode_cap,
+                    capptr: 0b10_0110,
+                    depth: 6,
+                },
+                requested_rights: Rights::READ,
+            })
         );
     }
 
