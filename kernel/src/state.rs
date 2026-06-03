@@ -247,14 +247,19 @@ impl KernelState {
             } => self.execute_untyped_retype(descriptor, target, destination),
             InvocationOutcome::CNodeCopyAuthorized {
                 source,
+                destination,
                 requested_rights,
-            } => self.execute_cnode_copy(source, requested_rights),
+            } => self.execute_cnode_copy(source, destination, requested_rights),
             InvocationOutcome::CNodeMintAuthorized {
                 source,
+                destination,
                 requested_rights,
                 params,
-            } => self.execute_cnode_mint(source, requested_rights, params),
-            InvocationOutcome::CNodeMoveAuthorized { source } => self.execute_cnode_move(source),
+            } => self.execute_cnode_mint(source, destination, requested_rights, params),
+            InvocationOutcome::CNodeMoveAuthorized {
+                source,
+                destination,
+            } => self.execute_cnode_move(source, destination),
             InvocationOutcome::CNodeDeleteAuthorized { target } => {
                 self.execute_cnode_delete(target)
             }
@@ -383,11 +388,12 @@ impl KernelState {
     fn execute_cnode_copy(
         &mut self,
         source: CapabilityDescriptor,
+        destination: crate::cap::SlotId,
         requested_rights: Rights,
     ) -> Result<ExecutionOutcome, KernelExecutionError> {
         let descriptor = self
             .cspace
-            .copy(source, requested_rights)
+            .copy_into(source, destination, requested_rights)
             .map_err(InvocationError::Cap)?;
         Ok(ExecutionOutcome::Capability { descriptor })
     }
@@ -395,12 +401,13 @@ impl KernelState {
     fn execute_cnode_mint(
         &mut self,
         source: CapabilityDescriptor,
+        destination: crate::cap::SlotId,
         requested_rights: Rights,
         params: MintParams,
     ) -> Result<ExecutionOutcome, KernelExecutionError> {
         let descriptor = self
             .cspace
-            .mint(source, requested_rights, params)
+            .mint_into(source, destination, requested_rights, params)
             .map_err(InvocationError::Cap)?;
         Ok(ExecutionOutcome::Capability { descriptor })
     }
@@ -408,10 +415,11 @@ impl KernelState {
     fn execute_cnode_move(
         &mut self,
         source: CapabilityDescriptor,
+        destination: crate::cap::SlotId,
     ) -> Result<ExecutionOutcome, KernelExecutionError> {
         let descriptor = self
             .cspace
-            .move_capability(source)
+            .move_capability_into(source, destination)
             .map_err(InvocationError::Cap)?;
         Ok(ExecutionOutcome::Capability { descriptor })
     }

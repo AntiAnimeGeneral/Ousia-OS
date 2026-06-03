@@ -25,17 +25,20 @@ pub enum Invocation {
         target: RetypeTarget,
         destination: RetypeDestination,
     },
-    CNodeCopy {
+    CNodeCopyInto {
         source: CapabilityDescriptor,
+        destination: crate::cap::SlotId,
         requested_rights: Rights,
     },
-    CNodeMint {
+    CNodeMintInto {
         source: CapabilityDescriptor,
+        destination: crate::cap::SlotId,
         requested_rights: Rights,
         params: MintParams,
     },
-    CNodeMove {
+    CNodeMoveInto {
         source: CapabilityDescriptor,
+        destination: crate::cap::SlotId,
     },
     CNodeDelete {
         target: CapabilityDescriptor,
@@ -85,15 +88,18 @@ pub enum InvocationOutcome {
     },
     CNodeCopyAuthorized {
         source: CapabilityDescriptor,
+        destination: crate::cap::SlotId,
         requested_rights: Rights,
     },
     CNodeMintAuthorized {
         source: CapabilityDescriptor,
+        destination: crate::cap::SlotId,
         requested_rights: Rights,
         params: MintParams,
     },
     CNodeMoveAuthorized {
         source: CapabilityDescriptor,
+        destination: crate::cap::SlotId,
     },
     CNodeDeleteAuthorized {
         target: CapabilityDescriptor,
@@ -271,30 +277,40 @@ pub fn invoke(
             }
             actual => Err(wrong_capability(InvocationTarget::Untyped, actual)),
         },
-        Invocation::CNodeCopy {
+        Invocation::CNodeCopyInto {
             source,
+            destination,
             requested_rights,
         } => match view.capability {
             Capability::CNode(_) => Ok(InvocationOutcome::CNodeCopyAuthorized {
                 source,
+                destination,
                 requested_rights,
             }),
             actual => Err(wrong_capability(InvocationTarget::CNode, actual)),
         },
-        Invocation::CNodeMint {
+        Invocation::CNodeMintInto {
             source,
+            destination,
             requested_rights,
             params,
         } => match view.capability {
             Capability::CNode(_) => Ok(InvocationOutcome::CNodeMintAuthorized {
                 source,
+                destination,
                 requested_rights,
                 params,
             }),
             actual => Err(wrong_capability(InvocationTarget::CNode, actual)),
         },
-        Invocation::CNodeMove { source } => match view.capability {
-            Capability::CNode(_) => Ok(InvocationOutcome::CNodeMoveAuthorized { source }),
+        Invocation::CNodeMoveInto {
+            source,
+            destination,
+        } => match view.capability {
+            Capability::CNode(_) => Ok(InvocationOutcome::CNodeMoveAuthorized {
+                source,
+                destination,
+            }),
             actual => Err(wrong_capability(InvocationTarget::CNode, actual)),
         },
         Invocation::CNodeDelete { target } => match view.capability {
@@ -706,27 +722,30 @@ mod tests {
     }
 
     #[test]
-    fn cnode_copy_requires_manage_rights_and_exports_source() {
-        // Goal: CNode copy authorization is gated by manage rights on the invoking CNode.
+    fn cnode_copy_authorizes_source_and_destination() {
+        // Goal: CNode copy authorization exposes seL4-style source and destination slots.
         // Scope: unit test for CNode invocation authorization before CSpace mutation.
-        // Semantics: source slot mutation is owned by CapabilitySpace after authorization.
+        // Semantics: source and destination slot mutation is owned by CapabilitySpace after authorization.
         let mut cspace = CapabilitySpace::new();
         let cnode_cap = cspace.insert_initial_capability(cnode()).unwrap();
         let source = cspace
             .insert_initial_capability(endpoint(Rights::READ | Rights::WRITE, 0x55))
             .unwrap();
+        let destination = crate::cap::SlotId::from_raw(30);
 
         assert_eq!(
             invoke(
                 &cspace,
                 cnode_cap,
-                Invocation::CNodeCopy {
+                Invocation::CNodeCopyInto {
                     source,
+                    destination,
                     requested_rights: Rights::READ,
                 },
             ),
             Ok(InvocationOutcome::CNodeCopyAuthorized {
                 source,
+                destination,
                 requested_rights: Rights::READ,
             })
         );
@@ -735,8 +754,9 @@ mod tests {
             invoke(
                 &cspace,
                 cnode_cap,
-                Invocation::CNodeCopy {
+                Invocation::CNodeCopyInto {
                     source,
+                    destination,
                     requested_rights: Rights::READ,
                 },
             )

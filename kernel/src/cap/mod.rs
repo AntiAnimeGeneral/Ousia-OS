@@ -503,7 +503,21 @@ impl CapabilitySpace {
         source: CapabilityDescriptor,
         requested_rights: Rights,
     ) -> Result<CapabilityDescriptor, CapError> {
-        self.insert_derived_capability(source, requested_rights, MintParams::None)
+        self.insert_derived_capability(source, None, requested_rights, MintParams::None)
+    }
+
+    pub fn copy_into(
+        &mut self,
+        source: CapabilityDescriptor,
+        destination: SlotId,
+        requested_rights: Rights,
+    ) -> Result<CapabilityDescriptor, CapError> {
+        self.insert_derived_capability(
+            source,
+            Some(destination),
+            requested_rights,
+            MintParams::None,
+        )
     }
 
     pub fn mint(
@@ -512,7 +526,17 @@ impl CapabilitySpace {
         requested_rights: Rights,
         params: MintParams,
     ) -> Result<CapabilityDescriptor, CapError> {
-        self.insert_derived_capability(source, requested_rights, params)
+        self.insert_derived_capability(source, None, requested_rights, params)
+    }
+
+    pub fn mint_into(
+        &mut self,
+        source: CapabilityDescriptor,
+        destination: SlotId,
+        requested_rights: Rights,
+        params: MintParams,
+    ) -> Result<CapabilityDescriptor, CapError> {
+        self.insert_derived_capability(source, Some(destination), requested_rights, params)
     }
 
     pub fn retype_untyped(
@@ -614,9 +638,32 @@ impl CapabilitySpace {
         &mut self,
         source: CapabilityDescriptor,
     ) -> Result<CapabilityDescriptor, CapError> {
+        self.move_capability_to(source, None)
+    }
+
+    pub fn move_capability_into(
+        &mut self,
+        source: CapabilityDescriptor,
+        destination: SlotId,
+    ) -> Result<CapabilityDescriptor, CapError> {
+        self.move_capability_to(source, Some(destination))
+    }
+
+    fn move_capability_to(
+        &mut self,
+        source: CapabilityDescriptor,
+        destination: Option<SlotId>,
+    ) -> Result<CapabilityDescriptor, CapError> {
+        if let Some(destination) = destination {
+            self.validate_empty_slot(destination)?;
+        }
         self.validate_descriptor(source)?;
 
-        let destination = self.alloc_slot_id();
+        let destination = match destination {
+            Some(destination) => destination,
+            None => self.alloc_slot_id(),
+        };
+        self.reserve_empty_slot_for_insert(destination)?;
         let destination_generation = self.slot_generation_for_insert(destination);
         self.detach_reused_slot(destination);
 
@@ -863,9 +910,13 @@ impl CapabilitySpace {
     fn insert_derived_capability(
         &mut self,
         parent: CapabilityDescriptor,
+        destination: Option<SlotId>,
         requested_rights: Rights,
         params: MintParams,
     ) -> Result<CapabilityDescriptor, CapError> {
+        if let Some(destination) = destination {
+            self.validate_empty_slot(destination)?;
+        }
         let (object, object_generation_snapshot, parent_capability) = {
             let (parent_slot, _) = self.validated_slot(parent)?;
             if !requested_rights.is_subset_of(parent_slot.rights) {
@@ -895,12 +946,16 @@ impl CapabilitySpace {
         let parent_slot_id = parent.slot;
         let capability =
             mint_capability(parent_slot_id, &parent_capability, requested_rights, params)?;
-        let slot = self.alloc_slot_id();
-        let slot_generation = self.slot_generation_for_insert(slot);
-        self.detach_reused_slot(slot);
-        let mdb = self.cte_insert_mdb(parent_slot_id, slot, &capability, &parent_capability);
+        let destination = match destination {
+            Some(destination) => destination,
+            None => self.alloc_slot_id(),
+        };
+        self.reserve_empty_slot_for_insert(destination)?;
+        let slot_generation = self.slot_generation_for_insert(destination);
+        self.detach_reused_slot(destination);
+        let mdb = self.cte_insert_mdb(parent_slot_id, destination, &capability, &parent_capability);
         self.slots.insert(
-            slot,
+            destination,
             CapabilitySlot {
                 object,
                 capability: capability.clone(),
@@ -917,10 +972,10 @@ impl CapabilitySpace {
             .get_mut(&parent_slot_id)
             .expect("validated parent slot must remain in CSpace during derivation")
             .children
-            .insert(slot);
+            .insert(destination);
 
         Ok(CapabilityDescriptor {
-            slot,
+            slot: destination,
             slot_generation,
         })
     }
@@ -932,6 +987,7 @@ impl CapabilitySpace {
         capability: Capability,
         allocation: UntypedAllocationPlan,
     ) -> Result<CapabilityDescriptor, CapError> {
+        self.reserve_empty_slot_for_insert(slot)?;
         let kind = capability_kind(&capability);
         let child_untyped_size = match &capability {
             Capability::Untyped(capability) => Some(capability.size_bits),
@@ -1005,11 +1061,22 @@ impl CapabilitySpace {
         }
         for offset in 0..destination.count {
             let slot = SlotId(destination.start.raw() + offset as u64);
-            if self.slots.get(&slot).is_some_and(|slot| slot.alive) {
-                return Err(CapError::SlotOccupied(slot));
-            }
+            self.validate_empty_slot(slot)?;
         }
         self.validate_retype_untyped_capacity(source, target, destination.count)
+    }
+
+    fn validate_empty_slot(&self, slot: SlotId) -> Result<(), CapError> {
+        if self.slots.get(&slot).is_some_and(|slot| slot.alive) {
+            return Err(CapError::SlotOccupied(slot));
+        }
+        Ok(())
+    }
+
+    fn reserve_empty_slot_for_insert(&mut self, slot: SlotId) -> Result<(), CapError> {
+        self.validate_empty_slot(slot)?;
+        self.free_slots.retain(|free_slot| *free_slot != slot);
+        Ok(())
     }
 
     fn validate_retype_untyped_capacity(
@@ -1650,6 +1717,60 @@ mod tests {
 
         assert_eq!(view.capability, badged_endpoint(Rights::READ, 0x44));
         assert_eq!(view.parent, Some(root.slot));
+    }
+
+    #[test]
+    fn copy_into_uses_requested_empty_slot() {
+        let mut cspace = CapabilitySpace::new();
+        let root = cspace
+            .insert_initial_capability(badged_endpoint(Rights::READ | Rights::WRITE, 0x44))
+            .unwrap();
+        let destination = SlotId::from_raw(30);
+
+        let copy = cspace.copy_into(root, destination, Rights::READ).unwrap();
+
+        assert_eq!(copy.slot, destination);
+        assert_eq!(
+            cspace.lookup(copy).unwrap().capability,
+            badged_endpoint(Rights::READ, 0x44)
+        );
+    }
+
+    #[test]
+    fn copy_into_occupied_destination_fails_before_source_derivation() {
+        let mut cspace = CapabilitySpace::new();
+        let source = cspace
+            .insert_initial_capability(endpoint(Rights::READ | Rights::WRITE))
+            .unwrap();
+        let occupied = cspace
+            .insert_initial_capability(endpoint(Rights::READ))
+            .unwrap();
+
+        assert_eq!(
+            cspace.copy_into(source, occupied.slot, Rights::READ),
+            Err(CapError::SlotOccupied(occupied.slot))
+        );
+        assert_eq!(
+            cspace.lookup(occupied).unwrap().capability,
+            endpoint(Rights::READ)
+        );
+    }
+
+    #[test]
+    fn copy_into_reused_slot_is_removed_from_free_list() {
+        let mut cspace = CapabilitySpace::new();
+        let root = cspace
+            .insert_initial_capability(endpoint(Rights::READ | Rights::WRITE))
+            .unwrap();
+        let reusable = cspace.copy(root, Rights::READ).unwrap();
+        cspace.delete(reusable).unwrap();
+
+        let explicit = cspace.copy_into(root, reusable.slot, Rights::READ).unwrap();
+        let implicit = cspace.copy(root, Rights::READ).unwrap();
+
+        assert_eq!(explicit.slot, reusable.slot);
+        assert_ne!(implicit.slot, reusable.slot);
+        assert!(cspace.lookup(explicit).is_ok());
     }
 
     #[test]
