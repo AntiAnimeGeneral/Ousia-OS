@@ -123,6 +123,20 @@ impl ThreadTable {
     pub fn affinity(&self, thread: ThreadId) -> Option<CpuId> {
         self.get(thread).map(Tcb::affinity)
     }
+
+    pub fn restart(&mut self, thread: ThreadId) -> Option<CpuId> {
+        let tcb = self.get_mut(thread)?;
+        tcb.set_state(ThreadState::Restart);
+        Some(tcb.affinity())
+    }
+
+    pub fn remove(&mut self, thread: ThreadId) -> Option<Tcb> {
+        self.tcbs.remove(&thread)
+    }
+
+    pub fn unbind_notification(&mut self, thread: ThreadId) -> Option<ObjectId> {
+        self.get_mut(thread)?.unbind_notification()
+    }
 }
 
 fn apply_ipc_action(

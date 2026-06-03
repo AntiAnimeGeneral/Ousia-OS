@@ -5,7 +5,7 @@ use crate::{
     invocation::{Invocation, InvocationError, InvocationOutcome, invoke},
     ipc::{Endpoint, IpcPayload, IpcReceiveOptions, IpcSendOptions},
     notification::Notification,
-    object::{FrameObject, KernelObjectKind, ObjectTable, ObjectTableError},
+    object::{FrameObject, KernelObjectKind, KernelObjectRef, ObjectTable, ObjectTableError},
     reply::ReplyState,
     scheduler::{Scheduler, SchedulerError},
     tcb::{CpuId, Tcb, ThreadId, ThreadState},
@@ -358,7 +358,15 @@ impl KernelState {
         &mut self,
         target: CapabilityDescriptor,
     ) -> Result<ExecutionOutcome, KernelExecutionError> {
+        let object = self
+            .cspace
+            .lookup(target)
+            .map_err(InvocationError::Cap)?
+            .object;
         self.cspace.delete(target).map_err(InvocationError::Cap)?;
+        if !self.cspace.object_has_live_cap(object) {
+            self.finalise_unreferenced_object(object);
+        }
         Ok(ExecutionOutcome::CapabilityMutation)
     }
 
@@ -372,10 +380,101 @@ impl KernelState {
             .map_err(InvocationError::Cap)?;
         for object in revocation.revoked_objects {
             if !self.cspace.object_has_live_cap(object) {
-                self.objects.remove_inert(object);
+                self.finalise_unreferenced_object(object);
             }
         }
         Ok(ExecutionOutcome::CapabilityMutation)
+    }
+
+    fn finalise_unreferenced_object(&mut self, object: ObjectId) {
+        let Ok(object_ref) = self.objects.get(object) else {
+            return;
+        };
+
+        match object_ref {
+            KernelObjectRef::Endpoint => self.finalise_endpoint(object),
+            KernelObjectRef::Notification => self.finalise_notification(object),
+            KernelObjectRef::Tcb { thread } => self.finalise_tcb_object(object, thread),
+            KernelObjectRef::Frame { .. } | KernelObjectRef::CNode => {
+                self.objects.remove_finalised(object);
+            }
+            KernelObjectRef::Reply => {}
+        }
+    }
+
+    fn finalise_endpoint(&mut self, object: ObjectId) {
+        let cancellation = self
+            .objects
+            .endpoint_mut(object)
+            .expect("endpoint finalisation must target an endpoint object")
+            .cancel_all();
+        for waiter in cancellation
+            .senders
+            .into_iter()
+            .chain(cancellation.receivers)
+        {
+            self.restart_thread(waiter.thread(), waiter.cpu());
+        }
+        self.objects.remove_finalised(object);
+    }
+
+    fn finalise_notification(&mut self, object: ObjectId) {
+        let cancellation = self
+            .objects
+            .notification_mut(object)
+            .expect("notification finalisation must target a notification object")
+            .cancel_all();
+        for waiter in cancellation.waiters {
+            self.restart_thread(waiter.thread(), waiter.cpu());
+        }
+        if let Some(bound) = cancellation.bound_tcb {
+            self.threads.unbind_notification(bound.thread());
+        }
+        self.objects.remove_finalised(object);
+    }
+
+    fn finalise_tcb_object(&mut self, object: ObjectId, thread: Option<ThreadId>) {
+        if let Some(thread) = thread {
+            self.scheduler.remove_thread(thread);
+            if let Some(tcb) = self.threads.remove(thread) {
+                self.cancel_tcb_runtime_state(&tcb);
+            }
+        }
+        self.objects.remove_finalised(object);
+    }
+
+    fn cancel_tcb_runtime_state(&mut self, tcb: &Tcb) {
+        match tcb.state() {
+            ThreadState::BlockedOnSend { endpoint, .. }
+            | ThreadState::BlockedOnReceive { endpoint, .. } => {
+                if let Ok(endpoint) = self.objects.endpoint_mut(endpoint) {
+                    endpoint.cancel_thread(tcb.id());
+                }
+            }
+            ThreadState::BlockedOnNotification { notification } => {
+                if let Ok(notification) = self.objects.notification_mut(notification) {
+                    notification.cancel_waiter(tcb.id());
+                }
+            }
+            ThreadState::BlockedOnReply
+            | ThreadState::Inactive
+            | ThreadState::Running
+            | ThreadState::Restart
+            | ThreadState::IdleThreadState => {}
+        }
+
+        if let Some(notification) = tcb.bound_notification()
+            && let Ok(notification) = self.objects.notification_mut(notification)
+        {
+            notification.unbind_tcb();
+        }
+    }
+
+    fn restart_thread(&mut self, thread: ThreadId, cpu: CpuId) {
+        self.scheduler.remove_thread(thread);
+        if self.threads.restart(thread).is_some() {
+            let _ = self.scheduler.enqueue_validated(thread, cpu);
+        }
     }
 
     fn execute_endpoint_send(

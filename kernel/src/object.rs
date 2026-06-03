@@ -231,6 +231,21 @@ impl ObjectTable {
         }
     }
 
+    pub fn remove_finalised(&mut self, object: ObjectId) -> Option<KernelObjectRef> {
+        let removed = self.objects.remove(&object)?;
+        match removed {
+            KernelObject::Tcb {
+                thread: Some(thread),
+            } => {
+                self.tcb_index.remove(&thread);
+                Some(KernelObjectRef::Tcb {
+                    thread: Some(thread),
+                })
+            }
+            object_ref => Some(object_ref.as_ref()),
+        }
+    }
+
     pub fn expect_kind(
         &self,
         object: ObjectId,

@@ -1,4 +1,4 @@
-use alloc::collections::VecDeque;
+use alloc::{collections::VecDeque, vec::Vec};
 
 use crate::{
     cap::ObjectId,
@@ -62,6 +62,12 @@ pub struct Notification {
     badge: u64,
     waiters: VecDeque<NotificationWaiter>,
     bound_tcb: Option<BoundTcb>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NotificationCancellation {
+    pub waiters: Vec<NotificationWaiter>,
+    pub bound_tcb: Option<BoundTcb>,
 }
 
 impl NotificationWaiter {
@@ -210,6 +216,25 @@ impl Notification {
 
     pub const fn bound_tcb(&self) -> Option<BoundTcb> {
         self.bound_tcb
+    }
+
+    pub fn cancel_all(&mut self) -> NotificationCancellation {
+        let waiters = self.waiters.drain(..).collect();
+        let bound_tcb = self.bound_tcb.take();
+        self.badge = 0;
+        self.state = NotificationState::Idle;
+
+        NotificationCancellation { waiters, bound_tcb }
+    }
+
+    pub fn cancel_waiter(&mut self, thread: ThreadId) -> bool {
+        let waiter_count = self.waiters.len();
+        self.waiters.retain(|waiter| waiter.thread != thread);
+        if self.waiters.is_empty() && self.state == NotificationState::Waiting {
+            self.state = NotificationState::Idle;
+        }
+
+        waiter_count != self.waiters.len()
     }
 }
 

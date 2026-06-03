@@ -1,4 +1,4 @@
-use alloc::collections::VecDeque;
+use alloc::{collections::VecDeque, vec::Vec};
 
 use crate::tcb::{CpuId, ThreadId};
 
@@ -103,6 +103,12 @@ pub struct Endpoint {
     state: EndpointState,
     senders: VecDeque<IpcMessage>,
     receivers: VecDeque<EndpointWaiter>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EndpointCancellation {
+    pub senders: Vec<EndpointWaiter>,
+    pub receivers: Vec<EndpointWaiter>,
 }
 
 pub const MAX_IPC_WORDS: usize = 4;
@@ -316,6 +322,35 @@ impl Endpoint {
 
     pub fn next_sender(&self) -> Option<IpcMessage> {
         self.senders.front().copied()
+    }
+
+    pub fn cancel_all(&mut self) -> EndpointCancellation {
+        let senders = self
+            .senders
+            .drain(..)
+            .map(|message| EndpointWaiter {
+                thread: message.sender,
+                cpu: message.sender_cpu,
+                can_grant: false,
+            })
+            .collect();
+        let receivers = self.receivers.drain(..).collect();
+        self.state = EndpointState::Idle;
+
+        EndpointCancellation { senders, receivers }
+    }
+
+    pub fn cancel_thread(&mut self, thread: ThreadId) -> bool {
+        let sender_count = self.senders.len();
+        let receiver_count = self.receivers.len();
+        self.senders.retain(|message| message.sender != thread);
+        self.receivers.retain(|waiter| waiter.thread != thread);
+
+        if self.senders.is_empty() && self.receivers.is_empty() {
+            self.state = EndpointState::Idle;
+        }
+
+        sender_count != self.senders.len() || receiver_count != self.receivers.len()
     }
 }
 

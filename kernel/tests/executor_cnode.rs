@@ -3,11 +3,12 @@ mod support;
 use kernel::{
     cap::{
         CNodeCap, CapError, Capability, CapabilityDescriptor, EndpointCap, FrameCap, MintParams,
-        RetypeTarget, Rights, UntypedCap,
+        RetypeTarget, Rights, TcbCap, UntypedCap,
     },
     invocation::Invocation,
     object::{KernelObjectRef, ObjectTableError},
     state::{ExecutionOutcome, InvocationContext, KernelExecutionError},
+    tcb::{Tcb, ThreadState},
 };
 use support::{cpu, thread};
 
@@ -45,6 +46,21 @@ fn retyped_descriptor(outcome: ExecutionOutcome, context: &str) -> CapabilityDes
         panic!("{context}: expected retyped outcome");
     };
 
+    descriptor
+}
+
+fn configure_thread(state: &mut kernel::state::KernelState, id: u64) -> CapabilityDescriptor {
+    let descriptor = state
+        .cspace_mut()
+        .insert_initial_capability(Capability::Tcb(TcbCap {
+            rights: Rights::MANAGE,
+        }))
+        .unwrap();
+    let object = state.cspace().lookup(descriptor).unwrap().object;
+    state.objects_mut().insert_tcb(object).unwrap();
+    state
+        .insert_thread_object(object, Tcb::new(thread(id), cpu(0)))
+        .unwrap();
     descriptor
 }
 
@@ -388,11 +404,10 @@ fn cnode_revoke_typed_descendants_keeps_target_runtime_object() {
 }
 
 #[test]
-fn cnode_revoke_untyped_endpoint_keeps_runtime_object_until_finalisation_path() {
-    // Goal: CNode revoke does not pretend Endpoint finalisation is implemented by
-    // deleting ObjectTable state directly.
-    // Scope: host integration across Untyped retype, CNode revoke, and conservative cleanup.
-    // Semantics: the Endpoint cap is gone, while runtime object state waits for explicit finaliseCap alignment.
+fn cnode_revoke_untyped_endpoint_finalises_runtime_object() {
+    // Goal: CNode revoke reaches seL4-style final cap cleanup for Endpoint objects.
+    // Scope: host integration across Untyped retype, CNode revoke, and ObjectTable finalisation.
+    // Semantics: the final Endpoint cap disappears and its runtime object is removed.
     let (mut state, cnode) = cnode_state();
     let root = state
         .cspace_mut()
@@ -425,6 +440,231 @@ fn cnode_revoke_untyped_endpoint_keeps_runtime_object_until_finalisation_path() 
         state.cspace().lookup(endpoint),
         Err(CapError::SlotNotFound(_))
     ));
+    assert_eq!(
+        state.objects().get(endpoint_object),
+        Err(ObjectTableError::ObjectNotFound {
+            object: endpoint_object,
+        })
+    );
+}
+
+#[test]
+fn cnode_revoke_endpoint_restarts_blocked_sender_before_removing_object() {
+    // Goal: Endpoint finalisation follows seL4 cancelAllIPC semantics, not only ObjectTable removal.
+    // Scope: host integration across TCB scheduling, Endpoint send blocking, and CNode revoke.
+    // Semantics: a sender blocked on the final Endpoint cap is restarted and requeued when revoke finalises it.
+    let (mut state, cnode) = cnode_state();
+    let root = state
+        .cspace_mut()
+        .insert_initial_capability(untyped(12))
+        .unwrap();
+    let endpoint = retyped_descriptor(
+        state
+            .execute_invocation(
+                InvocationContext::new(thread(1), cpu(0)),
+                root,
+                Invocation::UntypedRetype {
+                    target: RetypeTarget::Endpoint,
+                },
+            )
+            .unwrap(),
+        "Endpoint retype",
+    );
+    let endpoint_object = state.cspace().lookup(endpoint).unwrap().object;
+    let sender_tcb = configure_thread(&mut state, 7);
+
+    assert_eq!(
+        state.execute_invocation(
+            InvocationContext::new(thread(7), cpu(0)),
+            sender_tcb,
+            Invocation::TcbResume,
+        ),
+        Ok(ExecutionOutcome::Thread(
+            kernel::thread_action::ThreadAction::Resumed {
+                thread: thread(7),
+                cpu: cpu(0),
+                scheduler: kernel::scheduler::SchedulerAction::Enqueued {
+                    thread: thread(7),
+                    cpu: cpu(0),
+                },
+            }
+        ))
+    );
+    state.scheduler_mut().schedule_next(cpu(0)).unwrap();
+
+    assert_eq!(
+        state.execute_invocation(
+            InvocationContext::new(thread(7), cpu(0)),
+            endpoint,
+            Invocation::EndpointSend {
+                message_words: 0,
+                blocking: true,
+                is_call: false,
+            },
+        ),
+        Ok(ExecutionOutcome::Thread(
+            kernel::thread_action::ThreadAction::Blocked {
+                thread: thread(7),
+                cpu: cpu(0),
+            }
+        ))
+    );
+    assert_eq!(
+        state.threads().state(thread(7)),
+        Some(ThreadState::BlockedOnSend {
+            endpoint: endpoint_object,
+            badge: 0,
+            can_grant: true,
+            can_grant_reply: true,
+            is_call: false,
+        })
+    );
+
+    assert_eq!(
+        state.execute_invocation(
+            InvocationContext::new(thread(1), cpu(0)),
+            cnode,
+            Invocation::CNodeRevoke { target: root },
+        ),
+        Ok(ExecutionOutcome::CapabilityMutation)
+    );
+
+    assert_eq!(state.threads().state(thread(7)), Some(ThreadState::Restart));
+    assert_eq!(
+        state.scheduler().placement(thread(7)),
+        Some(kernel::scheduler::ThreadPlacement::Ready { cpu: cpu(0) })
+    );
+    assert_eq!(
+        state.objects().get(endpoint_object),
+        Err(ObjectTableError::ObjectNotFound {
+            object: endpoint_object,
+        })
+    );
+}
+
+#[test]
+fn cnode_delete_final_tcb_cap_removes_thread_scheduler_and_runtime_object() {
+    // Goal: CNode delete reaches the seL4 thread finalisation boundary for a final TCB cap.
+    // Scope: host integration across CSpace delete, ObjectTable TCB binding, ThreadTable, and Scheduler.
+    // Semantics: deleting the final TCB cap suspends/removes thread state and clears scheduler placement.
+    let (mut state, cnode) = cnode_state();
+    let tcb = configure_thread(&mut state, 8);
+    let tcb_object = state.cspace().lookup(tcb).unwrap().object;
+
+    assert_eq!(
+        state.execute_invocation(
+            InvocationContext::new(thread(8), cpu(0)),
+            tcb,
+            Invocation::TcbResume,
+        ),
+        Ok(ExecutionOutcome::Thread(
+            kernel::thread_action::ThreadAction::Resumed {
+                thread: thread(8),
+                cpu: cpu(0),
+                scheduler: kernel::scheduler::SchedulerAction::Enqueued {
+                    thread: thread(8),
+                    cpu: cpu(0),
+                },
+            }
+        ))
+    );
+
+    assert_eq!(
+        state.execute_invocation(
+            InvocationContext::new(thread(1), cpu(0)),
+            cnode,
+            Invocation::CNodeDelete { target: tcb },
+        ),
+        Ok(ExecutionOutcome::CapabilityMutation)
+    );
+
+    assert_eq!(state.threads().get(thread(8)), None);
+    assert_eq!(state.scheduler().placement(thread(8)), None);
+    assert_eq!(
+        state.objects().get(tcb_object),
+        Err(ObjectTableError::ObjectNotFound { object: tcb_object })
+    );
+}
+
+#[test]
+fn cnode_delete_blocked_tcb_removes_endpoint_queue_entry() {
+    // Goal: TCB finalisation performs seL4-style cancelIPC before removing the TCB runtime object.
+    // Scope: host integration across Endpoint queue state, ThreadTable, Scheduler, and CNode delete.
+    // Semantics: deleting a TCB blocked on an Endpoint removes its queued sender while keeping the Endpoint live.
+    let (mut state, cnode) = cnode_state();
+    let root = state
+        .cspace_mut()
+        .insert_initial_capability(untyped(12))
+        .unwrap();
+    let endpoint = retyped_descriptor(
+        state
+            .execute_invocation(
+                InvocationContext::new(thread(1), cpu(0)),
+                root,
+                Invocation::UntypedRetype {
+                    target: RetypeTarget::Endpoint,
+                },
+            )
+            .unwrap(),
+        "Endpoint retype",
+    );
+    let endpoint_object = state.cspace().lookup(endpoint).unwrap().object;
+    let sender_tcb = configure_thread(&mut state, 9);
+    let sender_object = state.cspace().lookup(sender_tcb).unwrap().object;
+
+    state
+        .execute_invocation(
+            InvocationContext::new(thread(9), cpu(0)),
+            sender_tcb,
+            Invocation::TcbResume,
+        )
+        .unwrap();
+    state.scheduler_mut().schedule_next(cpu(0)).unwrap();
+    state
+        .execute_invocation(
+            InvocationContext::new(thread(9), cpu(0)),
+            endpoint,
+            Invocation::EndpointSend {
+                message_words: 0,
+                blocking: true,
+                is_call: false,
+            },
+        )
+        .unwrap();
+
+    assert_eq!(
+        state
+            .objects()
+            .endpoint(endpoint_object)
+            .unwrap()
+            .queued_senders(),
+        1
+    );
+    assert_eq!(
+        state.execute_invocation(
+            InvocationContext::new(thread(1), cpu(0)),
+            cnode,
+            Invocation::CNodeDelete { target: sender_tcb },
+        ),
+        Ok(ExecutionOutcome::CapabilityMutation)
+    );
+
+    assert_eq!(
+        state
+            .objects()
+            .endpoint(endpoint_object)
+            .unwrap()
+            .queued_senders(),
+        0
+    );
+    assert_eq!(state.threads().get(thread(9)), None);
+    assert_eq!(state.scheduler().placement(thread(9)), None);
+    assert_eq!(
+        state.objects().get(sender_object),
+        Err(ObjectTableError::ObjectNotFound {
+            object: sender_object
+        })
+    );
     assert_eq!(
         state.objects().get(endpoint_object),
         Ok(KernelObjectRef::Endpoint)

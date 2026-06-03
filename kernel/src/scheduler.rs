@@ -257,6 +257,17 @@ impl PerCpuRunQueue {
             .any(|ready| *ready == thread)
             .then_some(ThreadPlacement::Ready { cpu: self.cpu })
     }
+
+    fn remove_thread(&mut self, thread: ThreadId) -> Option<ThreadPlacement> {
+        if self.current == Some(thread) {
+            self.current = None;
+            return Some(ThreadPlacement::Current { cpu: self.cpu });
+        }
+
+        let index = self.ready.iter().position(|ready| *ready == thread)?;
+        self.ready.remove(index);
+        Some(ThreadPlacement::Ready { cpu: self.cpu })
+    }
 }
 
 impl Scheduler {
@@ -339,6 +350,12 @@ impl Scheduler {
         self.run_queues
             .values()
             .find_map(|queue| queue.placement(thread))
+    }
+
+    pub fn remove_thread(&mut self, thread: ThreadId) -> Option<ThreadPlacement> {
+        self.run_queues
+            .values_mut()
+            .find_map(|queue| queue.remove_thread(thread))
     }
 }
 
