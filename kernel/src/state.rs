@@ -520,12 +520,11 @@ impl KernelState {
             .endpoint_mut(object)
             .expect("endpoint finalisation must target an endpoint object")
             .cancel_all();
-        for waiter in cancellation
-            .senders
-            .into_iter()
-            .chain(cancellation.receivers)
-        {
-            self.restart_thread(waiter.thread(), waiter.cpu());
+        for sender in cancellation.senders {
+            self.restart_thread(sender.thread(), sender.cpu());
+        }
+        for receiver in cancellation.receivers {
+            self.restart_thread(receiver.thread(), receiver.cpu());
         }
         self.objects.remove_finalised(object);
     }
@@ -615,12 +614,19 @@ impl KernelState {
         } else {
             None
         };
+        let receiver_can_grant =
+            waiting_receiver.and_then(|receiver| match self.threads.state(receiver.thread()) {
+                Some(ThreadState::BlockedOnReceive {
+                    endpoint: blocked_endpoint,
+                    can_grant,
+                    ..
+                }) if blocked_endpoint == endpoint => Some(can_grant),
+                _ => None,
+            });
         let reply_cap = reply.map(|_| ReplyCap {
             caller: caller_object.expect("reply path must have caller object"),
             target: endpoint,
-            can_grant: waiting_receiver
-                .expect("reply path must have waiting receiver")
-                .can_grant(),
+            can_grant: receiver_can_grant.expect("reply path must have waiting receiver grant"),
         });
         if let (Some(reply), Some(reply_cap)) = (reply, reply_cap.as_ref()) {
             self.cspace
@@ -1686,6 +1692,103 @@ mod tests {
                     can_grant: false,
                 }),
             }
+        );
+    }
+
+    #[test]
+    fn endpoint_send_receiver_state_mismatch_fails_without_side_effects() {
+        let mut cspace = CapabilitySpace::new();
+        let endpoint_descriptor = cspace
+            .insert_initial_capability(Capability::Endpoint(EndpointCap {
+                badge: 7,
+                rights: Rights::READ | Rights::WRITE | Rights::GRANT | Rights::GRANT_REPLY,
+            }))
+            .unwrap();
+        let endpoint_object = cspace.object_of(endpoint_descriptor).unwrap();
+        let reply_seed = cspace
+            .insert_reply_capability_for_test(ReplyCap {
+                caller: object(1000),
+                target: object(1001),
+                can_grant: true,
+            })
+            .unwrap();
+        let reply_object = cspace.object_of(reply_seed).unwrap();
+        cspace.consume_reply_cap(reply_seed).unwrap();
+        let mut objects = ObjectTable::new();
+        objects
+            .insert_endpoint(endpoint_object, Endpoint::new())
+            .unwrap();
+        objects.insert_reply(reply_object, Reply::new()).unwrap();
+        let mut threads = ThreadTable::new();
+        let caller = runnable_tcb(1, cpu(0));
+        let receiver = runnable_tcb(2, cpu(1));
+        threads.insert(caller.clone());
+        threads.insert(receiver.clone());
+        let mut scheduler = Scheduler::new(&[cpu(0), cpu(1)]).unwrap();
+        scheduler.enqueue(&caller).unwrap();
+        scheduler.enqueue(&receiver).unwrap();
+        scheduler.schedule_next(cpu(0)).unwrap();
+        scheduler.schedule_next(cpu(1)).unwrap();
+        let mut state = KernelState::from_parts(cspace, objects, threads, scheduler);
+        state
+            .execute_invocation(
+                InvocationContext::new(thread(2), cpu(1)).with_reply(reply_object),
+                endpoint_descriptor,
+                Invocation::EndpointRecv { blocking: true },
+            )
+            .unwrap();
+        state.threads_mut().get_mut(thread(2)).unwrap().set_state(
+            ThreadState::BlockedOnNotification {
+                notification: object(20),
+            },
+        );
+
+        assert_eq!(
+            state.execute_invocation(
+                InvocationContext::new(thread(1), cpu(0)),
+                endpoint_descriptor,
+                Invocation::EndpointSend {
+                    message_words: 0,
+                    op: EndpointSendOp::Call,
+                },
+            ),
+            Err(KernelExecutionError::Thread(
+                ThreadActionError::UnexpectedThreadState {
+                    thread: thread(2),
+                    expected: ThreadState::BlockedOnReceive {
+                        endpoint: endpoint_object,
+                        can_grant: false,
+                        reply: None,
+                    },
+                    actual: ThreadState::BlockedOnNotification {
+                        notification: object(20),
+                    },
+                }
+            ))
+        );
+        assert_eq!(
+            state
+                .objects()
+                .endpoint(endpoint_object)
+                .unwrap()
+                .queued_receivers(),
+            1
+        );
+        assert_eq!(state.threads().state(thread(1)), Some(ThreadState::Running));
+        assert_eq!(
+            state.threads().state(thread(2)),
+            Some(ThreadState::BlockedOnNotification {
+                notification: object(20),
+            })
+        );
+        assert_eq!(
+            state.scheduler().placement(thread(1)),
+            Some(crate::scheduler::ThreadPlacement::Current { cpu: cpu(0) })
+        );
+        assert_eq!(state.scheduler().placement(thread(2)), None);
+        assert_eq!(
+            state.objects().reply(reply_object).unwrap().state(),
+            ReplyState::Empty
         );
     }
 

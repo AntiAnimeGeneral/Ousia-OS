@@ -4,7 +4,7 @@ use crate::{
     cap::ObjectId,
     ipc::{
         Endpoint, IpcAction, IpcMessage, IpcPayload, IpcReceiveOptions, IpcSendOptions,
-        QueuedSender, ReplyRequest, ReplySetup,
+        QueuedReceiver, QueuedSender, ReplyRequest, ReplySetup,
     },
     notification::{BoundTcbSignal, Notification, NotificationAction, NotificationState},
     reply::{Reply, ReplyAction, ReplyCaller, ReplyCallerParams, ReplyError, ReplyState},
@@ -107,6 +107,14 @@ enum WakeExpectation {
 struct BlockedSenderMessage {
     message: IpcMessage,
     reply_request: Option<ReplyRequest>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct BlockedReceiverContext {
+    thread: ThreadId,
+    cpu: CpuId,
+    can_grant: bool,
+    reply: Option<ObjectId>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -314,6 +322,76 @@ fn blocked_sender_message(
     })
 }
 
+fn blocked_receiver_context(
+    threads: &ThreadTable,
+    endpoint: ObjectId,
+    receiver: QueuedReceiver,
+) -> Result<BlockedReceiverContext, ThreadActionError> {
+    let Some(state) = threads.state(receiver.thread()) else {
+        return Err(ThreadActionError::UnknownThread {
+            thread: receiver.thread(),
+        });
+    };
+    let ThreadState::BlockedOnReceive {
+        endpoint: blocked_endpoint,
+        can_grant,
+        reply,
+    } = state
+    else {
+        return Err(ThreadActionError::UnexpectedThreadState {
+            thread: receiver.thread(),
+            expected: ThreadState::BlockedOnReceive {
+                endpoint,
+                can_grant: false,
+                reply: None,
+            },
+            actual: state,
+        });
+    };
+    if blocked_endpoint != endpoint {
+        return Err(ThreadActionError::UnexpectedThreadState {
+            thread: receiver.thread(),
+            expected: ThreadState::BlockedOnReceive {
+                endpoint,
+                can_grant,
+                reply,
+            },
+            actual: state,
+        });
+    }
+
+    Ok(BlockedReceiverContext {
+        thread: receiver.thread(),
+        cpu: receiver.cpu(),
+        can_grant,
+        reply,
+    })
+}
+
+fn blocked_receive_grant(
+    threads: &ThreadTable,
+    endpoint: ObjectId,
+    receiver: ThreadId,
+) -> Result<bool, ThreadActionError> {
+    match threads.state(receiver) {
+        Some(ThreadState::BlockedOnReceive {
+            endpoint: blocked_endpoint,
+            can_grant,
+            ..
+        }) if blocked_endpoint == endpoint => Ok(can_grant),
+        Some(actual) => Err(ThreadActionError::UnexpectedThreadState {
+            thread: receiver,
+            expected: ThreadState::BlockedOnReceive {
+                endpoint,
+                can_grant: false,
+                reply: None,
+            },
+            actual,
+        }),
+        None => Err(ThreadActionError::UnknownThread { thread: receiver }),
+    }
+}
+
 fn apply_ipc_action(
     threads: &mut ThreadTable,
     scheduler: &mut Scheduler,
@@ -363,7 +441,6 @@ fn apply_ipc_action(
         IpcAction::DeliveredToReceiver {
             receiver,
             receiver_cpu,
-            receiver_can_grant,
             ..
         } => wake_thread(
             threads,
@@ -372,7 +449,7 @@ fn apply_ipc_action(
             receiver_cpu,
             WakeExpectation::Receive {
                 endpoint,
-                can_grant: receiver_can_grant,
+                can_grant: blocked_receive_grant(threads, endpoint, receiver)?,
             },
         ),
         IpcAction::SenderReleased { sender, .. } => {
@@ -419,15 +496,16 @@ pub fn send_ipc(
 
     let mut reply = reply;
 
-    if let Some(receiver) = endpoint.next_receiver() {
+    let receiver_context = if let Some(receiver) = endpoint.next_receiver() {
+        let receiver = blocked_receiver_context(threads, request.endpoint, receiver)?;
         validate_wake(
             threads,
             scheduler,
-            receiver.thread(),
-            receiver.cpu(),
+            receiver.thread,
+            receiver.cpu,
             WakeExpectation::Receive {
                 endpoint: request.endpoint,
-                can_grant: receiver.can_grant(),
+                can_grant: receiver.can_grant,
             },
         )?;
 
@@ -438,7 +516,7 @@ pub fn send_ipc(
                 caller_cpu: request.sender_cpu,
                 sender_can_reply: caller_can_reply,
             };
-            let setup = reply_setup_for(reply_request, receiver.can_grant());
+            let setup = reply_setup_for(reply_request, receiver.can_grant);
             if caller_can_reply {
                 let reply = reply
                     .as_deref()
@@ -451,7 +529,10 @@ pub fn send_ipc(
                 }
             }
         }
-    }
+        Some(receiver)
+    } else {
+        None
+    };
 
     let action = endpoint.send(
         request.sender,
@@ -464,11 +545,14 @@ pub fn send_ipc(
         IpcAction::DeliveredToReceiver {
             receiver,
             receiver_cpu,
-            receiver_can_grant,
             message,
             reply_request: Some(reply_request),
         } => {
             let caller_can_reply = reply_request.sender_can_reply;
+            let receiver_can_grant = receiver_context
+                .filter(|context| context.thread == receiver && context.cpu == receiver_cpu)
+                .expect("prechecked immediate call delivery must target the queued receiver")
+                .can_grant;
             let setup = reply_setup_for(reply_request, receiver_can_grant);
             let sender_action = if caller_can_reply {
                 let caller_object = request
@@ -1295,7 +1379,7 @@ mod tests {
                 thread: thread(2),
                 expected: ThreadState::BlockedOnReceive {
                     endpoint: object(10),
-                    can_grant: true,
+                    can_grant: false,
                     reply: None,
                 },
                 actual: ThreadState::BlockedOnNotification {
@@ -1350,6 +1434,54 @@ mod tests {
         assert_eq!(threads.state(thread(2)), Some(ThreadState::Running));
         assert!(reply.is_pending());
         assert_eq!(endpoint.state(), crate::ipc::EndpointState::Idle);
+    }
+
+    #[test]
+    fn send_ipc_call_uses_tcb_receive_grant_for_reply_setup() {
+        let mut endpoint = crate::ipc::Endpoint::new();
+        endpoint.recv(thread(2), cpu(1), IpcReceiveOptions::new(true, true));
+        let mut reply = Reply::new();
+        let mut threads = table_with_threads(&[(1, cpu(0)), (2, cpu(1))]);
+        threads
+            .get_mut(thread(2))
+            .unwrap()
+            .set_state(ThreadState::BlockedOnReceive {
+                endpoint: object(10),
+                can_grant: false,
+                reply: None,
+            });
+        let mut scheduler = scheduler_with_current(Some(1), None);
+
+        assert_eq!(
+            send_ipc(
+                &mut threads,
+                &mut scheduler,
+                &mut endpoint,
+                Some(&mut reply),
+                send_request(object(10), thread(1), cpu(0), 7, call_options(true, false),)
+                    .with_caller(object(100)),
+            ),
+            Ok(ThreadAction::Woken {
+                thread: thread(2),
+                cpu: cpu(1),
+                scheduler: SchedulerAction::Enqueued {
+                    thread: thread(2),
+                    cpu: cpu(1),
+                },
+            })
+        );
+        assert_eq!(
+            reply.state(),
+            ReplyState::Pending {
+                caller: ReplyCaller::new(ReplyCallerParams {
+                    caller: object(100),
+                    target: object(10),
+                    thread: thread(1),
+                    cpu: cpu(0),
+                    can_grant: false,
+                })
+            }
+        );
     }
 
     #[test]
@@ -1544,7 +1676,7 @@ mod tests {
                 thread: thread(2),
                 expected: ThreadState::BlockedOnReceive {
                     endpoint: object(10),
-                    can_grant: true,
+                    can_grant: false,
                     reply: None,
                 },
                 actual: ThreadState::BlockedOnNotification {

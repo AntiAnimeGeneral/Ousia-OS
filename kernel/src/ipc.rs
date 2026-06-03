@@ -4,10 +4,9 @@ pub use crate::message::{IpcError, IpcPayload, MAX_IPC_WORDS};
 use crate::tcb::{CpuId, ThreadId};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct EndpointWaiter {
+pub struct QueuedReceiver {
     thread: ThreadId,
     cpu: CpuId,
-    can_grant: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -86,7 +85,6 @@ pub enum IpcAction {
     DeliveredToReceiver {
         receiver: ThreadId,
         receiver_cpu: CpuId,
-        receiver_can_grant: bool,
         message: IpcMessage,
         reply_request: Option<ReplyRequest>,
     },
@@ -116,7 +114,7 @@ pub struct ReplySetup {
 pub struct Endpoint {
     state: EndpointState,
     senders: EndpointQueue<QueuedSender>,
-    receivers: EndpointQueue<EndpointWaiter>,
+    receivers: EndpointQueue<QueuedReceiver>,
 }
 
 #[derive(Debug)]
@@ -126,21 +124,21 @@ struct EndpointQueue<T> {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct EndpointCancellation {
-    pub senders: Vec<EndpointWaiter>,
-    pub receivers: Vec<EndpointWaiter>,
+    pub senders: Vec<QueuedSender>,
+    pub receivers: Vec<QueuedReceiver>,
 }
 
-impl EndpointWaiter {
+impl QueuedReceiver {
+    pub const fn new(thread: ThreadId, cpu: CpuId) -> Self {
+        Self { thread, cpu }
+    }
+
     pub const fn thread(self) -> ThreadId {
         self.thread
     }
 
     pub const fn cpu(self) -> CpuId {
         self.cpu
-    }
-
-    pub const fn can_grant(self) -> bool {
-        self.can_grant
     }
 }
 
@@ -333,7 +331,6 @@ impl Endpoint {
                 IpcAction::DeliveredToReceiver {
                     receiver: receiver.thread,
                     receiver_cpu: receiver.cpu,
-                    receiver_can_grant: receiver.can_grant,
                     reply_request: reply_request_for(message),
                     message,
                 }
@@ -356,11 +353,8 @@ impl Endpoint {
                     };
                 }
 
-                self.receivers.push_back(EndpointWaiter {
-                    thread: receiver,
-                    cpu: receiver_cpu,
-                    can_grant: options.can_grant,
-                });
+                self.receivers
+                    .push_back(QueuedReceiver::new(receiver, receiver_cpu));
                 self.state = EndpointState::Recv;
                 IpcAction::ReceiverBlocked {
                     thread: receiver,
@@ -398,7 +392,7 @@ impl Endpoint {
         self.receivers.len()
     }
 
-    pub fn next_receiver(&self) -> Option<EndpointWaiter> {
+    pub fn next_receiver(&self) -> Option<QueuedReceiver> {
         self.receivers.front().copied()
     }
 
@@ -407,15 +401,7 @@ impl Endpoint {
     }
 
     pub fn cancel_all(&mut self) -> EndpointCancellation {
-        let senders = self
-            .senders
-            .drain_all()
-            .map(|sender| EndpointWaiter {
-                thread: sender.thread,
-                cpu: sender.cpu,
-                can_grant: false,
-            })
-            .collect();
+        let senders = self.senders.drain_all().collect();
         let receivers = self.receivers.drain_all().collect();
         self.state = EndpointState::Idle;
 
@@ -610,7 +596,6 @@ mod tests {
             IpcAction::DeliveredToReceiver {
                 receiver: thread(3),
                 receiver_cpu: cpu(2),
-                receiver_can_grant: true,
                 reply_request: Some(ReplyRequest {
                     caller: thread(1),
                     caller_cpu: cpu(0),
@@ -680,7 +665,6 @@ mod tests {
             IpcAction::DeliveredToReceiver {
                 receiver: thread(3),
                 receiver_cpu: cpu(2),
-                receiver_can_grant: true,
                 reply_request: None,
                 message: IpcMessage {
                     sender: thread(1),
@@ -712,7 +696,6 @@ mod tests {
             IpcAction::DeliveredToReceiver {
                 receiver: thread(3),
                 receiver_cpu: cpu(2),
-                receiver_can_grant: false,
                 reply_request: Some(ReplyRequest {
                     caller: thread(1),
                     caller_cpu: cpu(0),
