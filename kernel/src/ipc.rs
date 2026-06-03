@@ -81,22 +81,29 @@ pub enum IpcAction {
         receiver_cpu: CpuId,
         receiver_can_grant: bool,
         message: IpcMessage,
-        reply_setup: Option<ReplySetup>,
+        reply_request: Option<ReplyRequest>,
     },
     SenderReleased {
         receiver: ThreadId,
         receiver_cpu: CpuId,
         receiver_can_grant: bool,
         message: IpcMessage,
-        reply_setup: Option<ReplySetup>,
+        reply_request: Option<ReplyRequest>,
     },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ReplyRequest {
+    pub caller: ThreadId,
+    pub caller_cpu: CpuId,
+    pub sender_can_reply: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ReplySetup {
     pub caller: ThreadId,
     pub caller_cpu: CpuId,
-    pub can_grant: bool,
+    pub reply_can_grant: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -292,7 +299,7 @@ impl Endpoint {
                     receiver: receiver.thread,
                     receiver_cpu: receiver.cpu,
                     receiver_can_grant: receiver.can_grant,
-                    reply_setup: reply_setup_for(message),
+                    reply_request: reply_request_for(message),
                     message,
                 }
             }
@@ -338,7 +345,7 @@ impl Endpoint {
                     receiver,
                     receiver_cpu,
                     receiver_can_grant: options.can_grant,
-                    reply_setup: reply_setup_for(message),
+                    reply_request: reply_request_for(message),
                     message,
                 }
             }
@@ -395,11 +402,11 @@ impl Endpoint {
     }
 }
 
-fn reply_setup_for(message: IpcMessage) -> Option<ReplySetup> {
-    message.mode.is_call().then_some(ReplySetup {
+fn reply_request_for(message: IpcMessage) -> Option<ReplyRequest> {
+    message.mode.is_call().then_some(ReplyRequest {
         caller: message.sender,
         caller_cpu: message.sender_cpu,
-        can_grant: message.can_grant || message.can_grant_reply,
+        sender_can_reply: message.can_grant || message.can_grant_reply,
     })
 }
 
@@ -497,10 +504,10 @@ mod tests {
                 receiver: thread(3),
                 receiver_cpu: cpu(2),
                 receiver_can_grant: true,
-                reply_setup: Some(ReplySetup {
+                reply_request: Some(ReplyRequest {
                     caller: thread(1),
                     caller_cpu: cpu(0),
-                    can_grant: true,
+                    sender_can_reply: true,
                 }),
                 message: IpcMessage {
                     sender: thread(1),
@@ -554,10 +561,10 @@ mod tests {
                 receiver: thread(3),
                 receiver_cpu: cpu(2),
                 receiver_can_grant: true,
-                reply_setup: Some(ReplySetup {
+                reply_request: Some(ReplyRequest {
                     caller: thread(1),
                     caller_cpu: cpu(0),
-                    can_grant: true,
+                    sender_can_reply: true,
                 }),
                 message: IpcMessage {
                     sender: thread(1),
@@ -624,7 +631,7 @@ mod tests {
                 receiver: thread(3),
                 receiver_cpu: cpu(2),
                 receiver_can_grant: true,
-                reply_setup: None,
+                reply_request: None,
                 message: IpcMessage {
                     sender: thread(1),
                     sender_cpu: cpu(0),
@@ -632,6 +639,42 @@ mod tests {
                     can_grant: true,
                     can_grant_reply: false,
                     mode: IpcSendMode::Send,
+                    payload: IpcPayload::new(&[10]).unwrap(),
+                },
+            }
+        );
+    }
+
+    #[test]
+    fn call_reply_request_reports_sender_reply_authority_only() {
+        let mut endpoint = Endpoint::new();
+
+        endpoint.recv(thread(3), cpu(2), IpcReceiveOptions::new(true, false));
+
+        assert_eq!(
+            endpoint.send(
+                thread(1),
+                cpu(0),
+                7,
+                IpcSendOptions::call(true, false, true),
+                IpcPayload::new(&[10]).unwrap(),
+            ),
+            IpcAction::DeliveredToReceiver {
+                receiver: thread(3),
+                receiver_cpu: cpu(2),
+                receiver_can_grant: false,
+                reply_request: Some(ReplyRequest {
+                    caller: thread(1),
+                    caller_cpu: cpu(0),
+                    sender_can_reply: true,
+                }),
+                message: IpcMessage {
+                    sender: thread(1),
+                    sender_cpu: cpu(0),
+                    badge: 7,
+                    can_grant: false,
+                    can_grant_reply: true,
+                    mode: IpcSendMode::Call,
                     payload: IpcPayload::new(&[10]).unwrap(),
                 },
             }

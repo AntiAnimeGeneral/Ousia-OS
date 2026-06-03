@@ -2,15 +2,22 @@ use alloc::collections::BTreeMap;
 
 use crate::{
     cap::ObjectId,
-    ipc::{Endpoint, IpcAction, IpcPayload, IpcReceiveOptions, IpcSendOptions, ReplySetup},
+    ipc::{
+        Endpoint, IpcAction, IpcPayload, IpcReceiveOptions, IpcSendOptions, ReplyRequest,
+        ReplySetup,
+    },
     notification::{BoundTcbSignal, Notification, NotificationAction, NotificationState},
     reply::{Reply, ReplyAction, ReplyCaller, ReplyCallerParams, ReplyError, ReplyState},
     scheduler::{Scheduler, SchedulerAction, SchedulerError},
     tcb::{CpuId, Tcb, ThreadId, ThreadState},
 };
 
-fn reply_setup_with_receiver_grant(setup: ReplySetup, can_grant: bool) -> ReplySetup {
-    ReplySetup { can_grant, ..setup }
+fn reply_setup_for(request: ReplyRequest, receiver_can_grant: bool) -> ReplySetup {
+    ReplySetup {
+        caller: request.caller,
+        caller_cpu: request.caller_cpu,
+        reply_can_grant: receiver_can_grant,
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -278,11 +285,13 @@ fn apply_ipc_action(
         ),
         IpcAction::SenderReleased {
             message,
-            reply_setup,
+            reply_request,
             ..
         } => {
-            if let Some(setup) = reply_setup {
-                return Err(ThreadActionError::ReceiveCallTransactionUnsupported { setup });
+            if let Some(request) = reply_request {
+                return Err(ThreadActionError::ReceiveCallTransactionUnsupported {
+                    setup: reply_setup_for(request, false),
+                });
             }
 
             wake_thread(
@@ -331,14 +340,12 @@ pub fn send_ipc(
 
         if request.options.mode.is_call() {
             let caller_can_reply = request.options.can_grant || request.options.can_grant_reply;
-            let setup = reply_setup_with_receiver_grant(
-                ReplySetup {
-                    caller: request.sender,
-                    caller_cpu: request.sender_cpu,
-                    can_grant: caller_can_reply,
-                },
-                receiver.can_grant(),
-            );
+            let reply_request = ReplyRequest {
+                caller: request.sender,
+                caller_cpu: request.sender_cpu,
+                sender_can_reply: caller_can_reply,
+            };
+            let setup = reply_setup_for(reply_request, receiver.can_grant());
             if caller_can_reply {
                 let reply = reply
                     .as_deref()
@@ -366,10 +373,10 @@ pub fn send_ipc(
             receiver_cpu,
             receiver_can_grant,
             message,
-            reply_setup: Some(setup),
+            reply_request: Some(reply_request),
         } => {
-            let caller_can_reply = setup.can_grant;
-            let setup = reply_setup_with_receiver_grant(setup, receiver_can_grant);
+            let caller_can_reply = reply_request.sender_can_reply;
+            let setup = reply_setup_for(reply_request, receiver_can_grant);
             let sender_action = if caller_can_reply {
                 let caller_object = request
                     .caller
@@ -383,7 +390,7 @@ pub fn send_ipc(
                         target: request.endpoint,
                         thread: setup.caller,
                         cpu: setup.caller_cpu,
-                        can_grant: setup.can_grant,
+                        can_grant: setup.reply_can_grant,
                     }))
                     .expect("prechecked immediate call reply object must be empty");
                 block_current_validated(
@@ -433,14 +440,12 @@ pub fn recv_ipc(
                 expected,
             )?;
             let caller_can_reply = message.can_grant() || message.can_grant_reply();
-            let setup = reply_setup_with_receiver_grant(
-                ReplySetup {
-                    caller: message.sender(),
-                    caller_cpu: message.sender_cpu(),
-                    can_grant: caller_can_reply,
-                },
-                request.options.can_grant,
-            );
+            let reply_request = ReplyRequest {
+                caller: message.sender(),
+                caller_cpu: message.sender_cpu(),
+                sender_can_reply: caller_can_reply,
+            };
+            let setup = reply_setup_for(reply_request, request.options.can_grant);
             if caller_can_reply {
                 let reply = reply
                     .as_deref()
@@ -467,11 +472,11 @@ pub fn recv_ipc(
     match action {
         IpcAction::SenderReleased {
             message,
-            reply_setup: Some(setup),
+            reply_request: Some(reply_request),
             ..
         } => {
-            let caller_can_reply = setup.can_grant;
-            let setup = reply_setup_with_receiver_grant(setup, request.options.can_grant);
+            let caller_can_reply = reply_request.sender_can_reply;
+            let setup = reply_setup_for(reply_request, request.options.can_grant);
             if caller_can_reply {
                 let caller_object = request
                     .caller
@@ -485,7 +490,7 @@ pub fn recv_ipc(
                         target: request.endpoint,
                         thread: setup.caller,
                         cpu: setup.caller_cpu,
-                        can_grant: setup.can_grant,
+                        can_grant: setup.reply_can_grant,
                     }))
                     .expect("prechecked receive-side call reply object must be empty");
                 threads
@@ -503,7 +508,7 @@ pub fn recv_ipc(
         }
         IpcAction::SenderReleased {
             message,
-            reply_setup: None,
+            reply_request: None,
             ..
         } => Ok(wake_thread_validated(
             threads,
@@ -1340,7 +1345,7 @@ mod tests {
                 setup: ReplySetup {
                     caller: thread(1),
                     caller_cpu: cpu(0),
-                    can_grant: true,
+                    reply_can_grant: true,
                 },
             })
         );
@@ -1582,7 +1587,7 @@ mod tests {
                 setup: ReplySetup {
                     caller: thread(1),
                     caller_cpu: cpu(0),
-                    can_grant: true,
+                    reply_can_grant: true,
                 },
             })
         );
@@ -1688,7 +1693,7 @@ mod tests {
                 setup: ReplySetup {
                     caller: thread(1),
                     caller_cpu: cpu(0),
-                    can_grant: true,
+                    reply_can_grant: true,
                 },
             })
         );

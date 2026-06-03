@@ -1692,7 +1692,7 @@ mod tests {
                 setup: crate::ipc::ReplySetup {
                     caller: thread(1),
                     caller_cpu: cpu(0),
-                    can_grant: true,
+                    reply_can_grant: true,
                 },
             }
         );
