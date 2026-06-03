@@ -40,7 +40,10 @@ description: "Ousia OS 内核边界：kernel/OSTD/tooling 职责归属、seL4 ba
 
 - Phase 1 的内核目标是在 Rust 中复刻 seL4 baseline，而不是只做宽松的 seL4-like 启发实现。
 - Capability、CSpace/CNode、Untyped/retype、delete/revoke、Endpoint、Notification、Reply、TCB、IPC、syscall/invocation 和 scheduling 的算法、抽象、对象关系、权限语义和状态机必须先对齐 seL4 baseline。
+- 对齐范围包括算法、语义和抽象本身；不能只保留外观 API 或测试可见行为，却在内部状态所有权、数据结构关系、错误顺序、revocation/finalisation 规则或 capability derivation 语义上偏离 seL4 原版。
 - Rust 语言特性只用于更清楚地表达类型、不变量、错误边界、状态机和测试；不得用“更 Rust”作为改变 seL4 baseline 语义的理由。
+- Rust 风格是实现表达层的要求，不是语义自由度：API 应符合 Rust 人体工程学、类型安全和误用抵抗，优先用 enum、newtype、Result、借用、所有权和清晰 module boundary 表达 seL4 语义，而不是机械复刻 C API 的指针式、参数堆叠式或易误用形状。
+- 当 seL4 C API 难用或怪异时，先抽取其真实算法和抽象，再设计 Rust API；Rust API 可以更优雅、更安全、更符合调用者直觉，但必须能明确映射回本地 seL4 reference 的对应算法、状态和错误边界。
 - Ousia-specific interface、Portal/Operation/Continuation、Package Cell、Service Graph、lease、session、Device Service 和浏览器/用户授权语义都属于 baseline 闭环后的扩展层，不得提前混入 Phase 1 kernel baseline。
 - slot/object generation 可以作为 Rust model 中的 stale descriptor 检测、测试和诊断辅助；不得替代 seL4 authority、revoke、capability freshness 或授权语义。
 - 每个非平凡 kernel 语义实现或重构都应能指出本地 seL4 或 rust-sel4 reference 的对应路径；没有读取或无法映射 reference 时，应把 baseline drift 标为 residual risk，而不是凭概括性记忆放行。

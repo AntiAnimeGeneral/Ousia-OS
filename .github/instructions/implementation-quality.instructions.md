@@ -25,8 +25,10 @@ description: "实现质量和错误边界规范：主路径清晰、单一权威
 
 ## Rust 实现约束
 
+- Rust API 应以调用者不易误用为目标：用类型系统承载边界和不变量，用清晰的 enum/newtype/Result 表达状态与失败，用所有权和借用关系表达可变状态归属。不要为了贴近 C API 外形而保留参数堆叠、裸整数语义、隐式输入顺序或容易混淆的调用面。
 - Rust 状态机、权限判断、capability 类型、对象类型和架构分支应优先使用显式 enum match。不要用 `_` 或 wildcard fallback 吞掉未来新增状态，除非该 fallback 本身就是经过设计的兼容语义，并且有测试覆盖。
 - Rust 中有语义的 magic number 应使用常量。
+- 同一模块内优先通过 `use` 引入需要频繁使用的类型、函数和常量，再直接使用短名；避免在函数签名和主路径中反复写 `crate::cap::SlotId` 这类长限定路径。只有当模块名本身承载关键语义、需要避免歧义，或表达跨模块边界比短名更清晰时，才保留 `module::Item` 形式。
 - 只有失败完全不可能发生、且该假设未来可以自然替换为 unchecked assumption 时，才使用 `unwrap`；必要时用短注释说明不可失败原因。
 - 只有错误的内部调用、错误的 API 使用或内部 invariant 破坏才会触发，而正确调用不会触发时，才使用带语义说明的 `expect` 或 invariant assertion。
 - 如果校验函数已经建立 invariant 并返回后续需要的数据，应直接消费该返回值；不要再次 lookup 后用 `expect` 取同一个事实。
