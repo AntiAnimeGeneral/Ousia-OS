@@ -64,6 +64,7 @@
 | 专题层   | [topics/](./topics/)                   | 处理跨主线的边界问题、工程路线、兼容性和路线图。               |
 | 笔记层   | [notes/reference/](./notes/reference/) | 保存外部系统、外部机制和现有技术模式，不作为 Ousia 规范。      |
 | 分析层   | [notes/analysis/](./notes/analysis/)   | 保存 Ousia 设计推导、候选方案、草案和深挖，不作为最终规范。    |
+| 提案层   | [proposals/](./proposals/)             | 保存进入实施前的 proposal packet，不作为长期规范源。            |
 | 实现层   | [implementation/](./implementation/)   | 保存短期实现草案、代码演进说明和临时路线，不作为最终规范。     |
 
 ## 3. 语义归属表
@@ -78,6 +79,7 @@
 | Capsule、Capability、能力转移与撤销                                                               | [core/01-capsule-and-capability.md](./core/01-capsule-and-capability.md)                             | 其他章节说明所需能力，不定义能力模型。                                               |
 | Portal、Operation、Continuation、EventPort、SharedQueue、bypass session                           | [core/02-communication-fabric.md](./core/02-communication-fabric.md)                                 | 其他章节说明调用形态，不定义通信原语。                                               |
 | Phase 1 seL4 baseline Rust 复刻、短期 kernel 实现路线和 reviewer 入口                             | [implementation/00-sel4-baseline-rust-replica.md](./implementation/00-sel4-baseline-rust-replica.md) | core 文档只说明长期 Ousia 抽象，不把 Portal/Operation 写成 Phase 1 kernel baseline。 |
+| 进入实施前的 proposal packet、重构交接和 review focus                                             | [proposals/README.md](./proposals/README.md)                                                         | 提案通过 review 和实施后，稳定结论应回写 owning 文档或代码 rustdoc。                 |
 | MemoryObject、Pager、缺页、映射和回写边界                                                         | [core/03-pager-and-memory.md](./core/03-pager-and-memory.md)                                         | FS/VM 深挖只讨论方案和取舍。                                                         |
 | Hardware Core、Driver Host、IOQueue、IOBuffer、Doorbell、Fence、IOMMU 授权                        | [core/04-driver-and-kernel.md](./core/04-driver-and-kernel.md)                                       | reference 文档只保留背景和草案。                                                     |
 | Compute Domain、Execution Class、调度和功耗预算                                                   | [core/05-compute-and-scheduling.md](./core/05-compute-and-scheduling.md)                             | 其他章节只声明资源需求和优先级传播。                                                 |

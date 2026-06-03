@@ -21,6 +21,7 @@ description: "Ousia OS 内核边界：kernel/OSTD/tooling 职责归属、seL4 ba
 - 当 `kernel` 需要某个平台能力时，应通过架构无关的 OSTD API 请求，例如“如果当前平台支持则触发诊断异常”；不要在 `kernel` 里写 architecture cfg。
 - `ostd::mm::heap` 只是 early heap，用于早期 `alloc` 和 smoke tests。不要把 `linked_list_allocator` 演进成最终 kernel heap。真正的内存路径应先围绕 boot memory map、typed frame metadata、page table ownership 和 seL4-style Untyped/retype 建立，再考虑 slab 或 per-CPU cache。
 - `kernel` core 不使用 FP。SIMD 可作为 OSTD/arch-owned 的加速能力，用于 copy、checksum、crypto、compression 等明确热点；入口应由 OSTD 管理 FPU/SIMD ownership、preemption/interrupt 约束和寄存器保存恢复。`kernel` 只通过架构无关 OSTD API 请求这些能力，不直接持有或污染 FP/SIMD 状态。
+- 内核空间里出现 `hashbrown` 之类容器不自动意味着可以接受 SIMD：是否触碰 FP/SIMD 取决于该依赖在当前 target cfg 下编译出的实现。普通 kernel 路径只能使用明确证明为 generic/no-SIMD 的依赖或数据结构；若需要 SIMD/full-speed 版本，必须放在 OSTD-owned 的 guard/token 边界后面，并且不要把同一个 package identity 当作运行时切换开关。
 
 ## Reference-First 内核工作
 
@@ -46,6 +47,7 @@ description: "Ousia OS 内核边界：kernel/OSTD/tooling 职责归属、seL4 ba
 - 当 seL4 C API 难用或怪异时，先抽取其真实算法和抽象，再设计 Rust API；Rust API 可以更优雅、更安全、更符合调用者直觉，但必须能明确映射回本地 seL4 reference 的对应算法、状态和错误边界。
 - Ousia-specific interface、Portal/Operation/Continuation、Package Cell、Service Graph、lease、session、Device Service 和浏览器/用户授权语义都属于 baseline 闭环后的扩展层，不得提前混入 Phase 1 kernel baseline。
 - slot/object generation 可以作为 Rust model 中的 stale descriptor 检测、测试和诊断辅助；不得替代 seL4 authority、revoke、capability freshness 或授权语义。
+- seL4 core 不使用通用 map 表达核心对象关系，也没有运行时 map 插入后动态扩容的主路径。CSpace/CNode 是连续 CTE slot 数组，MDB 是 slot 内嵌链，scheduler 是固定 ready queue 数组加 bitmap，endpoint/notification 等待队列是 TCB 内嵌链。Ousia 早期模型中出现 `HashMap`、`BTreeMap`、`VecDeque` 或类似通用容器时，只能视为过渡脚手架；长期必须收敛到对应 seL4 领域容器。
 - 每个非平凡 kernel 语义实现或重构都应能指出本地 seL4 或 rust-sel4 reference 的对应路径；没有读取或无法映射 reference 时，应把 baseline drift 标为 residual risk，而不是凭概括性记忆放行。
 
 ## Kernel 错误模型
@@ -53,6 +55,7 @@ description: "Ousia OS 内核边界：kernel/OSTD/tooling 职责归属、seL4 ba
 - 通用错误边界以 `.github/instructions/implementation-quality.instructions.md` 为权威。本节只规定这些规则在 Ousia `kernel` 中的领域投影。
 - `kernel` 的外部可恢复错误只应来自 descriptor/syscall/invocation/capability rights/retype request 等边界。边界检查完成后，内部 object graph、slot linkage、TCB/reply/notification 状态转换应信任已经建立的不变量。
 - 在 `kernel` 中，可恢复错误返回前不得产生部分副作用。capability 派生、retype、IPC enqueue/dequeue、reply handoff、scheduler mutation 和内存对象创建都必须先完成全部可失败检查，再提交状态修改。
+- 内存分配、扩容、页表填充或资源保留等隐式失败点也属于 seL4 baseline 对齐范围。核心对象创建应优先像 seL4 `Untyped_Retype` 一样，把资源来源、目标 slot/window、对象大小和剩余空间检查收在 retype/invocation 边界；提交阶段只消费已验证的内存和 slot，不在内部普通路径临时发现可恢复的“分配失败”。
 - `kernel` 的内部不变量破坏应使用带语义说明的 `expect`、assertion 或 panic 路径暴露为实现错误；不要把它伪装成用户可恢复的 `CapError`、`InvocationError` 或 syscall error。
 - 参考 Asterinas 时，注意它的 kernel 主要使用自定义 errno-style `Error` 和局部 subsystem error，OSTD 使用小型 enum error；没有把 `thiserror`、`anyhow`、`eyre`、`snafu` 作为 kernel/OSTD 错误模型核心。
 - Ousia `kernel` 默认不引入 derive-heavy 或 std-oriented 错误框架。只有当库能在 `no_std`、边界语义、代码尺寸和长期 ABI 上给出明确收益时，才考虑引入。host tooling 可以按普通 Rust 工具项目另行评估 `thiserror` 或 `anyhow`。
