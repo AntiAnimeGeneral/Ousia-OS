@@ -535,6 +535,9 @@ mod tests {
 
     #[test]
     fn table_rejects_duplicate_object_ids() {
+        // Goal: ObjectTable owns object-id uniqueness across all object kinds.
+        // Scope: insert boundary before replacing or aliasing an existing object.
+        // Semantics: duplicate id insertion fails and preserves the original object owner.
         let mut table = ObjectTable::new();
         table.insert_endpoint(object(1), Endpoint::new()).unwrap();
 
@@ -546,6 +549,9 @@ mod tests {
 
     #[test]
     fn cnode_object_is_tracked_as_kernel_object() {
+        // Goal: ObjectTable records CNode metadata in the generic object view.
+        // Scope: CNode insertion and typed accessor mismatch reporting.
+        // Semantics: CNode radix/slot metadata is visible, while Endpoint access reports wrong type.
         let mut table = ObjectTable::new();
         table.insert_cnode(object(2), CNodeObject::new(4)).unwrap();
 
@@ -568,6 +574,9 @@ mod tests {
 
     #[test]
     fn frame_object_is_tracked_as_kernel_object() {
+        // Goal: ObjectTable records Frame metadata in both typed and generic views.
+        // Scope: Frame insertion and typed accessor mismatch reporting.
+        // Semantics: Frame size is preserved, while Endpoint access reports wrong type.
         let mut table = ObjectTable::new();
         table.insert_frame(object(3), FrameObject::new(12)).unwrap();
 
@@ -588,6 +597,9 @@ mod tests {
 
     #[test]
     fn tcb_binding_keeps_thread_state_outside_object_table() {
+        // Goal: ObjectTable binds TCB object identity without owning TCB runtime state.
+        // Scope: TCB object binding and generic object view.
+        // Semantics: object lookup exposes the thread binding, while thread state remains ThreadTable-owned.
         let mut table = ObjectTable::new();
         table.insert_tcb(object(10)).unwrap();
         table.bind_tcb(object(10), thread(1)).unwrap();
@@ -603,6 +615,9 @@ mod tests {
 
     #[test]
     fn unbound_tcb_object_has_no_thread_binding() {
+        // Goal: unbound TCB objects remain valid objects but cannot resolve to a thread.
+        // Scope: TCB object insertion before KernelState binds runtime thread state.
+        // Semantics: generic object view succeeds, while tcb_thread reports the missing binding.
         let mut table = ObjectTable::new();
         table.insert_tcb(object(10)).unwrap();
 
@@ -684,6 +699,9 @@ mod tests {
 
     #[test]
     fn wrong_type_reports_expected_and_actual_kind() {
+        // Goal: typed ObjectTable access reports both requested and stored object kinds.
+        // Scope: object type discrimination at typed accessor boundary.
+        // Semantics: wrong-type lookup does not hide the actual runtime object kind.
         let mut table = ObjectTable::new();
         table.insert_reply(object(3), Reply::new()).unwrap();
 

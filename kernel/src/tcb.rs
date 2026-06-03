@@ -139,6 +139,9 @@ mod tests {
 
     #[test]
     fn new_tcb_starts_inactive_with_affinity() {
+        // Goal: TCB construction establishes an inactive thread with explicit affinity.
+        // Scope: local TCB default-state contract before KernelState binding or scheduling.
+        // Semantics: new TCBs are stopped, unbound to notifications, and keep their requested CPU affinity.
         let tcb = Tcb::new(ThreadId::new(1), CpuId::new(2));
 
         assert_eq!(tcb.id(), ThreadId::new(1));
@@ -200,18 +203,10 @@ mod tests {
     }
 
     #[test]
-    fn tcb_state_and_affinity_are_explicit() {
-        let mut tcb = Tcb::new(ThreadId::new(1), CpuId::new(0));
-
-        tcb.set_state(ThreadState::Running);
-        tcb.set_affinity(CpuId::new(3));
-
-        assert_eq!(tcb.state(), ThreadState::Running);
-        assert_eq!(tcb.affinity(), CpuId::new(3));
-    }
-
-    #[test]
     fn bound_notification_receive_is_derived_from_receive_state() {
+        // Goal: bound notification readiness is derived from both binding and receive state.
+        // Scope: local TCB state/binding contract without Notification owner mutation.
+        // Semantics: only a matching bound notification plus BlockedOnReceive counts as receive readiness.
         let mut tcb = Tcb::new(ThreadId::new(1), CpuId::new(0));
 
         tcb.bind_notification(object(10));

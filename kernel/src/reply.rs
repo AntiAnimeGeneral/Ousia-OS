@@ -167,6 +167,9 @@ mod tests {
 
     #[test]
     fn new_reply_starts_empty() {
+        // Goal: Reply starts without pending caller authority.
+        // Scope: local Reply default-state contract.
+        // Semantics: a newly created Reply is Empty until a caller is recorded.
         let reply = Reply::new();
 
         assert_eq!(reply.state(), ReplyState::Empty);

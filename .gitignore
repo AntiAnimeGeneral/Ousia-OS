@@ -5,3 +5,8 @@
 /third_party/rust-sel4/
 /third_party/sddf/
 /third_party/sel4/
+/third_party/rust-osdev-bootloader/
+/third_party/rust-osdev-x86_64/
+/third_party/rust-osdev-uart_16550/
+/third_party/redox/
+/third_party/theseus/

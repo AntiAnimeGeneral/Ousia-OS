@@ -1242,6 +1242,9 @@ mod tests {
 
     #[test]
     fn resume_tcb_sets_restart_and_enqueues_on_affinity_cpu() {
+        // Goal: resume turns an inactive TCB into runnable scheduler work.
+        // Scope: ThreadTable and Scheduler ownership after TCB resume authorization.
+        // Semantics: the TCB enters Restart and is enqueued on its affinity CPU.
         let mut threads = ThreadTable::new();
         assert!(threads.insert(Tcb::new(thread(1), cpu(1))).is_none());
         let mut scheduler = Scheduler::new(&[cpu(0), cpu(1)]).unwrap();
@@ -1266,6 +1269,9 @@ mod tests {
 
     #[test]
     fn resume_tcb_rejects_non_inactive_without_mutation() {
+        // Goal: resume rejects TCBs that are already outside the inactive state.
+        // Scope: ThreadTable precheck before Scheduler enqueue.
+        // Semantics: non-inactive failure leaves TCB state and scheduler placement unchanged.
         let mut threads = table_with_threads(&[(1, cpu(0))]);
         let mut scheduler = Scheduler::new(&[cpu(0), cpu(1)]).unwrap();
 
@@ -1282,6 +1288,9 @@ mod tests {
 
     #[test]
     fn resume_tcb_unknown_cpu_fails_before_state_change() {
+        // Goal: resume validates scheduler topology before committing TCB state.
+        // Scope: ThreadTable and Scheduler failure ordering for TCB resume.
+        // Semantics: unknown affinity CPU leaves the TCB inactive and unplaced.
         let mut threads = ThreadTable::new();
         assert!(threads.insert(Tcb::new(thread(1), cpu(9))).is_none());
         let mut scheduler = Scheduler::new(&[cpu(0), cpu(1)]).unwrap();
@@ -1298,6 +1307,9 @@ mod tests {
 
     #[test]
     fn resume_tcb_rejects_already_scheduled_thread_without_state_change() {
+        // Goal: resume cannot duplicate an already scheduled thread.
+        // Scope: Scheduler placement precheck during TCB resume.
+        // Semantics: duplicate placement failure leaves the inactive TCB and ready queue intact.
         let mut threads = ThreadTable::new();
         let mut tcb = Tcb::new(thread(1), cpu(0));
         tcb.set_state(ThreadState::Inactive);
@@ -1322,6 +1334,9 @@ mod tests {
 
     #[test]
     fn ipc_sender_block_sets_tcb_state_and_removes_current() {
+        // Goal: blocking send transfers the current sender from CPU ownership into Endpoint wait state.
+        // Scope: send_ipc across ThreadTable, Scheduler, and Endpoint owners.
+        // Semantics: sender becomes BlockedOnSend and is removed from the current run queue.
         let mut endpoint = crate::ipc::Endpoint::new();
         let mut threads = table_with_threads(&[(1, cpu(0))]);
         let mut scheduler = scheduler_with_current(Some(1), None);
@@ -1356,6 +1371,9 @@ mod tests {
 
     #[test]
     fn send_ipc_receiver_precheck_failure_does_not_consume_waiter() {
+        // Goal: send-side delivery validates the queued receiver before consuming it.
+        // Scope: send_ipc preflight across Endpoint, ThreadTable, and Scheduler.
+        // Semantics: receiver state mismatch leaves endpoint queue, sender state, and current placement unchanged.
         let mut endpoint = crate::ipc::Endpoint::new();
         endpoint.recv(thread(2), cpu(1), IpcReceiveOptions::new(true, true));
         let mut threads = table_with_threads(&[(1, cpu(0)), (2, cpu(1))]);
@@ -1398,6 +1416,9 @@ mod tests {
 
     #[test]
     fn send_ipc_call_delivery_records_reply_and_blocks_caller() {
+        // Goal: call delivery records reply state while waking the waiting receiver.
+        // Scope: send_ipc call path across Endpoint, Reply, ThreadTable, and Scheduler.
+        // Semantics: caller blocks on reply, receiver runs, reply becomes pending, and endpoint drains.
         let mut endpoint = crate::ipc::Endpoint::new();
         endpoint.recv(thread(2), cpu(1), IpcReceiveOptions::new(true, true));
         let mut reply = Reply::new();
@@ -1438,6 +1459,9 @@ mod tests {
 
     #[test]
     fn send_ipc_call_uses_tcb_receive_grant_for_reply_setup() {
+        // Goal: reply grant metadata comes from the receiver TCB receive state.
+        // Scope: send_ipc call path with a receiver queued before sender delivery.
+        // Semantics: reply pending state records the receiver's can_grant value, not only endpoint options.
         let mut endpoint = crate::ipc::Endpoint::new();
         endpoint.recv(thread(2), cpu(1), IpcReceiveOptions::new(true, true));
         let mut reply = Reply::new();
@@ -1486,6 +1510,9 @@ mod tests {
 
     #[test]
     fn send_ipc_call_without_reply_authority_stops_caller_without_reply_object() {
+        // Goal: calls without reply authority stop the caller instead of creating reply state.
+        // Scope: send_ipc call path when sender cannot grant or grant-reply.
+        // Semantics: receiver wakes, endpoint drains, caller becomes inactive, and no reply object is needed.
         let mut endpoint = crate::ipc::Endpoint::new();
         endpoint.recv(thread(2), cpu(1), IpcReceiveOptions::new(true, true));
         let mut threads = table_with_threads(&[(1, cpu(0)), (2, cpu(1))]);
@@ -1524,6 +1551,9 @@ mod tests {
 
     #[test]
     fn send_ipc_call_without_reply_object_does_not_consume_receiver() {
+        // Goal: reply-object absence is checked before consuming the queued receiver.
+        // Scope: send_ipc call preflight when reply authority exists but no Reply owner is supplied.
+        // Semantics: endpoint queue, both TCB states, and sender current placement remain unchanged.
         let mut endpoint = crate::ipc::Endpoint::new();
         endpoint.recv(thread(2), cpu(1), IpcReceiveOptions::new(true, true));
         let mut threads = table_with_threads(&[(1, cpu(0)), (2, cpu(1))]);
@@ -1572,6 +1602,9 @@ mod tests {
 
     #[test]
     fn ipc_delivered_wakes_receiver_without_full_tcb_dependency() {
+        // Goal: delivered IPC can wake a receiver using only the queued receiver facts.
+        // Scope: apply_ipc_action delivery path after Endpoint has matched sender and receiver.
+        // Semantics: matching BlockedOnReceive state becomes Running and is enqueued by affinity.
         let mut endpoint = crate::ipc::Endpoint::new();
         endpoint.recv(thread(2), cpu(1), IpcReceiveOptions::new(true, true));
         let action = endpoint.send(
@@ -1609,6 +1642,9 @@ mod tests {
 
     #[test]
     fn failed_wake_does_not_change_tcb_state() {
+        // Goal: scheduler wake failure does not partially update the receiver TCB.
+        // Scope: apply_ipc_action failure path after delivery metadata exists.
+        // Semantics: blocked receive state and existing scheduler placement remain unchanged.
         let mut threads = table_with_threads(&[(2, cpu(1))]);
         threads
             .get_mut(thread(2))
@@ -1652,6 +1688,9 @@ mod tests {
 
     #[test]
     fn delivered_ipc_requires_matching_blocked_receive_state() {
+        // Goal: delivered IPC rejects stale or wrong receiver state before wakeup.
+        // Scope: apply_ipc_action validation of queued receiver against ThreadTable state.
+        // Semantics: mismatched state prevents scheduler enqueue and preserves the actual TCB state.
         let mut endpoint = crate::ipc::Endpoint::new();
         endpoint.recv(thread(2), cpu(1), IpcReceiveOptions::new(true, true));
         let action = endpoint.send(
@@ -1695,6 +1734,9 @@ mod tests {
 
     #[test]
     fn recv_ipc_releases_one_way_sender() {
+        // Goal: receive releases a queued one-way sender without creating reply state.
+        // Scope: recv_ipc across Endpoint, ThreadTable, and Scheduler owners.
+        // Semantics: sender becomes running and ready, receiver stays current, and endpoint drains.
         let mut endpoint = crate::ipc::Endpoint::new();
         endpoint.send(
             thread(1),
@@ -1752,6 +1794,9 @@ mod tests {
 
     #[test]
     fn recv_ipc_call_records_reply_and_keeps_sender_blocked_on_reply() {
+        // Goal: receive-side call records reply authority while keeping the caller blocked on reply.
+        // Scope: recv_ipc call path with Reply owner supplied by the receiver context.
+        // Semantics: sender moves from BlockedOnSend to BlockedOnReply and receiver remains current.
         let mut endpoint = crate::ipc::Endpoint::new();
         endpoint.send(
             thread(1),
@@ -1812,6 +1857,9 @@ mod tests {
 
     #[test]
     fn recv_ipc_call_without_reply_authority_stops_sender_without_reply_object() {
+        // Goal: receive-side call without reply authority stops the sender.
+        // Scope: recv_ipc call path when queued sender cannot grant reply authority.
+        // Semantics: endpoint drains, sender becomes inactive, receiver remains running, and no reply is required.
         let mut endpoint = crate::ipc::Endpoint::new();
         endpoint.send(
             thread(1),
@@ -1865,6 +1913,9 @@ mod tests {
 
     #[test]
     fn recv_ipc_call_without_reply_object_does_not_consume_sender() {
+        // Goal: missing reply object is checked before consuming a queued call sender.
+        // Scope: recv_ipc call preflight after Endpoint has a queued sender.
+        // Semantics: endpoint sender queue, sender state, receiver state, and receiver current placement remain unchanged.
         let mut endpoint = crate::ipc::Endpoint::new();
         endpoint.send(
             thread(1),
@@ -1932,6 +1983,9 @@ mod tests {
 
     #[test]
     fn recv_ipc_call_pending_reply_does_not_consume_sender() {
+        // Goal: pending Reply owner rejects a second call setup before sender consumption.
+        // Scope: recv_ipc call path with an already pending Reply object.
+        // Semantics: sender remains queued and blocked, and existing reply state is preserved.
         let mut endpoint = crate::ipc::Endpoint::new();
         endpoint.send(
             thread(1),
@@ -2001,6 +2055,9 @@ mod tests {
 
     #[test]
     fn recv_ipc_call_unknown_sender_cpu_does_not_consume_sender() {
+        // Goal: wakeup scheduler precheck runs before consuming a queued call sender.
+        // Scope: recv_ipc call failure path with sender affinity outside topology.
+        // Semantics: endpoint queue and sender state remain unchanged, and reply state is not recorded.
         let mut endpoint = crate::ipc::Endpoint::new();
         endpoint.send(
             thread(1),
@@ -2062,6 +2119,9 @@ mod tests {
 
     #[test]
     fn recv_ipc_blocks_receiver_when_no_sender_waits() {
+        // Goal: blocking receive without sender moves the current receiver into Endpoint wait state.
+        // Scope: recv_ipc across ThreadTable, Scheduler, and Endpoint owners.
+        // Semantics: receiver becomes BlockedOnReceive, endpoint queues it, and CPU current is cleared.
         let mut endpoint = crate::ipc::Endpoint::new();
         let mut threads = table_with_threads(&[(2, cpu(1))]);
         let mut scheduler = scheduler_with_current(None, Some(2));
@@ -2099,6 +2159,9 @@ mod tests {
 
     #[test]
     fn notification_delivered_wakes_waiter() {
+        // Goal: notification signal wakes a queued notification waiter.
+        // Scope: signal_notification across Notification, ThreadTable, and Scheduler owners.
+        // Semantics: waiter state becomes Running and is enqueued on its affinity CPU.
         let mut notification = Notification::new();
         let mut threads = table_with_threads(&[(1, cpu(0))]);
         let mut scheduler = scheduler_with_current(Some(1), None);
@@ -2137,6 +2200,9 @@ mod tests {
 
     #[test]
     fn signal_notification_precheck_failure_does_not_consume_waiter() {
+        // Goal: notification waiter state is validated before queue consumption.
+        // Scope: signal_notification failure path for stale Notification waiters.
+        // Semantics: mismatched TCB state leaves notification queue and Waiting state intact.
         let mut notification = Notification::new();
         notification.wait(thread(1), cpu(0));
         let mut threads = table_with_threads(&[(1, cpu(0))]);
@@ -2180,6 +2246,9 @@ mod tests {
 
     #[test]
     fn bound_notification_completion_wakes_bound_receiver() {
+        // Goal: bound notification completion wakes the TCB bound to that notification.
+        // Scope: signal_notification bound-TCB path across Notification and ThreadTable ownership.
+        // Semantics: matching bound receive state becomes Running and is scheduled.
         let mut notification = Notification::new();
         notification.bind_tcb(crate::notification::BoundTcb::new(
             object(100),
@@ -2224,6 +2293,9 @@ mod tests {
 
     #[test]
     fn active_bound_notification_accumulates_badge_without_bound_wake_precheck() {
+        // Goal: active notifications accumulate badges without running bound receive prechecks.
+        // Scope: signal_notification path when Notification owner is already Active.
+        // Semantics: no thread is woken, badge bits accumulate, and unrelated TCB state remains unchanged.
         let mut notification = Notification::new();
         notification.bind_tcb(crate::notification::BoundTcb::new(
             object(100),
@@ -2262,6 +2334,9 @@ mod tests {
 
     #[test]
     fn reply_records_caller_as_blocked_on_reply() {
+        // Goal: recording a reply caller moves the current caller into reply-blocked state.
+        // Scope: record_reply_caller across Reply, ThreadTable, and Scheduler owners.
+        // Semantics: Reply becomes pending, caller blocks on reply, and current CPU ownership is cleared.
         let mut reply = Reply::new();
         let mut threads = table_with_threads(&[(1, cpu(0))]);
         let mut scheduler = scheduler_with_current(Some(1), None);
@@ -2290,6 +2365,9 @@ mod tests {
 
     #[test]
     fn reply_to_caller_wakes_blocked_caller() {
+        // Goal: replying to a pending caller wakes the thread recorded in Reply state.
+        // Scope: reply_to_caller across Reply, ThreadTable, and Scheduler owners.
+        // Semantics: caller becomes Running, is enqueued, and Reply returns to empty.
         let mut reply = Reply::new();
         reply
             .record_caller(ReplyCaller::new(ReplyCallerParams {
@@ -2324,6 +2402,9 @@ mod tests {
 
     #[test]
     fn reply_to_caller_precheck_failure_does_not_consume_reply() {
+        // Goal: reply delivery validates caller thread state before consuming Reply state.
+        // Scope: reply_to_caller failure path with stale caller TCB state.
+        // Semantics: pending Reply and actual TCB state remain unchanged after failure.
         let mut reply = Reply::new();
         reply
             .record_caller(ReplyCaller::new(ReplyCallerParams {

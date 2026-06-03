@@ -1,7 +1,7 @@
 use core::panic::PanicInfo;
 
 use kernel::cap::{Capability, CapabilitySpace, EndpointCap, ObjectId, Rights};
-use kernel::invocation::{Invocation, InvocationOutcome, invoke};
+use kernel::invocation::{EndpointSendOp, Invocation, InvocationOutcome, invoke};
 use kernel::state::KernelState;
 use kernel::tcb::{CpuId, Tcb, ThreadId};
 use ostd::boot::{early_println, wait_forever};
@@ -56,11 +56,10 @@ fn run_alloc_smoke() {
         root,
         Invocation::EndpointSend {
             message_words: 1,
-            blocking: true,
-            is_call: false,
+            op: EndpointSendOp::Send,
         },
     ) {
-        Ok(InvocationOutcome::SendIpcAuthorized { badge: 1, .. }) => {}
+        Ok(InvocationOutcome::SendIpcAuthorized(authorized)) if authorized.badge == 1 => {}
         Ok(_) | Err(_) => panic!("capability invocation failed during alloc smoke"),
     }
 }

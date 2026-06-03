@@ -305,6 +305,7 @@ impl<T> NotificationQueue<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rstest::rstest;
 
     fn cpu(raw: u32) -> CpuId {
         CpuId::new(raw)
@@ -318,25 +319,140 @@ mod tests {
         ObjectId::new(raw)
     }
 
-    #[test]
-    fn signal_without_waiter_accumulates_badges() {
+    fn bound() -> BoundTcb {
+        BoundTcb::new(object(100), thread(1), cpu(0))
+    }
+
+    fn idle_notification() -> Notification {
+        Notification::new()
+    }
+
+    fn waiting_notification() -> Notification {
         let mut notification = Notification::new();
+        notification.wait(thread(1), cpu(0));
+        notification.wait(thread(2), cpu(1));
+        notification
+    }
+
+    fn active_notification() -> Notification {
+        let mut notification = Notification::new();
+        notification.signal(0b0010, BoundTcbSignal::NotReady);
+        notification
+    }
+
+    fn idle_bound_notification() -> Notification {
+        let mut notification = Notification::new();
+        notification.bind_tcb(bound());
+        notification
+    }
+
+    fn active_bound_notification() -> Notification {
+        let mut notification = active_notification();
+        notification.bind_tcb(bound());
+        notification
+    }
+
+    #[rstest]
+    #[case::idle_without_bound_accumulates_badge(
+        idle_notification(),
+        0b0010,
+        BoundTcbSignal::NotReady,
+        NotificationAction::BecameActive { badge: 0b0010 },
+        NotificationState::Active,
+        0b0010,
+        0,
+        None,
+    )]
+    #[case::waiting_receives_oldest_waiter(
+        waiting_notification(),
+        0b1000,
+        BoundTcbSignal::NotReady,
+        NotificationAction::Delivered {
+            receiver: thread(1),
+            receiver_cpu: cpu(0),
+            badge: 0b1000,
+        },
+        NotificationState::Waiting,
+        0,
+        1,
+        None,
+    )]
+    #[case::active_without_bound_accumulates_badge(
+        active_notification(),
+        0b0100,
+        BoundTcbSignal::NotReady,
+        NotificationAction::BecameActive { badge: 0b0110 },
+        NotificationState::Active,
+        0b0110,
+        0,
+        None,
+    )]
+    #[case::idle_bound_receive_completes(
+        idle_bound_notification(),
+        0b1000,
+        BoundTcbSignal::ReadyToReceive,
+        NotificationAction::BoundReceiveCompleted {
+            tcb: object(100),
+            receiver: thread(1),
+            receiver_cpu: cpu(0),
+            badge: 0b1000,
+        },
+        NotificationState::Idle,
+        0,
+        0,
+        Some(bound()),
+    )]
+    #[case::idle_bound_without_ready_accumulates_badge(
+        idle_bound_notification(),
+        0b0100,
+        BoundTcbSignal::NotReady,
+        NotificationAction::BecameActive { badge: 0b0100 },
+        NotificationState::Active,
+        0b0100,
+        0,
+        Some(bound()),
+    )]
+    #[case::active_bound_accumulates_badge(
+        active_bound_notification(),
+        0b0100,
+        BoundTcbSignal::ReadyToReceive,
+        NotificationAction::BecameActive { badge: 0b0110 },
+        NotificationState::Active,
+        0b0110,
+        0,
+        Some(bound()),
+    )]
+    fn signal_updates_notification_state_contract(
+        #[case] mut notification: Notification,
+        #[case] badge: u64,
+        #[case] bound_tcb_signal: BoundTcbSignal,
+        #[case] expected_action: NotificationAction,
+        #[case] expected_state: NotificationState,
+        #[case] expected_badge: u64,
+        #[case] expected_waiters: usize,
+        #[case] expected_bound_tcb: Option<BoundTcb>,
+    ) {
+        // Goal: signal rewrites notification state according to idle, waiting, and bound-TCB conditions.
+        // Scope: local Notification state machine contract for signal delivery.
+        // Semantics: each case preserves the owner state it does not consume and updates only the intended badge/waiter side effects.
 
         assert_eq!(
-            notification.signal(0b0010, BoundTcbSignal::NotReady),
-            NotificationAction::BecameActive { badge: 0b0010 }
+            notification.signal(badge, bound_tcb_signal),
+            expected_action
         );
-        assert_eq!(
-            notification.signal(0b0100, BoundTcbSignal::NotReady),
-            NotificationAction::BecameActive { badge: 0b0110 }
-        );
-        assert_eq!(notification.state(), NotificationState::Active);
-        assert_eq!(notification.badge(), 0b0110);
+        assert_eq!(notification.state(), expected_state);
+        assert_eq!(notification.badge(), expected_badge);
+        assert_eq!(notification.queued_waiters(), expected_waiters);
+        assert_eq!(notification.bound_tcb(), expected_bound_tcb);
     }
 
     #[test]
     fn wait_consumes_active_badge() {
         let mut notification = Notification::new();
+
+        // Goal: wait drains an already active notification badge instead of blocking.
+        // Scope: local Notification wait path when a badge is pending.
+        // Semantics: active input becomes a badge-consumed action and resets the owner to Idle.
 
         notification.signal(0b1010, BoundTcbSignal::NotReady);
 
@@ -356,6 +472,10 @@ mod tests {
     fn wait_blocks_when_idle() {
         let mut notification = Notification::new();
 
+        // Goal: wait enqueues the receiver when no badge is available.
+        // Scope: local Notification wait path for the idle state.
+        // Semantics: the receiver becomes the first queued waiter and the owner enters Waiting.
+
         assert_eq!(
             notification.wait(thread(1), cpu(0)),
             NotificationAction::ReceiverBlocked {
@@ -368,28 +488,12 @@ mod tests {
     }
 
     #[test]
-    fn signal_delivers_to_oldest_waiter() {
-        let mut notification = Notification::new();
-
-        notification.wait(thread(1), cpu(0));
-        notification.wait(thread(2), cpu(1));
-
-        assert_eq!(
-            notification.signal(0b1000, BoundTcbSignal::NotReady),
-            NotificationAction::Delivered {
-                receiver: thread(1),
-                receiver_cpu: cpu(0),
-                badge: 0b1000,
-            }
-        );
-        assert_eq!(notification.state(), NotificationState::Waiting);
-        assert_eq!(notification.queued_waiters(), 1);
-        assert_eq!(notification.badge(), 0);
-    }
-
-    #[test]
     fn poll_does_not_block_without_active_badge() {
         let mut notification = Notification::new();
+
+        // Goal: poll observes the empty owner state without changing queue ownership.
+        // Scope: local Notification poll path without a pending badge.
+        // Semantics: poll failure leaves the notification idle and empty.
 
         assert_eq!(
             notification.poll(thread(1), cpu(0)),
@@ -400,55 +504,5 @@ mod tests {
         );
         assert_eq!(notification.state(), NotificationState::Idle);
         assert_eq!(notification.queued_waiters(), 0);
-    }
-
-    #[test]
-    fn idle_bound_notification_completes_bound_receive() {
-        let mut notification = Notification::new();
-        let bound = BoundTcb::new(object(100), thread(1), cpu(0));
-
-        notification.bind_tcb(bound);
-
-        assert_eq!(
-            notification.signal(0b1000, BoundTcbSignal::ReadyToReceive),
-            NotificationAction::BoundReceiveCompleted {
-                tcb: object(100),
-                receiver: thread(1),
-                receiver_cpu: cpu(0),
-                badge: 0b1000,
-            }
-        );
-        assert_eq!(notification.state(), NotificationState::Idle);
-        assert_eq!(notification.badge(), 0);
-        assert_eq!(notification.bound_tcb(), Some(bound));
-    }
-
-    #[test]
-    fn idle_bound_notification_without_receive_waiter_accumulates_badge() {
-        let mut notification = Notification::new();
-
-        notification.bind_tcb(BoundTcb::new(object(100), thread(1), cpu(0)));
-
-        assert_eq!(
-            notification.signal(0b0100, BoundTcbSignal::NotReady),
-            NotificationAction::BecameActive { badge: 0b0100 }
-        );
-        assert_eq!(notification.state(), NotificationState::Active);
-        assert_eq!(notification.badge(), 0b0100);
-    }
-
-    #[test]
-    fn active_bound_notification_accumulates_badge() {
-        let mut notification = Notification::new();
-
-        notification.signal(0b0010, BoundTcbSignal::NotReady);
-        notification.bind_tcb(BoundTcb::new(object(100), thread(1), cpu(0)));
-
-        assert_eq!(
-            notification.signal(0b0100, BoundTcbSignal::ReadyToReceive),
-            NotificationAction::BecameActive { badge: 0b0110 }
-        );
-        assert_eq!(notification.state(), NotificationState::Active);
-        assert_eq!(notification.badge(), 0b0110);
     }
 }

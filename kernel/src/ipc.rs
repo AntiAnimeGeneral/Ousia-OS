@@ -571,6 +571,9 @@ mod tests {
 
     #[test]
     fn recv_delivers_oldest_waiting_sender() {
+        // Goal: receive matches the oldest queued sender on a sending endpoint.
+        // Scope: local Endpoint FIFO send queue contract without ThreadTable wakeup.
+        // Semantics: one sender is released, later senders remain queued, and no receiver is queued.
         let mut endpoint = Endpoint::new();
         endpoint.send(
             thread(1),
@@ -603,6 +606,9 @@ mod tests {
 
     #[test]
     fn send_delivers_to_oldest_waiting_receiver() {
+        // Goal: send matches the oldest queued receiver on a receiving endpoint.
+        // Scope: local Endpoint FIFO receive queue contract without ThreadTable wakeup.
+        // Semantics: delivery carries message and reply metadata while preserving later receivers.
         let mut endpoint = Endpoint::new();
         endpoint.recv(thread(3), cpu(2), blocking_recv());
         endpoint.recv(thread(4), cpu(3), blocking_recv());
@@ -641,6 +647,9 @@ mod tests {
 
     #[test]
     fn endpoint_returns_to_idle_after_last_waiter_is_matched() {
+        // Goal: Endpoint owner returns to Idle after the last queued peer is matched.
+        // Scope: local Endpoint send and receive queue transitions.
+        // Semantics: draining either sender or receiver queue clears all queue counters and state.
         let mut endpoint = Endpoint::new();
         endpoint.send(
             thread(1),
@@ -672,6 +681,9 @@ mod tests {
 
     #[test]
     fn one_way_send_delivery_does_not_request_reply_setup() {
+        // Goal: one-way send delivery does not create reply authority metadata.
+        // Scope: local Endpoint send-to-receiver path for non-call send mode.
+        // Semantics: delivery includes the message but leaves reply_request absent.
         let mut endpoint = Endpoint::new();
 
         endpoint.recv(thread(3), cpu(2), blocking_recv());
@@ -703,6 +715,9 @@ mod tests {
 
     #[test]
     fn call_reply_request_reports_sender_reply_authority_only() {
+        // Goal: call delivery reports whether the sender can receive a reply.
+        // Scope: local Endpoint call metadata construction before Reply object mutation.
+        // Semantics: sender grant-reply authority controls reply_request independently of receiver grant.
         let mut endpoint = Endpoint::new();
 
         endpoint.recv(thread(3), cpu(2), IpcReceiveOptions::new(true, false));

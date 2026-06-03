@@ -60,6 +60,10 @@ mod tests {
 
     #[test]
     fn payload_rejects_too_many_words() {
+        // Goal: IPC payload construction enforces the fixed message-register limit.
+        // Scope: unit test for payload normalization before any endpoint or scheduler side effect.
+        // Semantics: oversized input fails at the boundary and does not create a partial payload.
+
         assert_eq!(
             IpcPayload::new(&[1, 2, 3, 4, 5]),
             Err(IpcError::TooManyMessageWords {

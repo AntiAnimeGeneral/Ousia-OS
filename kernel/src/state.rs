@@ -1059,6 +1059,9 @@ mod tests {
 
     #[test]
     fn endpoint_send_invocation_blocks_current_thread() {
+        // Goal: endpoint send invocation routes through KernelState into IPC blocking semantics.
+        // Scope: executor path across CSpace, ObjectTable, ThreadTable, Scheduler, and Endpoint.
+        // Semantics: authorized blocking send moves the current thread into BlockedOnSend with cap metadata.
         let (mut state, endpoint_descriptor, endpoint_object) = state_with_current_thread();
 
         assert_eq!(
@@ -1156,6 +1159,9 @@ mod tests {
 
     #[test]
     fn missing_endpoint_object_fails_before_thread_mutation() {
+        // Goal: executor rejects a capability whose backing endpoint object is absent.
+        // Scope: EndpointSend object lookup before ThreadTable or Scheduler mutation.
+        // Semantics: ObjectTable failure leaves the sender running.
         let mut cspace = CapabilitySpace::new();
         let endpoint_descriptor = cspace
             .insert_initial_capability(Capability::Endpoint(EndpointCap {
@@ -1189,6 +1195,9 @@ mod tests {
 
     #[test]
     fn notification_signal_invocation_accumulates_badge() {
+        // Goal: notification signal invocation routes badge authority into Notification state.
+        // Scope: executor path across CSpace, ObjectTable, and Notification owner.
+        // Semantics: WRITE notification cap activates the object and accumulates the cap badge.
         let mut cspace = CapabilitySpace::new();
         let notification_descriptor = cspace
             .insert_initial_capability(Capability::Notification(NotificationCap {
@@ -1233,6 +1242,9 @@ mod tests {
 
     #[test]
     fn nonblocking_notification_wait_requires_current_thread_before_consuming_badge() {
+        // Goal: nonblocking notification wait validates current-thread ownership before consuming active badge.
+        // Scope: executor failure ordering across Scheduler, ThreadTable, and Notification.
+        // Semantics: ThreadNotCurrent leaves active notification state and badge unchanged.
         let mut cspace = CapabilitySpace::new();
         let notification_descriptor = cspace
             .insert_initial_capability(Capability::Notification(NotificationCap {
@@ -1285,6 +1297,9 @@ mod tests {
 
     #[test]
     fn duplicate_thread_object_is_rejected_without_rebinding_object() {
+        // Goal: KernelState rejects duplicate ThreadId insertion before binding a second TCB object.
+        // Scope: insert_thread_object transaction across ObjectTable and ThreadTable owners.
+        // Semantics: existing binding and affinity remain, and the new TCB object stays unbound.
         let mut state = KernelState::new(&[cpu(0), cpu(1)]).unwrap();
         state.objects_mut().insert_tcb(object(10)).unwrap();
         state
@@ -1306,6 +1321,9 @@ mod tests {
 
     #[test]
     fn insert_thread_object_rejects_unknown_cpu_without_binding_object() {
+        // Goal: thread insertion validates scheduler topology before binding object identity.
+        // Scope: insert_thread_object failure ordering across Scheduler, ObjectTable, and ThreadTable.
+        // Semantics: unknown CPU leaves the TCB object unbound and no thread inserted.
         let mut state = KernelState::new(&[cpu(0), cpu(1)]).unwrap();
         state.objects_mut().insert_tcb(object(10)).unwrap();
 
@@ -1324,6 +1342,9 @@ mod tests {
 
     #[test]
     fn reply_invocation_wakes_pending_caller() {
+        // Goal: Reply invocation consumes reply cap and wakes the recorded caller.
+        // Scope: executor path across CSpace, Reply object, ThreadTable, and Scheduler.
+        // Semantics: caller runs, Reply empties, and the single-use reply cap disappears.
         let mut cspace = CapabilitySpace::new();
         let reply_descriptor = cspace
             .insert_reply_capability_for_test(ReplyCap {
@@ -1379,6 +1400,9 @@ mod tests {
 
     #[test]
     fn reply_invocation_rejects_cap_metadata_mismatch_without_mutation() {
+        // Goal: Reply invocation rejects mismatched cap metadata before consuming state.
+        // Scope: executor Reply authority check before Reply, ThreadTable, or CSpace mutation.
+        // Semantics: pending Reply, blocked caller, and reply cap all remain intact.
         let mut cspace = CapabilitySpace::new();
         let reply_descriptor = cspace
             .insert_reply_capability_for_test(ReplyCap {
@@ -1429,6 +1453,9 @@ mod tests {
 
     #[test]
     fn endpoint_call_without_reply_authority_stops_caller_without_reply_object() {
+        // Goal: endpoint Call without reply authority does not require receiver reply storage.
+        // Scope: executor call path across Endpoint, ThreadTable, and Scheduler.
+        // Semantics: receiver wakes and caller stops inactive without creating Reply state.
         let mut cspace = CapabilitySpace::new();
         let endpoint_descriptor = cspace
             .insert_initial_capability(Capability::Endpoint(EndpointCap {
@@ -1488,6 +1515,9 @@ mod tests {
 
     #[test]
     fn endpoint_call_records_true_caller_tcb_object() {
+        // Goal: endpoint Call reply cap records the caller's TCB object, not a placeholder object.
+        // Scope: executor call path across ObjectTable TCB binding, Reply object, and CSpace cap install.
+        // Semantics: reply cap and Reply pending state target the true caller TCB object.
         let mut cspace = CapabilitySpace::new();
         let endpoint_descriptor = cspace
             .insert_initial_capability(Capability::Endpoint(EndpointCap {
@@ -1598,6 +1628,9 @@ mod tests {
 
     #[test]
     fn immediate_call_reply_grant_comes_from_receiver_cap() {
+        // Goal: immediate call reply grant follows receiver receive authority.
+        // Scope: executor call path where sender and receiver hold different endpoint caps.
+        // Semantics: installed reply cap and Reply state use receiver-side grant metadata.
         let mut cspace = CapabilitySpace::new();
         let endpoint_root = cspace
             .insert_initial_capability(Capability::Endpoint(EndpointCap {
@@ -1697,6 +1730,9 @@ mod tests {
 
     #[test]
     fn endpoint_send_receiver_state_mismatch_fails_without_side_effects() {
+        // Goal: executor preserves all owners when a queued receiver has stale TCB state.
+        // Scope: EndpointSend call failure after Endpoint queueing but before delivery consumption.
+        // Semantics: endpoint queue, caller state, receiver state, scheduler placement, and Reply state remain unchanged.
         let mut cspace = CapabilitySpace::new();
         let endpoint_descriptor = cspace
             .insert_initial_capability(Capability::Endpoint(EndpointCap {
@@ -1794,6 +1830,9 @@ mod tests {
 
     #[test]
     fn blocking_receive_rejects_reply_object_missing_from_cspace_without_enqueueing() {
+        // Goal: receive-side reply object must exist in CSpace before receiver blocking side effects.
+        // Scope: EndpointRecv executor preflight with context reply object supplied.
+        // Semantics: cap lookup failure leaves receiver current and endpoint queue empty.
         let mut cspace = CapabilitySpace::new();
         let endpoint_descriptor = cspace
             .insert_initial_capability(Capability::Endpoint(EndpointCap {
@@ -1843,6 +1882,9 @@ mod tests {
 
     #[test]
     fn queued_call_receive_creates_reply_cap_and_reply_consumes_it() {
+        // Goal: queued call receive creates a single-use reply cap that reply invocation consumes.
+        // Scope: executor flow from EndpointSend Call through EndpointRecv to Reply.
+        // Semantics: reply cap carries caller TCB object metadata, wakes caller once, then becomes stale.
         let mut cspace = CapabilitySpace::new();
         let endpoint_descriptor = cspace
             .insert_initial_capability(Capability::Endpoint(EndpointCap {
@@ -1964,6 +2006,9 @@ mod tests {
 
     #[test]
     fn cnode_delete_final_reply_cap_removes_reply_runtime_object() {
+        // Goal: deleting the final reply capability removes the corresponding Reply runtime object.
+        // Scope: executor CNodeDelete path across CSpace and ObjectTable cleanup.
+        // Semantics: cap slot disappears and Reply object is no longer addressable.
         let mut cspace = CapabilitySpace::new();
         let cnode_descriptor = cspace
             .insert_initial_capability(Capability::CNode(crate::cap::CNodeCap::new(4)))
@@ -2011,6 +2056,9 @@ mod tests {
 
     #[test]
     fn tcb_configure_binds_unbound_tcb_object_and_creates_inactive_thread() {
+        // Goal: TcbConfigure binds TCB object identity to a new inactive thread.
+        // Scope: executor TCB configure path across CSpace, ObjectTable, ThreadTable, and Scheduler.
+        // Semantics: object binding and thread insertion commit together without scheduling the thread.
         let mut cspace = CapabilitySpace::new();
         let tcb_descriptor = cspace
             .insert_initial_capability(Capability::Tcb(crate::cap::TcbCap {
@@ -2046,6 +2094,9 @@ mod tests {
 
     #[test]
     fn tcb_configure_rejects_unknown_cpu_without_binding_or_thread_insert() {
+        // Goal: TcbConfigure validates CPU topology before object binding or thread insertion.
+        // Scope: executor TCB configure failure path across Scheduler, ObjectTable, and ThreadTable.
+        // Semantics: unknown CPU leaves the TCB object unbound and thread table empty.
         let mut cspace = CapabilitySpace::new();
         let tcb_descriptor = cspace
             .insert_initial_capability(Capability::Tcb(crate::cap::TcbCap {
@@ -2081,6 +2132,9 @@ mod tests {
 
     #[test]
     fn tcb_configure_rejects_already_bound_object_without_thread_insert() {
+        // Goal: TcbConfigure cannot rebind an already bound TCB object.
+        // Scope: executor TCB configure failure path at ObjectTable binding boundary.
+        // Semantics: original binding remains and requested new thread is not inserted.
         let mut cspace = CapabilitySpace::new();
         let tcb_descriptor = cspace
             .insert_initial_capability(Capability::Tcb(crate::cap::TcbCap {
@@ -2114,6 +2168,9 @@ mod tests {
 
     #[test]
     fn tcb_configure_rejects_existing_thread_without_rebinding_object() {
+        // Goal: TcbConfigure rejects duplicate ThreadId before binding an object.
+        // Scope: executor TCB configure transaction across ThreadTable and ObjectTable owners.
+        // Semantics: existing thread remains and the target TCB object stays unbound.
         let mut cspace = CapabilitySpace::new();
         let tcb_descriptor = cspace
             .insert_initial_capability(Capability::Tcb(crate::cap::TcbCap {
@@ -2148,6 +2205,9 @@ mod tests {
 
     #[test]
     fn tcb_resume_invocation_restarts_bound_thread() {
+        // Goal: TcbResume invocation restarts a thread bound to the target TCB object.
+        // Scope: executor TCB resume path across ObjectTable, ThreadTable, and Scheduler.
+        // Semantics: bound thread enters Restart and is ready on its affinity CPU.
         let mut cspace = CapabilitySpace::new();
         let tcb_descriptor = cspace
             .insert_initial_capability(Capability::Tcb(crate::cap::TcbCap {
@@ -2187,6 +2247,9 @@ mod tests {
 
     #[test]
     fn tcb_resume_rejects_unbound_tcb_object_without_thread_mutation() {
+        // Goal: TcbResume rejects unbound TCB objects before touching ThreadTable state.
+        // Scope: executor TCB resume failure path at ObjectTable binding boundary.
+        // Semantics: unrelated thread state and scheduler placement stay unchanged.
         let mut cspace = CapabilitySpace::new();
         let tcb_descriptor = cspace
             .insert_initial_capability(Capability::Tcb(crate::cap::TcbCap {
@@ -2220,6 +2283,9 @@ mod tests {
 
     #[test]
     fn tcb_resume_rejects_bound_missing_thread_without_scheduler_mutation() {
+        // Goal: TcbResume rejects stale ObjectTable binding when ThreadTable lacks the thread.
+        // Scope: executor TCB resume failure path after object binding lookup.
+        // Semantics: scheduler remains empty because no runnable TCB is committed.
         let mut cspace = CapabilitySpace::new();
         let tcb_descriptor = cspace
             .insert_initial_capability(Capability::Tcb(crate::cap::TcbCap {

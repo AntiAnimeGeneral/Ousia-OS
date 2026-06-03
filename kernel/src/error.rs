@@ -239,6 +239,9 @@ mod tests {
 
     #[test]
     fn cap_lookup_failure_collapses_to_failed_lookup_code() {
+        // Goal: deleted capability lookup maps to the stable failed-lookup boundary code.
+        // Scope: CapError to KernelErrorCode mapping through a real lookup path.
+        // Semantics: missing slot details stay diagnostic; callers observe FailedLookup.
         let mut cspace = CapabilitySpace::new();
         let cap = cspace
             .insert_initial_capability(endpoint(Rights::READ))
@@ -253,6 +256,9 @@ mod tests {
 
     #[test]
     fn stale_descriptor_collapses_to_invalid_capability_code() {
+        // Goal: stale descriptors map to invalid capability instead of failed lookup.
+        // Scope: object generation check through a real capability lookup path.
+        // Semantics: ABA protection remains distinguishable at the public error-code boundary.
         let mut cspace = CapabilitySpace::new();
         let cap = cspace
             .insert_initial_capability(endpoint(Rights::READ))
@@ -268,6 +274,9 @@ mod tests {
 
     #[test]
     fn rights_and_policy_failures_collapse_to_illegal_operation_code() {
+        // Goal: rights escalation and object-policy violations share illegal-operation semantics.
+        // Scope: capability derivation and initial insertion policy boundaries.
+        // Semantics: caller-visible error code hides internal policy detail without losing rejection.
         let mut cspace = CapabilitySpace::new();
         let endpoint = cspace
             .insert_initial_capability(endpoint(Rights::READ))
@@ -292,6 +301,9 @@ mod tests {
 
     #[test]
     fn cap_retype_size_failure_collapses_to_range_error_code() {
+        // Goal: retype requests larger than the untyped source map to range error.
+        // Scope: Untyped capacity model through a real retype request.
+        // Semantics: invalid size is not reported as allocation exhaustion.
         let mut cspace = CapabilitySpace::new();
         let cap = cspace.insert_initial_capability(untyped(11)).unwrap();
 
@@ -311,6 +323,9 @@ mod tests {
 
     #[test]
     fn cap_retype_capacity_failure_collapses_to_not_enough_memory_code() {
+        // Goal: exhausted Untyped capacity maps to not-enough-memory.
+        // Scope: repeated retype request after prior child allocation.
+        // Semantics: source size is valid, but remaining capacity cannot satisfy the request.
         let mut cspace = CapabilitySpace::new();
         let cap = cspace.insert_initial_capability(untyped(12)).unwrap();
         cspace
@@ -382,6 +397,9 @@ mod tests {
 
     #[test]
     fn reply_target_mismatch_collapses_to_illegal_operation_code() {
+        // Goal: reply target mismatch maps to illegal operation at invocation boundary.
+        // Scope: real reply invocation authorization over a Reply cap.
+        // Semantics: target authority failure is not a lookup or capability-staleness failure.
         let mut cspace = CapabilitySpace::new();
         let cap = cspace
             .insert_reply_capability_for_test(crate::cap::ReplyCap {
@@ -407,6 +425,9 @@ mod tests {
 
     #[test]
     fn ipc_payload_failure_collapses_to_truncated_message_code() {
+        // Goal: oversized IPC payloads map to the truncated-message boundary code.
+        // Scope: payload construction error before endpoint or thread side effects.
+        // Semantics: message-register limit failure remains distinct from generic invalid argument.
         let error = IpcPayload::new(&[1, 2, 3, 4, 5]).unwrap_err();
 
         assert_eq!(
@@ -421,6 +442,9 @@ mod tests {
 
     #[test]
     fn reply_state_errors_collapse_to_illegal_operation_code() {
+        // Goal: invalid Reply state transitions map to illegal operation.
+        // Scope: Reply local state-machine errors through public error-code mapping.
+        // Semantics: empty reply and overwrite attempts remain stable caller-visible failures.
         let mut reply = Reply::new();
         let empty_reply_error = reply.reply().unwrap_err();
 
@@ -494,6 +518,9 @@ mod tests {
 
     #[test]
     fn tcb_configure_unknown_cpu_collapses_to_invalid_argument_code() {
+        // Goal: unknown CPU during TCB configure maps to invalid argument.
+        // Scope: KernelState TCB configure path crossing ObjectTable, ThreadTable, and Scheduler.
+        // Semantics: failed CPU validation leaves TCB object unbound and no thread inserted.
         let (mut state, descriptor, object) = tcb_state_with_object();
 
         assert_eq!(
@@ -519,6 +546,9 @@ mod tests {
 
     #[test]
     fn tcb_resume_unbound_object_collapses_to_illegal_operation_code() {
+        // Goal: resuming an unbound TCB object maps to illegal operation.
+        // Scope: KernelState TCB resume boundary before scheduler enqueue.
+        // Semantics: object binding failure leaves scheduler queues empty.
         let (mut state, descriptor, object) = tcb_state_with_object();
 
         assert_eq!(
@@ -542,6 +572,9 @@ mod tests {
 
     #[test]
     fn tcb_resume_missing_thread_collapses_to_failed_lookup_code() {
+        // Goal: a bound but missing runtime thread maps to failed lookup.
+        // Scope: KernelState TCB resume path after ObjectTable binding succeeds.
+        // Semantics: missing ThreadTable entry prevents scheduler mutation.
         let (mut state, descriptor, object) = tcb_state_with_object();
         state.objects_mut().bind_tcb(object, thread(2)).unwrap();
 

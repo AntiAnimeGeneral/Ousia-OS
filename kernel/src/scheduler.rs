@@ -545,6 +545,9 @@ mod tests {
 
     #[test]
     fn topology_exposes_known_per_cpu_run_queues() {
+        // Goal: constructed Scheduler exposes queues for every accepted CPU.
+        // Scope: small accessor smoke after topology validation.
+        // Semantics: known CPU lookups return their own per-CPU queues.
         let mut scheduler = scheduler();
 
         assert_eq!(scheduler.run_queue(cpu(0)).unwrap().cpu(), cpu(0));
@@ -638,6 +641,9 @@ mod tests {
 
     #[test]
     fn enqueue_unknown_cpu_fails_without_side_effects() {
+        // Goal: Scheduler rejects runnable threads whose affinity is outside topology.
+        // Scope: Scheduler enqueue preflight before placement or run queue mutation.
+        // Semantics: unknown CPU failure leaves all queues empty and placement absent.
         let mut scheduler = scheduler();
         let tcb = thread(13, cpu(9), ThreadState::Restart);
 
@@ -652,6 +658,9 @@ mod tests {
 
     #[test]
     fn local_run_queue_rejects_wrong_affinity_without_side_effects() {
+        // Goal: a local run queue only accepts threads assigned to its CPU.
+        // Scope: PerCpuRunQueue enqueue boundary without Scheduler topology lookup.
+        // Semantics: affinity mismatch does not enqueue or create placement state.
         let mut scheduler = scheduler();
         let tcb = thread(1, cpu(1), ThreadState::Restart);
 
@@ -669,6 +678,9 @@ mod tests {
 
     #[test]
     fn schedule_next_picks_fifo_ready_thread_per_cpu() {
+        // Goal: scheduling selects the oldest ready thread for one CPU.
+        // Scope: PerCpuRunQueue ready-to-current transition.
+        // Semantics: first ready thread becomes current and remaining ready threads stay queued.
         let mut queue = PerCpuRunQueue::new(cpu(0));
         let first = thread(1, cpu(0), ThreadState::Restart);
         let second = thread(2, cpu(0), ThreadState::Restart);
@@ -694,6 +706,9 @@ mod tests {
 
     #[test]
     fn yielding_current_round_robins_with_same_cpu_ready_queue() {
+        // Goal: yielding rotates the current thread behind same-CPU ready work.
+        // Scope: PerCpuRunQueue current/ready transition on one CPU.
+        // Semantics: previous current becomes ready and the next FIFO thread becomes current.
         let mut queue = PerCpuRunQueue::new(cpu(0));
         let first = thread(1, cpu(0), ThreadState::Restart);
         let second = thread(2, cpu(0), ThreadState::Restart);
@@ -720,6 +735,9 @@ mod tests {
 
     #[test]
     fn blocking_current_removes_thread_from_local_run_queue() {
+        // Goal: blocking the current thread removes it from scheduler ownership.
+        // Scope: PerCpuRunQueue current-thread removal.
+        // Semantics: blocked current leaves no current thread and no placement entry.
         let mut queue = PerCpuRunQueue::new(cpu(0));
         let tcb = thread(1, cpu(0), ThreadState::Restart);
 
@@ -782,6 +800,9 @@ mod tests {
 
     #[test]
     fn schedule_next_rejects_cpu_with_current_without_side_effects() {
+        // Goal: schedule_next refuses to overwrite an existing current thread.
+        // Scope: PerCpuRunQueue error path with one current and one ready thread.
+        // Semantics: failure preserves current and ready placements exactly.
         let mut queue = PerCpuRunQueue::new(cpu(0));
         let first = thread(1, cpu(0), ThreadState::Restart);
         let second = thread(2, cpu(0), ThreadState::Restart);
@@ -811,6 +832,9 @@ mod tests {
 
     #[test]
     fn scheduler_operation_failures_collapse_to_boundary_error_codes() {
+        // Goal: scheduler failures map to stable kernel boundary error codes.
+        // Scope: Scheduler and PerCpuRunQueue public error-code mapping.
+        // Semantics: mapping errors does not mutate existing placement state.
         let mut scheduler = Scheduler::new(&[cpu(0), cpu(1)]).unwrap();
         let inactive = thread(1, cpu(0), ThreadState::Inactive);
         let wrong_cpu = thread(2, cpu(1), ThreadState::Restart);

@@ -2141,6 +2141,9 @@ mod tests {
 
     #[test]
     fn root_capability_can_be_created_and_looked_up() {
+        // Goal: initial cap insertion establishes a root capability view.
+        // Scope: CapabilitySpace root slot creation and lookup.
+        // Semantics: root cap has no parent and preserves object kind, rights, descriptor, and capability data.
         let mut cspace = CapabilitySpace::new();
         let root = cspace
             .insert_initial_capability(endpoint(ENDPOINT_ALLOWED_RIGHTS))
@@ -2157,6 +2160,9 @@ mod tests {
 
     #[test]
     fn initial_capability_rejects_rights_outside_object_policy() {
+        // Goal: initial capability insertion enforces object rights policy.
+        // Scope: root cap creation before any slot or object is committed.
+        // Semantics: invalid rights are rejected at the boundary with the object-specific allowed mask.
         let mut cspace = CapabilitySpace::new();
 
         assert_eq!(
@@ -2179,6 +2185,9 @@ mod tests {
 
     #[test]
     fn copy_preserves_endpoint_badge_and_reduces_rights() {
+        // Goal: copying a badged endpoint preserves badge while reducing authority.
+        // Scope: CSpace derivation from one endpoint cap.
+        // Semantics: child rights cannot exceed parent rights and lineage points at the source slot.
         let mut cspace = CapabilitySpace::new();
         let root = cspace
             .insert_initial_capability(badged_endpoint(Rights::READ | Rights::WRITE, 0x44))
@@ -2193,6 +2202,9 @@ mod tests {
 
     #[test]
     fn copy_into_uses_requested_empty_slot() {
+        // Goal: explicit copy destination is honored when the slot is empty.
+        // Scope: CSpace copy_into slot allocation boundary.
+        // Semantics: derived cap is installed in the requested slot with reduced authority.
         let mut cspace = CapabilitySpace::new();
         let root = cspace
             .insert_initial_capability(badged_endpoint(Rights::READ | Rights::WRITE, 0x44))
@@ -2210,6 +2222,9 @@ mod tests {
 
     #[test]
     fn copy_into_occupied_destination_fails_before_source_derivation() {
+        // Goal: copy_into rejects occupied destinations before mutating derivation state.
+        // Scope: explicit slot allocation precheck.
+        // Semantics: occupied destination cap remains unchanged and no child is derived.
         let mut cspace = CapabilitySpace::new();
         let source = cspace
             .insert_initial_capability(endpoint(Rights::READ | Rights::WRITE))
@@ -2230,6 +2245,9 @@ mod tests {
 
     #[test]
     fn copy_into_reused_slot_is_removed_from_free_list() {
+        // Goal: explicit reuse of a deleted slot removes that slot from implicit allocation.
+        // Scope: CSpace free-list ownership after copy_into.
+        // Semantics: later implicit insertion cannot allocate the same live slot twice.
         let mut cspace = CapabilitySpace::new();
         let root = cspace
             .insert_initial_capability(endpoint(Rights::READ | Rights::WRITE))
@@ -2247,6 +2265,9 @@ mod tests {
 
     #[test]
     fn mint_can_set_endpoint_badge_without_escalating_rights() {
+        // Goal: endpoint mint can add a badge while reducing rights.
+        // Scope: badge mint derivation for unbadged endpoint caps.
+        // Semantics: minted child records badge and parent lineage without authority escalation.
         let mut cspace = CapabilitySpace::new();
         let root = cspace
             .insert_initial_capability(endpoint(Rights::READ | Rights::WRITE))
@@ -2263,6 +2284,9 @@ mod tests {
 
     #[test]
     fn mint_can_set_notification_badge() {
+        // Goal: notification mint can add a badge while reducing rights.
+        // Scope: badge mint derivation for notification caps.
+        // Semantics: minted child records badge and parent lineage without authority escalation.
         let mut cspace = CapabilitySpace::new();
         let root = cspace
             .insert_initial_capability(badged_notification(Rights::READ | Rights::WRITE, 0))
@@ -2279,6 +2303,9 @@ mod tests {
 
     #[test]
     fn badge_mint_is_rejected_for_non_badge_capabilities() {
+        // Goal: badge minting is limited to endpoint and notification capabilities.
+        // Scope: mint boundary for non-badge object kinds.
+        // Semantics: unsupported cap kinds fail without installing a child cap.
         let mut cspace = CapabilitySpace::new();
         let root = cspace
             .insert_initial_capability(frame(Rights::READ | Rights::WRITE))
@@ -2296,6 +2323,9 @@ mod tests {
 
     #[test]
     fn badge_mint_is_rejected_when_badge_already_present() {
+        // Goal: badge minting cannot overwrite an existing badge.
+        // Scope: mint boundary for already badged endpoint and notification caps.
+        // Semantics: existing badge remains authoritative and no child cap is installed.
         let mut cspace = CapabilitySpace::new();
         let endpoint_root = cspace
             .insert_initial_capability(badged_endpoint(Rights::READ | Rights::WRITE, 1))
@@ -2324,6 +2354,9 @@ mod tests {
 
     #[test]
     fn failed_mint_does_not_consume_reusable_slot_or_change_lineage() {
+        // Goal: failed mint is transactionally side-effect free for slots and lineage.
+        // Scope: mint failure after a deleted child slot becomes reusable.
+        // Semantics: reusable slot stays available and source root remains parentless.
         let mut cspace = CapabilitySpace::new();
         let root = cspace
             .insert_initial_capability(frame(Rights::READ | Rights::WRITE))
@@ -2351,6 +2384,9 @@ mod tests {
 
     #[test]
     fn move_transfers_slot_without_creating_derivation() {
+        // Goal: moving a capability transfers slot identity in the derivation tree.
+        // Scope: move_capability and later revoke over moved lineage.
+        // Semantics: parent/child links retarget to the new slot and revoke still removes descendants.
         let mut cspace = CapabilitySpace::new();
         let root = cspace
             .insert_initial_capability(endpoint(ENDPOINT_ALLOWED_RIGHTS))
@@ -2382,6 +2418,9 @@ mod tests {
 
     #[test]
     fn revoke_copied_typed_cap_does_not_remove_copy_descendants() {
+        // Goal: typed-copy revoke follows direct descendants without deleting copy grandchildren unexpectedly.
+        // Scope: revoke_descendants from a copied typed cap.
+        // Semantics: descendants of the revoked copy that are outside the selected revocation set remain valid.
         let mut cspace = CapabilitySpace::new();
         let root = cspace
             .insert_initial_capability(endpoint(ENDPOINT_ALLOWED_RIGHTS))
@@ -2396,6 +2435,9 @@ mod tests {
 
     #[test]
     fn untyped_retype_creates_child_object() {
+        // Goal: Untyped retype creates a typed child object and capability.
+        // Scope: CSpace Untyped allocation into a Frame cap.
+        // Semantics: child cap has parent lineage and a distinct object id from the Untyped source.
         let mut cspace = CapabilitySpace::new();
         let root = cspace.insert_initial_capability(untyped(12)).unwrap();
 
@@ -2420,6 +2462,9 @@ mod tests {
 
     #[test]
     fn untyped_retype_can_create_cnode_tcb_and_notification() {
+        // Goal: Untyped retype supports kernel object families beyond Frame.
+        // Scope: CSpace Untyped allocation into CNode, TCB, and Notification caps.
+        // Semantics: each target object kind installs the expected cap shape and policy rights.
         let mut cspace = CapabilitySpace::new();
         let root = cspace.insert_initial_capability(untyped(12)).unwrap();
 
@@ -2454,6 +2499,9 @@ mod tests {
 
     #[test]
     fn untyped_retype_rejects_target_rights_outside_object_policy() {
+        // Goal: retype target rights are checked against the target object policy.
+        // Scope: Untyped retype precheck before capacity consumption.
+        // Semantics: invalid target rights fail without allocating child objects.
         let mut cspace = CapabilitySpace::new();
         let root = cspace.insert_initial_capability(untyped(12)).unwrap();
 
@@ -2474,6 +2522,9 @@ mod tests {
 
     #[test]
     fn untyped_retype_can_create_smaller_untyped() {
+        // Goal: Untyped sources can derive smaller Untyped children.
+        // Scope: Untyped-to-Untyped retype capacity and lineage.
+        // Semantics: child size is preserved and child cap records the parent slot.
         let mut cspace = CapabilitySpace::new();
         let root = cspace.insert_initial_capability(untyped(16)).unwrap();
 
@@ -2487,6 +2538,9 @@ mod tests {
 
     #[test]
     fn revoke_derived_untyped_descendants_resets_child_capacity() {
+        // Goal: revoking an Untyped child clears that child's allocation state.
+        // Scope: revoke_descendants on a derived Untyped cap with an allocated child.
+        // Semantics: retyped descendants are deleted and the child Untyped can allocate again.
         let mut cspace = CapabilitySpace::new();
         let root = cspace.insert_initial_capability(untyped(16)).unwrap();
         let child = cspace
@@ -2521,6 +2575,9 @@ mod tests {
 
     #[test]
     fn untyped_retype_rejects_oversized_child() {
+        // Goal: Untyped retype rejects children larger than the source size.
+        // Scope: size validation before child object allocation.
+        // Semantics: oversized request reports source and requested size without consuming capacity.
         let mut cspace = CapabilitySpace::new();
         let root = cspace.insert_initial_capability(untyped(11)).unwrap();
 
@@ -2541,6 +2598,9 @@ mod tests {
 
     #[test]
     fn only_untyped_cap_can_retype_objects() {
+        // Goal: retype authority is limited to Untyped capabilities.
+        // Scope: retype_untyped capability-kind boundary.
+        // Semantics: non-Untyped source caps fail with wrong-capability and no allocation.
         let mut cspace = CapabilitySpace::new();
         let root = cspace
             .insert_initial_capability(endpoint(Rights::READ))
@@ -2557,6 +2617,9 @@ mod tests {
 
     #[test]
     fn revoke_untyped_descendants_removes_retyped_objects() {
+        // Goal: revoking an Untyped source removes all objects allocated from it.
+        // Scope: revoke_descendants over multiple retyped child objects.
+        // Semantics: source cap remains valid while retyped endpoint/frame children disappear.
         let mut cspace = CapabilitySpace::new();
         let root = cspace.insert_initial_capability(untyped(13)).unwrap();
         let endpoint = cspace.retype_untyped(root, RetypeTarget::Endpoint).unwrap();
@@ -2612,6 +2675,9 @@ mod tests {
 
     #[test]
     fn revoke_untyped_descendants_resets_parent_capacity() {
+        // Goal: revoking Untyped descendants returns capacity to the parent source.
+        // Scope: capacity exhaustion followed by revoke and retype.
+        // Semantics: old children are gone or stale, and equivalent allocation can succeed again.
         let mut cspace = CapabilitySpace::new();
         let root = cspace.insert_initial_capability(untyped(12)).unwrap();
         let frame = cspace
@@ -2659,6 +2725,9 @@ mod tests {
 
     #[test]
     fn revoke_copied_untyped_cap_does_not_remove_parent_allocation_state() {
+        // Goal: revoking a copied Untyped cap does not treat copy lineage as allocation state.
+        // Scope: copied Untyped descendant revocation from the root cap.
+        // Semantics: copied cap is removed, while parent allocation capacity remains usable.
         let mut cspace = CapabilitySpace::new();
         let root = cspace.insert_initial_capability(untyped(12)).unwrap();
         let copied = cspace.copy(root, Rights::NONE).unwrap();
@@ -2683,6 +2752,9 @@ mod tests {
 
     #[test]
     fn copying_untyped_with_children_is_rejected_without_resetting_capacity() {
+        // Goal: Untyped with live children cannot be copied as a way to reset capacity.
+        // Scope: copy precheck over Untyped allocation state.
+        // Semantics: copy fails and parent remains capacity-exhausted by its existing child.
         let mut cspace = CapabilitySpace::new();
         let root = cspace.insert_initial_capability(untyped(12)).unwrap();
         cspace
@@ -2713,6 +2785,9 @@ mod tests {
 
     #[test]
     fn revoke_nested_untyped_removes_child_allocation_state() {
+        // Goal: revoking an Untyped parent removes nested Untyped allocation state.
+        // Scope: nested Untyped child with its own retyped object.
+        // Semantics: nested child descriptor is invalid and parent capacity can allocate again.
         let mut cspace = CapabilitySpace::new();
         let root = cspace.insert_initial_capability(untyped(12)).unwrap();
         let child = cspace
@@ -2737,6 +2812,9 @@ mod tests {
 
     #[test]
     fn untyped_retype_uses_model_object_size_and_alignment() {
+        // Goal: Untyped capacity accounting uses model object sizes and alignment.
+        // Scope: mixed object allocation from a page-sized Untyped source.
+        // Semantics: small object allocation can exhaust aligned capacity for a later Frame.
         let mut cspace = CapabilitySpace::new();
         let root = cspace.insert_initial_capability(untyped(12)).unwrap();
 
@@ -2799,6 +2877,9 @@ mod tests {
 
     #[test]
     fn model_sized_kernel_objects_consume_untyped_capacity() {
+        // Goal: kernel object model sizes consume Untyped capacity consistently.
+        // Scope: TCB and CNode allocation before later Notification allocation.
+        // Semantics: larger model-sized objects can exhaust source capacity before smaller requests.
         let mut cspace = CapabilitySpace::new();
         let root = cspace.insert_initial_capability(untyped(10)).unwrap();
 
@@ -2846,6 +2927,9 @@ mod tests {
 
     #[test]
     fn derivation_rejects_rights_outside_object_policy_at_boundary() {
+        // Goal: derivation rights checks enforce both parent rights and object policy.
+        // Scope: copy boundary for Frame and CNode capabilities.
+        // Semantics: requested rights outside parent or object policy fail without child insertion.
         let mut cspace = CapabilitySpace::new();
         let root = cspace
             .insert_initial_capability(frame(Rights::READ | Rights::WRITE | Rights::EXECUTE))
@@ -2873,6 +2957,9 @@ mod tests {
 
     #[test]
     fn deleting_a_slot_only_invalidates_that_slot() {
+        // Goal: deleting a derived slot does not recursively delete descendants.
+        // Scope: delete operation over a typed derivation chain.
+        // Semantics: deleted slot is gone, root and grandchild remain valid, and slot is not live.
         let mut cspace = CapabilitySpace::new();
         let root = cspace
             .insert_initial_capability(endpoint(ENDPOINT_ALLOWED_RIGHTS))
@@ -2893,6 +2980,9 @@ mod tests {
 
     #[test]
     fn revoke_descendants_keeps_revoked_slot() {
+        // Goal: revoking descendants preserves the root of the revocation operation.
+        // Scope: revoke_descendants over a typed derivation chain.
+        // Semantics: selected descendants disappear while the authority cap remains valid.
         let mut cspace = CapabilitySpace::new();
         let root = cspace
             .insert_initial_capability(endpoint(ENDPOINT_ALLOWED_RIGHTS))
@@ -2915,6 +3005,9 @@ mod tests {
 
     #[test]
     fn revoke_descendants_can_traverse_deleted_intermediate_slots() {
+        // Goal: revocation traverses lineage through deleted intermediate slots.
+        // Scope: revoke_descendants after deleting a parent in the derivation path.
+        // Semantics: remaining descendants are still found and removed.
         let mut cspace = CapabilitySpace::new();
         let root = cspace
             .insert_initial_capability(endpoint(ENDPOINT_ALLOWED_RIGHTS))
@@ -2938,6 +3031,9 @@ mod tests {
 
     #[test]
     fn deleting_leaf_then_revoke_does_not_reuse_slot_twice() {
+        // Goal: delete plus revoke does not enqueue the same slot for reuse twice.
+        // Scope: slot free-list ownership after leaf deletion and ancestor revocation.
+        // Semantics: subsequent allocations receive distinct live slots.
         let mut cspace = CapabilitySpace::new();
         let root = cspace
             .insert_initial_capability(endpoint(ENDPOINT_ALLOWED_RIGHTS))
@@ -2967,6 +3063,9 @@ mod tests {
 
     #[test]
     fn destroying_object_invalidates_all_related_capabilities() {
+        // Goal: object destruction invalidates every cap to that object.
+        // Scope: object-generation and slot invalidation across root and derived caps.
+        // Semantics: no capability to the destroyed object remains lookup-valid.
         let mut cspace = CapabilitySpace::new();
         let root = cspace
             .insert_initial_capability(frame(Rights::READ | Rights::WRITE | Rights::EXECUTE))
@@ -2985,6 +3084,9 @@ mod tests {
 
     #[test]
     fn generation_bump_makes_existing_descriptor_stale() {
+        // Goal: object generation bumps invalidate existing descriptors.
+        // Scope: lookup generation check after object generation change.
+        // Semantics: stale descriptor reports expected and actual generation without resolving authority.
         let mut cspace = CapabilitySpace::new();
         let root = cspace
             .insert_initial_capability(frame(Rights::READ | Rights::WRITE | Rights::EXECUTE))
@@ -3005,6 +3107,9 @@ mod tests {
 
     #[test]
     fn stale_descriptor_cannot_derive_new_capability() {
+        // Goal: stale descriptors cannot be used as derivation authority.
+        // Scope: derive boundary after object generation bump.
+        // Semantics: stale source lookup fails before any child cap is installed.
         let mut cspace = CapabilitySpace::new();
         let root = cspace
             .insert_initial_capability(frame(Rights::READ | Rights::WRITE | Rights::EXECUTE))
@@ -3021,6 +3126,9 @@ mod tests {
 
     #[test]
     fn reused_slot_rejects_stale_descriptor() {
+        // Goal: slot generation protects against stale descriptors after slot reuse.
+        // Scope: delete, free-list reuse, and lookup generation validation.
+        // Semantics: old descriptor is stale while the reused slot's new cap remains valid.
         let mut cspace = CapabilitySpace::new();
         let first = cspace
             .insert_initial_capability(endpoint(Rights::READ))
@@ -3046,6 +3154,9 @@ mod tests {
 
     #[test]
     fn deleted_slot_with_descendants_is_not_reused_before_revoke() {
+        // Goal: deleted slots with live descendants are not reused until revocation clears lineage.
+        // Scope: free-list eligibility for deleted intermediate derivation slots.
+        // Semantics: new allocation avoids the deleted parent slot while grandchild remains live.
         let mut cspace = CapabilitySpace::new();
         let root = cspace
             .insert_initial_capability(endpoint(ENDPOINT_ALLOWED_RIGHTS))
@@ -3071,6 +3182,9 @@ mod tests {
 
     #[test]
     fn notification_capability_derivation_preserves_badge_and_reduces_rights() {
+        // Goal: notification derivation preserves notification object semantics while reducing authority.
+        // Scope: derive boundary for notification caps.
+        // Semantics: child cap remains a notification cap with requested rights only.
         let mut cspace = CapabilitySpace::new();
         let root = cspace
             .insert_initial_capability(notification(Rights::READ | Rights::WRITE))
@@ -3086,6 +3200,9 @@ mod tests {
 
     #[test]
     fn reply_capability_is_not_derivable() {
+        // Goal: reply capabilities are single-use authority and cannot derive children.
+        // Scope: derive boundary for Reply caps.
+        // Semantics: derivation fails with no child cap installed.
         let mut cspace = CapabilitySpace::new();
         let caller = ObjectId::new(100);
         let target = ObjectId::new(200);
@@ -3108,6 +3225,9 @@ mod tests {
 
     #[test]
     fn public_initial_capability_insertion_rejects_reply_cap() {
+        // Goal: public initial cap insertion cannot manufacture Reply caps.
+        // Scope: root cap creation boundary for Reply authority.
+        // Semantics: Reply caps only enter through reply-specific installation paths.
         let mut cspace = CapabilitySpace::new();
         let caller = ObjectId::new(100);
         let target = ObjectId::new(200);
@@ -3122,6 +3242,9 @@ mod tests {
 
     #[test]
     fn consuming_reply_cap_invalidates_that_slot() {
+        // Goal: consuming a Reply cap removes its slot authority.
+        // Scope: consume_reply_cap single-use boundary.
+        // Semantics: consumed reply descriptor can no longer be looked up.
         let mut cspace = CapabilitySpace::new();
         let caller = ObjectId::new(100);
         let target = ObjectId::new(200);
@@ -3143,6 +3266,9 @@ mod tests {
 
     #[test]
     fn reply_capability_can_target_existing_reply_object() {
+        // Goal: reply capability installation can reuse an existing Reply runtime object.
+        // Scope: insert_reply_capability over a Reply object after seed cap consumption.
+        // Semantics: installed cap targets the supplied Reply object and carries new caller metadata.
         let mut cspace = CapabilitySpace::new();
         let initial = cspace
             .insert_reply_capability_for_test(ReplyCap {
@@ -3176,6 +3302,9 @@ mod tests {
 
     #[test]
     fn reply_capability_install_rejects_non_reply_object_without_slot() {
+        // Goal: reply cap installation validates target object kind before allocating a slot.
+        // Scope: insert_reply_capability failure against a non-Reply object.
+        // Semantics: wrong-kind target leaves existing endpoint cap and slot state unchanged.
         let mut cspace = CapabilitySpace::new();
         let endpoint = cspace
             .insert_initial_capability(endpoint(Rights::READ))
@@ -3201,6 +3330,9 @@ mod tests {
 
     #[test]
     fn consumed_reply_slot_reuse_rejects_old_descriptor() {
+        // Goal: consumed Reply slot reuse makes the old descriptor stale.
+        // Scope: consume_reply_cap followed by implicit slot allocation.
+        // Semantics: slot generation changes, old reply descriptor is stale, and new cap is valid.
         let mut cspace = CapabilitySpace::new();
         let caller = ObjectId::new(100);
         let target = ObjectId::new(200);
@@ -3235,6 +3367,9 @@ mod tests {
 
     #[test]
     fn only_reply_cap_can_be_consumed_as_reply() {
+        // Goal: consume_reply_cap rejects non-Reply capabilities before deleting slots.
+        // Scope: consume_reply_cap kind check.
+        // Semantics: wrong-kind cap remains lookup-valid after failure.
         let mut cspace = CapabilitySpace::new();
         let endpoint = cspace
             .insert_initial_capability(endpoint(Rights::READ))

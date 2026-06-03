@@ -440,6 +440,9 @@ mod tests {
 
     #[test]
     fn allocates_page_aligned_ranges_monotonically() {
+        // Goal: EarlyFrameAllocator hands out page-aligned frames monotonically.
+        // Scope: single contiguous FrameRange allocation state.
+        // Semantics: each successful allocation advances the cursor and updates remaining capacity.
         let range = FrameRange::new(0x1000, 0x5000).unwrap();
         let mut allocator = EarlyFrameAllocator::new(range);
 
@@ -457,6 +460,9 @@ mod tests {
 
     #[test]
     fn honors_larger_alignment() {
+        // Goal: EarlyFrameAllocator honors alignments larger than the page size.
+        // Scope: single-range allocation alignment handling.
+        // Semantics: allocator skips forward to the requested alignment before committing.
         let range = FrameRange::new(0x1000, 0x9000).unwrap();
         let mut allocator = EarlyFrameAllocator::new(range);
 
@@ -468,6 +474,9 @@ mod tests {
 
     #[test]
     fn memory_map_allocator_walks_ranges_in_order() {
+        // Goal: memory-map allocator consumes normalized ranges in order.
+        // Scope: multi-range allocator cursor behavior.
+        // Semantics: exhausting one range advances to the next without rewinding prior allocations.
         let mut allocator = EarlyMemoryMapAllocator::new([
             FrameRange::new(0x1000, 0x3000).unwrap(),
             FrameRange::new(0x8000, 0xc000).unwrap(),
@@ -486,6 +495,9 @@ mod tests {
 
     #[test]
     fn memory_map_allocator_honors_alignment_per_range() {
+        // Goal: memory-map allocation alignment is evaluated per candidate range.
+        // Scope: multi-range allocator selection with an oversized alignment.
+        // Semantics: an unsuitable first range remains untouched while a later aligned range is used.
         let mut allocator = EarlyMemoryMapAllocator::new([
             FrameRange::new(0x1000, 0x5000).unwrap(),
             FrameRange::new(0x8000, 0xc000).unwrap(),
@@ -501,6 +513,9 @@ mod tests {
 
     #[test]
     fn memory_map_allocator_exhaustion_does_not_advance_ranges() {
+        // Goal: memory-map allocator failure has no partial cursor side effects.
+        // Scope: multi-range allocation request larger than every usable range.
+        // Semantics: exhaustion leaves every range's allocated prefix unchanged.
         let mut allocator = EarlyMemoryMapAllocator::new([
             FrameRange::new(0x1000, 0x2000).unwrap(),
             FrameRange::new(0x4000, 0x5000).unwrap(),
@@ -516,6 +531,9 @@ mod tests {
 
     #[test]
     fn normalizes_only_usable_page_ranges() {
+        // Goal: memory-map normalization keeps only page-aligned usable regions.
+        // Scope: host unit test for mixed usable/reserved firmware map input.
+        // Semantics: reserved regions and sub-page fragments never enter allocator input.
         let map = normalize_memory_regions::<4>(&[
             MemoryRegion::new(0x1003, 0x3fff, MemoryRegionKind::Usable),
             MemoryRegion::new(0x4000, 0x9000, MemoryRegionKind::Reserved),
@@ -560,6 +578,9 @@ mod tests {
 
     #[test]
     fn normalizing_subtracts_reserved_ranges() {
+        // Goal: reserved ranges are subtracted from usable memory before allocation.
+        // Scope: normalization with explicit reserved intervals.
+        // Semantics: usable output excludes reserved spans and keeps remaining segments ordered.
         let map = normalize_memory_regions_with_reserved::<4>(
             &[MemoryRegion::new(0x1000, 0x9000, MemoryRegionKind::Usable)],
             &[
@@ -576,6 +597,9 @@ mod tests {
 
     #[test]
     fn reserved_ranges_can_cover_usable_range_edges() {
+        // Goal: reserved subtraction handles overlaps at usable-region edges.
+        // Scope: normalization with reserved ranges extending beyond usable bounds.
+        // Semantics: only the uncovered interior segment remains usable.
         let map = normalize_memory_regions_with_reserved::<2>(
             &[MemoryRegion::new(0x1000, 0x9000, MemoryRegionKind::Usable)],
             &[
@@ -591,6 +615,9 @@ mod tests {
 
     #[test]
     fn reserved_ranges_can_remove_all_usable_memory() {
+        // Goal: reserved subtraction may remove all usable memory without error.
+        // Scope: normalization where reserved ranges fully cover usable input.
+        // Semantics: empty normalized output is valid map data.
         let map = normalize_memory_regions_with_reserved::<2>(
             &[MemoryRegion::new(0x1000, 0x3000, MemoryRegionKind::Usable)],
             &[FrameRange::new(0x0000, 0x4000).unwrap()],
@@ -602,6 +629,9 @@ mod tests {
 
     #[test]
     fn reserved_ranges_can_be_unsorted_and_overlapping() {
+        // Goal: reserved subtraction is independent of reserved-range order and overlap shape.
+        // Scope: normalization over unsorted overlapping reserved intervals.
+        // Semantics: effective reserved union is removed before producing ordered usable segments.
         let map = normalize_memory_regions_with_reserved::<4>(
             &[MemoryRegion::new(0x1000, 0xa000, MemoryRegionKind::Usable)],
             &[
@@ -633,6 +663,9 @@ mod tests {
 
     #[test]
     fn normalized_map_can_create_allocator() {
+        // Goal: a non-empty normalized memory map can become an allocation source.
+        // Scope: bridge from normalization output to EarlyMemoryMapAllocator.
+        // Semantics: allocator preserves range order and advances through normalized ranges.
         let map = normalize_memory_regions::<4>(&[
             MemoryRegion::new(0x1003, 0x3fff, MemoryRegionKind::Usable),
             MemoryRegion::new(0x8000, 0xa000, MemoryRegionKind::Usable),
@@ -653,6 +686,9 @@ mod tests {
 
     #[test]
     fn empty_normalized_map_cannot_create_allocator() {
+        // Goal: allocator creation rejects normalized maps with no active range.
+        // Scope: NormalizedMemoryMap to allocator conversion boundary.
+        // Semantics: absence of usable memory is reported as exhaustion, not an empty allocator.
         let map = NormalizedMemoryMap::<2>::empty();
         assert_eq!(
             map.try_into_allocator().unwrap_err(),
@@ -662,6 +698,9 @@ mod tests {
 
     #[test]
     fn early_frame_state_rejects_allocation_before_init() {
+        // Goal: global early-frame state rejects allocation before initialization.
+        // Scope: EarlyFrameAllocatorState pre-init boundary.
+        // Semantics: uninitialized state remains uninitialized after allocation failure.
         let mut state = EarlyFrameAllocatorState::<2>::uninitialized();
 
         assert!(!state.is_initialized());
@@ -673,6 +712,9 @@ mod tests {
 
     #[test]
     fn early_frame_state_initializes_from_regions_once() {
+        // Goal: early-frame state accepts exactly one initialization.
+        // Scope: EarlyFrameAllocatorState initialization boundary.
+        // Semantics: successful init establishes allocator state; later init attempts fail.
         let mut state = EarlyFrameAllocatorState::<4>::uninitialized();
 
         state
@@ -694,6 +736,9 @@ mod tests {
 
     #[test]
     fn early_frame_state_allocates_only_after_reserved_ranges() {
+        // Goal: early-frame state allocates only from memory left after reserved subtraction.
+        // Scope: initialized EarlyFrameAllocatorState over firmware regions and reserved ranges.
+        // Semantics: allocation starts after reserved boot/platform memory.
         let mut state = EarlyFrameAllocatorState::<4>::uninitialized();
 
         state
@@ -709,6 +754,9 @@ mod tests {
 
     #[test]
     fn early_frame_state_reports_no_available_memory() {
+        // Goal: early-frame initialization fails when reserved ranges cover all usable memory.
+        // Scope: EarlyFrameAllocatorState init path with empty normalized allocator input.
+        // Semantics: failed init leaves the global state uninitialized.
         let mut state = EarlyFrameAllocatorState::<2>::uninitialized();
 
         assert_eq!(
