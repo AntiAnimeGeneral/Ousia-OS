@@ -477,8 +477,7 @@ mod tests {
                     descriptor,
                     Invocation::EndpointSend {
                         message_words: 0,
-                        blocking: true,
-                        is_call: false,
+                        op: crate::invocation::EndpointSendOp::Send,
                     },
                 )
                 .unwrap_err()

@@ -8,8 +8,7 @@ use crate::tcb::{CpuId, ThreadId};
 pub enum Invocation {
     EndpointSend {
         message_words: usize,
-        blocking: bool,
-        is_call: bool,
+        op: EndpointSendOp,
     },
     EndpointRecv {
         blocking: bool,
@@ -58,6 +57,13 @@ pub enum Invocation {
     Reply {
         target: ObjectId,
     },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum EndpointSendOp {
+    Send,
+    NBSend,
+    Call,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -169,6 +175,16 @@ impl From<CapError> for InvocationError {
     }
 }
 
+impl EndpointSendOp {
+    pub const fn is_blocking(self) -> bool {
+        matches!(self, Self::Send | Self::Call)
+    }
+
+    pub const fn is_call(self) -> bool {
+        matches!(self, Self::Call)
+    }
+}
+
 pub fn invoke(
     cspace: &CapabilitySpace,
     descriptor: CapabilityDescriptor,
@@ -177,11 +193,7 @@ pub fn invoke(
     let view = cspace.lookup(descriptor)?;
 
     match invocation {
-        Invocation::EndpointSend {
-            message_words,
-            blocking,
-            is_call,
-        } => match view.capability {
+        Invocation::EndpointSend { message_words, op } => match view.capability {
             Capability::Endpoint(cap) => {
                 if !cap.can_send() {
                     return Err(InvocationError::MissingRights {
@@ -189,18 +201,12 @@ pub fn invoke(
                         actual: view.rights,
                     });
                 }
-                if is_call && !(cap.can_grant() || cap.can_grant_reply()) {
-                    return Err(InvocationError::MissingRights {
-                        required: Rights::GRANT | Rights::GRANT_REPLY,
-                        actual: view.rights,
-                    });
-                }
                 Ok(InvocationOutcome::SendIpcAuthorized {
                     endpoint: view.object,
                     badge: cap.badge,
                     message_words,
-                    blocking,
-                    is_call,
+                    blocking: op.is_blocking(),
+                    is_call: op.is_call(),
                     can_grant: cap.can_grant(),
                     can_grant_reply: cap.can_grant_reply(),
                 })
@@ -452,8 +458,7 @@ mod tests {
                 cap,
                 Invocation::EndpointSend {
                     message_words: 3,
-                    blocking: true,
-                    is_call: true,
+                    op: EndpointSendOp::Call,
                 },
             ),
             Ok(InvocationOutcome::SendIpcAuthorized {
@@ -469,14 +474,15 @@ mod tests {
     }
 
     #[test]
-    fn endpoint_call_requires_grant_or_grant_reply() {
-        // Goal: call setup cannot be authorized without grant or grant-reply authority.
+    fn endpoint_call_without_grant_authorizes_without_reply_transfer_rights() {
+        // Goal: endpoint call authorization follows seL4 and does not require grant rights.
         // Scope: unit test for endpoint invocation rights.
-        // Semantics: WRITE permits send, but call reply authority needs an explicit grant bit.
+        // Semantics: WRITE permits call; later IPC/reply transition consumes grant facts.
         let mut cspace = CapabilitySpace::new();
         let cap = cspace
             .insert_initial_capability(endpoint(Rights::WRITE, 0x2a))
             .unwrap();
+        let endpoint = cspace.object_of(cap).unwrap();
 
         assert_eq!(
             invoke(
@@ -484,13 +490,17 @@ mod tests {
                 cap,
                 Invocation::EndpointSend {
                     message_words: 0,
-                    blocking: true,
-                    is_call: true,
+                    op: EndpointSendOp::Call,
                 },
             ),
-            Err(InvocationError::MissingRights {
-                required: Rights::GRANT | Rights::GRANT_REPLY,
-                actual: Rights::WRITE,
+            Ok(InvocationOutcome::SendIpcAuthorized {
+                endpoint,
+                badge: 0x2a,
+                message_words: 0,
+                blocking: true,
+                is_call: true,
+                can_grant: false,
+                can_grant_reply: false,
             })
         );
     }
@@ -534,8 +544,7 @@ mod tests {
                 cap,
                 Invocation::EndpointSend {
                     message_words: 1,
-                    blocking: false,
-                    is_call: false,
+                    op: EndpointSendOp::NBSend,
                 },
             ),
             Ok(InvocationOutcome::SendIpcAuthorized {
@@ -575,8 +584,7 @@ mod tests {
                 cap,
                 Invocation::EndpointSend {
                     message_words: 1,
-                    blocking: true,
-                    is_call: false,
+                    op: EndpointSendOp::Send,
                 },
             ),
             Err(InvocationError::WrongCapability {

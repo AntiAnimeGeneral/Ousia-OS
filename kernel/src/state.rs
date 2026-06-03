@@ -927,6 +927,7 @@ mod tests {
     use super::*;
     use crate::{
         cap::{Capability, EndpointCap, NotificationCap, ReplyCap, Rights},
+        invocation::EndpointSendOp,
         ipc::Endpoint,
         notification::{Notification, NotificationState},
         reply::{Reply, ReplyCaller, ReplyCallerParams},
@@ -994,8 +995,7 @@ mod tests {
                 endpoint_descriptor,
                 Invocation::EndpointSend {
                     message_words: 0,
-                    blocking: true,
-                    is_call: false,
+                    op: EndpointSendOp::Send,
                 },
             ),
             Ok(ExecutionOutcome::Thread(ThreadAction::Blocked {
@@ -1038,8 +1038,7 @@ mod tests {
                 endpoint_descriptor,
                 Invocation::EndpointSend {
                     message_words: 0,
-                    blocking: true,
-                    is_call: false,
+                    op: EndpointSendOp::Send,
                 },
             ),
             Err(KernelExecutionError::Object(
@@ -1350,8 +1349,7 @@ mod tests {
                 endpoint_descriptor,
                 Invocation::EndpointSend {
                     message_words: 0,
-                    blocking: true,
-                    is_call: true,
+                    op: EndpointSendOp::Call,
                 },
             )
             .unwrap();
@@ -1464,8 +1462,7 @@ mod tests {
                 caller_descriptor,
                 Invocation::EndpointSend {
                     message_words: 0,
-                    blocking: true,
-                    is_call: true,
+                    op: EndpointSendOp::Call,
                 },
             )
             .unwrap();
@@ -1602,8 +1599,7 @@ mod tests {
                 endpoint_descriptor,
                 Invocation::EndpointSend {
                     message_words: 0,
-                    blocking: true,
-                    is_call: true,
+                    op: EndpointSendOp::Call,
                 },
             ),
             Ok(ExecutionOutcome::Thread(ThreadAction::Blocked {

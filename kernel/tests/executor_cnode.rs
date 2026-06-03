@@ -763,8 +763,7 @@ fn cnode_revoke_endpoint_restarts_blocked_sender_before_removing_object() {
             endpoint,
             Invocation::EndpointSend {
                 message_words: 0,
-                blocking: true,
-                is_call: false,
+                op: kernel::invocation::EndpointSendOp::Send,
             },
         ),
         Ok(ExecutionOutcome::Thread(
@@ -891,8 +890,7 @@ fn cnode_delete_blocked_tcb_removes_endpoint_queue_entry() {
             endpoint,
             Invocation::EndpointSend {
                 message_words: 0,
-                blocking: true,
-                is_call: false,
+                op: kernel::invocation::EndpointSendOp::Send,
             },
         )
         .unwrap();
