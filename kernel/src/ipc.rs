@@ -1,4 +1,4 @@
-use alloc::{collections::VecDeque, vec::Vec};
+use alloc::vec::Vec;
 
 use crate::tcb::{CpuId, ThreadId};
 
@@ -119,8 +119,13 @@ pub enum IpcError {
 #[derive(Debug)]
 pub struct Endpoint {
     state: EndpointState,
-    senders: VecDeque<IpcMessage>,
-    receivers: VecDeque<EndpointWaiter>,
+    senders: EndpointQueue<IpcMessage>,
+    receivers: EndpointQueue<EndpointWaiter>,
+}
+
+#[derive(Debug)]
+struct EndpointQueue<T> {
+    entries: Vec<T>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -287,8 +292,8 @@ impl Endpoint {
     pub fn new() -> Self {
         Self {
             state: EndpointState::Idle,
-            senders: VecDeque::new(),
-            receivers: VecDeque::new(),
+            senders: EndpointQueue::new(),
+            receivers: EndpointQueue::new(),
         }
     }
 
@@ -418,14 +423,14 @@ impl Endpoint {
     pub fn cancel_all(&mut self) -> EndpointCancellation {
         let senders = self
             .senders
-            .drain(..)
+            .drain_all()
             .map(|message| EndpointWaiter {
                 thread: message.sender,
                 cpu: message.sender_cpu,
                 can_grant: false,
             })
             .collect();
-        let receivers = self.receivers.drain(..).collect();
+        let receivers = self.receivers.drain_all().collect();
         self.state = EndpointState::Idle;
 
         EndpointCancellation { senders, receivers }
@@ -442,6 +447,45 @@ impl Endpoint {
         }
 
         sender_count != self.senders.len() || receiver_count != self.receivers.len()
+    }
+}
+
+impl<T> EndpointQueue<T> {
+    const fn new() -> Self {
+        Self {
+            entries: Vec::new(),
+        }
+    }
+
+    fn push_back(&mut self, value: T) {
+        self.entries.push(value);
+    }
+
+    fn pop_front(&mut self) -> Option<T> {
+        if self.entries.is_empty() {
+            return None;
+        }
+        Some(self.entries.remove(0))
+    }
+
+    fn front(&self) -> Option<&T> {
+        self.entries.first()
+    }
+
+    fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    fn drain_all(&mut self) -> impl Iterator<Item = T> + '_ {
+        self.entries.drain(..)
+    }
+
+    fn retain(&mut self, keep: impl FnMut(&T) -> bool) {
+        self.entries.retain(keep);
     }
 }
 

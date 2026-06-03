@@ -1,4 +1,4 @@
-use hashbrown::HashMap;
+use alloc::vec::Vec;
 
 use crate::{
     cap::{ObjectId, ObjectKind},
@@ -69,8 +69,13 @@ impl FrameObject {
 
 #[derive(Debug, Default)]
 pub struct ObjectTable {
-    objects: HashMap<ObjectId, KernelObject>,
-    tcb_index: HashMap<ThreadId, ObjectId>,
+    objects: Vec<ObjectSlot>,
+}
+
+#[derive(Debug)]
+struct ObjectSlot {
+    object: ObjectId,
+    value: KernelObject,
 }
 
 #[derive(Debug)]
@@ -140,8 +145,10 @@ impl ObjectTable {
         endpoint: Endpoint,
     ) -> Result<(), ObjectTableError> {
         self.ensure_unbound(object)?;
-        self.objects
-            .insert(object, KernelObject::Endpoint(endpoint));
+        self.objects.push(ObjectSlot {
+            object,
+            value: KernelObject::Endpoint(endpoint),
+        });
         Ok(())
     }
 
@@ -155,13 +162,19 @@ impl ObjectTable {
         frame: FrameObject,
     ) -> Result<(), ObjectTableError> {
         self.ensure_unbound(object)?;
-        self.objects.insert(object, KernelObject::Frame(frame));
+        self.objects.push(ObjectSlot {
+            object,
+            value: KernelObject::Frame(frame),
+        });
         Ok(())
     }
 
     pub fn insert_cnode(&mut self, object: ObjectId) -> Result<(), ObjectTableError> {
         self.ensure_unbound(object)?;
-        self.objects.insert(object, KernelObject::CNode);
+        self.objects.push(ObjectSlot {
+            object,
+            value: KernelObject::CNode,
+        });
         Ok(())
     }
 
@@ -171,35 +184,41 @@ impl ObjectTable {
         notification: Notification,
     ) -> Result<(), ObjectTableError> {
         self.ensure_unbound(object)?;
-        self.objects
-            .insert(object, KernelObject::Notification(notification));
+        self.objects.push(ObjectSlot {
+            object,
+            value: KernelObject::Notification(notification),
+        });
         Ok(())
     }
 
     pub fn insert_reply(&mut self, object: ObjectId, reply: Reply) -> Result<(), ObjectTableError> {
         self.ensure_unbound(object)?;
-        self.objects.insert(object, KernelObject::Reply(reply));
+        self.objects.push(ObjectSlot {
+            object,
+            value: KernelObject::Reply(reply),
+        });
         Ok(())
     }
 
     pub fn insert_tcb(&mut self, object: ObjectId) -> Result<(), ObjectTableError> {
         self.ensure_unbound(object)?;
-        self.objects
-            .insert(object, KernelObject::Tcb { thread: None });
+        self.objects.push(ObjectSlot {
+            object,
+            value: KernelObject::Tcb { thread: None },
+        });
         Ok(())
     }
 
     pub fn bind_tcb(&mut self, object: ObjectId, thread: ThreadId) -> Result<(), ObjectTableError> {
-        if self.tcb_index.contains_key(&thread) {
+        if self.tcb_object_for_thread(thread).is_ok() {
             return Err(ObjectTableError::ThreadObjectAlreadyBound { thread });
         }
-        match self.objects.get_mut(&object) {
+        match self.object_mut(object) {
             Some(KernelObject::Tcb { thread: binding }) => {
                 if binding.is_some() {
                     return Err(ObjectTableError::ObjectIdAlreadyBound { object });
                 }
                 *binding = Some(thread);
-                self.tcb_index.insert(thread, object);
                 Ok(())
             }
             Some(object_ref) => Err(ObjectTableError::WrongObjectType {
@@ -212,17 +231,15 @@ impl ObjectTable {
     }
 
     pub fn get(&self, object: ObjectId) -> Result<KernelObjectRef, ObjectTableError> {
-        self.objects
-            .get(&object)
+        self.object(object)
             .map(KernelObject::as_ref)
             .ok_or(ObjectTableError::ObjectNotFound { object })
     }
 
     pub fn remove_inert(&mut self, object: ObjectId) -> Option<KernelObjectRef> {
-        match self.objects.get(&object)?.kind() {
+        match self.object(object)?.kind() {
             KernelObjectKind::Frame | KernelObjectKind::CNode => self
-                .objects
-                .remove(&object)
+                .remove_object(object)
                 .map(|object_ref| object_ref.as_ref()),
             KernelObjectKind::Endpoint
             | KernelObjectKind::Notification
@@ -232,18 +249,8 @@ impl ObjectTable {
     }
 
     pub fn remove_finalised(&mut self, object: ObjectId) -> Option<KernelObjectRef> {
-        let removed = self.objects.remove(&object)?;
-        match removed {
-            KernelObject::Tcb {
-                thread: Some(thread),
-            } => {
-                self.tcb_index.remove(&thread);
-                Some(KernelObjectRef::Tcb {
-                    thread: Some(thread),
-                })
-            }
-            object_ref => Some(object_ref.as_ref()),
-        }
+        self.remove_object(object)
+            .map(|object_ref| object_ref.as_ref())
     }
 
     pub fn expect_kind(
@@ -264,7 +271,7 @@ impl ObjectTable {
     }
 
     pub fn endpoint(&self, object: ObjectId) -> Result<&Endpoint, ObjectTableError> {
-        match self.objects.get(&object) {
+        match self.object(object) {
             Some(KernelObject::Endpoint(endpoint)) => Ok(endpoint),
             Some(object_ref) => Err(Self::wrong_type(
                 object,
@@ -276,7 +283,7 @@ impl ObjectTable {
     }
 
     pub fn endpoint_mut(&mut self, object: ObjectId) -> Result<&mut Endpoint, ObjectTableError> {
-        match self.objects.get_mut(&object) {
+        match self.object_mut(object) {
             Some(KernelObject::Endpoint(endpoint)) => Ok(endpoint),
             Some(object_ref) => Err(Self::wrong_type(
                 object,
@@ -288,7 +295,7 @@ impl ObjectTable {
     }
 
     pub fn frame(&self, object: ObjectId) -> Result<FrameObject, ObjectTableError> {
-        match self.objects.get(&object) {
+        match self.object(object) {
             Some(KernelObject::Frame(frame)) => Ok(*frame),
             Some(object_ref) => Err(Self::wrong_type(
                 object,
@@ -300,7 +307,7 @@ impl ObjectTable {
     }
 
     pub fn notification(&self, object: ObjectId) -> Result<&Notification, ObjectTableError> {
-        match self.objects.get(&object) {
+        match self.object(object) {
             Some(KernelObject::Notification(notification)) => Ok(notification),
             Some(object_ref) => Err(Self::wrong_type(
                 object,
@@ -315,7 +322,7 @@ impl ObjectTable {
         &mut self,
         object: ObjectId,
     ) -> Result<&mut Notification, ObjectTableError> {
-        match self.objects.get_mut(&object) {
+        match self.object_mut(object) {
             Some(KernelObject::Notification(notification)) => Ok(notification),
             Some(object_ref) => Err(Self::wrong_type(
                 object,
@@ -327,7 +334,7 @@ impl ObjectTable {
     }
 
     pub fn reply(&self, object: ObjectId) -> Result<&Reply, ObjectTableError> {
-        match self.objects.get(&object) {
+        match self.object(object) {
             Some(KernelObject::Reply(reply)) => Ok(reply),
             Some(object_ref) => Err(Self::wrong_type(
                 object,
@@ -339,7 +346,7 @@ impl ObjectTable {
     }
 
     pub fn reply_mut(&mut self, object: ObjectId) -> Result<&mut Reply, ObjectTableError> {
-        match self.objects.get_mut(&object) {
+        match self.object_mut(object) {
             Some(KernelObject::Reply(reply)) => Ok(reply),
             Some(object_ref) => Err(Self::wrong_type(
                 object,
@@ -359,7 +366,9 @@ impl ObjectTable {
         self.expect_kind(endpoint, KernelObjectKind::Endpoint)?;
         self.expect_kind(reply, KernelObjectKind::Reply)?;
 
-        let [endpoint_ref, reply_ref] = self.objects.get_many_mut([&endpoint, &reply]);
+        let Some((endpoint_ref, reply_ref)) = self.two_objects_mut(endpoint, reply) else {
+            return Err(ObjectTableError::ObjectNotFound { object: endpoint });
+        };
         match (endpoint_ref, reply_ref) {
             (Some(KernelObject::Endpoint(endpoint_ref)), Some(KernelObject::Reply(reply_ref))) => {
                 Ok(f(endpoint_ref, reply_ref))
@@ -407,18 +416,66 @@ impl ObjectTable {
     }
 
     pub fn tcb_object_for_thread(&self, thread: ThreadId) -> Result<ObjectId, ObjectTableError> {
-        self.tcb_index
-            .get(&thread)
-            .copied()
+        self.objects
+            .iter()
+            .find_map(|slot| match slot.value {
+                KernelObject::Tcb {
+                    thread: Some(bound),
+                } if bound == thread => Some(slot.object),
+                _ => None,
+            })
             .ok_or(ObjectTableError::ThreadObjectNotFound { thread })
     }
 
     fn ensure_unbound(&self, object: ObjectId) -> Result<(), ObjectTableError> {
-        if self.objects.contains_key(&object) {
+        if self.object(object).is_some() {
             return Err(ObjectTableError::ObjectIdAlreadyBound { object });
         }
 
         Ok(())
+    }
+
+    fn object(&self, object: ObjectId) -> Option<&KernelObject> {
+        self.objects
+            .iter()
+            .find(|slot| slot.object == object)
+            .map(|slot| &slot.value)
+    }
+
+    fn object_mut(&mut self, object: ObjectId) -> Option<&mut KernelObject> {
+        self.objects
+            .iter_mut()
+            .find(|slot| slot.object == object)
+            .map(|slot| &mut slot.value)
+    }
+
+    fn remove_object(&mut self, object: ObjectId) -> Option<KernelObject> {
+        let index = self.objects.iter().position(|slot| slot.object == object)?;
+        Some(self.objects.remove(index).value)
+    }
+
+    fn two_objects_mut(
+        &mut self,
+        first: ObjectId,
+        second: ObjectId,
+    ) -> Option<(Option<&mut KernelObject>, Option<&mut KernelObject>)> {
+        let first_index = self.objects.iter().position(|slot| slot.object == first)?;
+        let second_index = self.objects.iter().position(|slot| slot.object == second)?;
+        if first_index == second_index {
+            return None;
+        }
+        if first_index < second_index {
+            let (left, right) = self.objects.split_at_mut(second_index);
+            return Some((
+                Some(&mut left[first_index].value),
+                Some(&mut right[0].value),
+            ));
+        }
+        let (left, right) = self.objects.split_at_mut(first_index);
+        Some((
+            Some(&mut right[0].value),
+            Some(&mut left[second_index].value),
+        ))
     }
 
     const fn wrong_type(

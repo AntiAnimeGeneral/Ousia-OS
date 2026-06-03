@@ -1,4 +1,4 @@
-use hashbrown::HashMap;
+use alloc::vec::Vec;
 
 use crate::{
     cap::ObjectId,
@@ -126,26 +126,32 @@ pub struct ReceiveIpcRequest {
 
 #[derive(Debug, Default)]
 pub struct ThreadTable {
-    tcbs: HashMap<ThreadId, Tcb>,
+    tcbs: Vec<Tcb>,
 }
 
 impl ThreadTable {
     pub fn new() -> Self {
-        Self {
-            tcbs: HashMap::new(),
-        }
+        Self { tcbs: Vec::new() }
     }
 
     pub fn insert(&mut self, tcb: Tcb) -> Option<Tcb> {
-        self.tcbs.insert(tcb.id(), tcb)
+        if let Some(existing) = self
+            .tcbs
+            .iter_mut()
+            .find(|existing| existing.id() == tcb.id())
+        {
+            return Some(core::mem::replace(existing, tcb));
+        }
+        self.tcbs.push(tcb);
+        None
     }
 
     pub fn get(&self, thread: ThreadId) -> Option<&Tcb> {
-        self.tcbs.get(&thread)
+        self.tcbs.iter().find(|tcb| tcb.id() == thread)
     }
 
     pub fn get_mut(&mut self, thread: ThreadId) -> Option<&mut Tcb> {
-        self.tcbs.get_mut(&thread)
+        self.tcbs.iter_mut().find(|tcb| tcb.id() == thread)
     }
 
     pub fn state(&self, thread: ThreadId) -> Option<ThreadState> {
@@ -163,7 +169,8 @@ impl ThreadTable {
     }
 
     pub fn remove(&mut self, thread: ThreadId) -> Option<Tcb> {
-        self.tcbs.remove(&thread)
+        let index = self.tcbs.iter().position(|tcb| tcb.id() == thread)?;
+        Some(self.tcbs.remove(index))
     }
 
     pub fn unbind_notification(&mut self, thread: ThreadId) -> Option<ObjectId> {

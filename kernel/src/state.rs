@@ -806,6 +806,9 @@ impl KernelState {
         can_grant: bool,
     ) -> Result<ExecutionOutcome, KernelExecutionError> {
         self.objects.expect_kind(reply, KernelObjectKind::Reply)?;
+        self.cspace
+            .validate_consumable_reply_cap(descriptor)
+            .map_err(InvocationError::Cap)?;
         if let ReplyState::Pending { caller: pending } = self.objects.reply(reply)?.state()
             && (pending.caller() != caller
                 || pending.target() != target
@@ -818,7 +821,7 @@ impl KernelState {
         let action = reply_to_caller(&mut self.threads, &mut self.scheduler, reply_ref)?;
         self.cspace
             .consume_reply_cap(descriptor)
-            .map_err(InvocationError::Cap)?;
+            .expect("prevalidated reply cap must remain consumable during reply commit");
         Ok(ExecutionOutcome::Thread(action))
     }
 

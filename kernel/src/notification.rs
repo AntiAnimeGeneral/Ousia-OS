@@ -1,4 +1,4 @@
-use alloc::{collections::VecDeque, vec::Vec};
+use alloc::vec::Vec;
 
 use crate::{
     cap::ObjectId,
@@ -66,8 +66,13 @@ pub enum NotificationAction {
 pub struct Notification {
     state: NotificationState,
     badge: u64,
-    waiters: VecDeque<NotificationWaiter>,
+    waiters: NotificationQueue<NotificationWaiter>,
     bound_tcb: Option<BoundTcb>,
+}
+
+#[derive(Debug)]
+struct NotificationQueue<T> {
+    entries: Vec<T>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -123,7 +128,7 @@ impl Notification {
         Self {
             state: NotificationState::Idle,
             badge: 0,
-            waiters: VecDeque::new(),
+            waiters: NotificationQueue::new(),
             bound_tcb: None,
         }
     }
@@ -239,7 +244,7 @@ impl Notification {
     }
 
     pub fn cancel_all(&mut self) -> NotificationCancellation {
-        let waiters = self.waiters.drain(..).collect();
+        let waiters = self.waiters.drain_all().collect();
         let bound_tcb = self.bound_tcb.take();
         self.badge = 0;
         self.state = NotificationState::Idle;
@@ -255,6 +260,45 @@ impl Notification {
         }
 
         waiter_count != self.waiters.len()
+    }
+}
+
+impl<T> NotificationQueue<T> {
+    const fn new() -> Self {
+        Self {
+            entries: Vec::new(),
+        }
+    }
+
+    fn push_back(&mut self, value: T) {
+        self.entries.push(value);
+    }
+
+    fn pop_front(&mut self) -> Option<T> {
+        if self.entries.is_empty() {
+            return None;
+        }
+        Some(self.entries.remove(0))
+    }
+
+    fn front(&self) -> Option<&T> {
+        self.entries.first()
+    }
+
+    fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    fn drain_all(&mut self) -> impl Iterator<Item = T> + '_ {
+        self.entries.drain(..)
+    }
+
+    fn retain(&mut self, keep: impl FnMut(&T) -> bool) {
+        self.entries.retain(keep);
     }
 }
 

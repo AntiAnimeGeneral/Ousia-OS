@@ -18,14 +18,13 @@
 //! - MDB predecessor/successor metadata is the authority for revoke traversal.
 //!
 //! This is still a testable model, not the final CSpace implementation. The
-//! next integration step is to connect these semantics to Portal / Operation
-//! handle transfer and to replace the test-friendly storage with the eventual
-//! kernel allocator and CSpace representation.
+//! next integration step is to complete CNode guard/radix lookup, Untyped
+//! accounting, typed backing storage, and TCB-embedded IPC/notification queues
+//! without changing seL4 baseline authority semantics.
 
 use alloc::vec::Vec;
 
 use bitflags::bitflags;
-use hashbrown::{HashMap, HashSet};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub struct ObjectId(u64);
@@ -404,7 +403,7 @@ struct CapabilitySlot {
     slot_generation: u64,
     object_generation_snapshot: u64,
     parent: Option<SlotId>,
-    children: HashSet<SlotId>,
+    children: ChildSlots,
     mdb: MdbNode,
     alive: bool,
 }
@@ -415,6 +414,26 @@ struct MdbNode {
     next: Option<SlotId>,
     revocable: bool,
     first_badged: bool,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+struct ChildSlots {
+    slots: Vec<SlotId>,
+}
+
+#[derive(Debug, Default)]
+struct CteSlots {
+    slots: Vec<Option<CapabilitySlot>>,
+}
+
+#[derive(Debug, Default)]
+struct ObjectStorage {
+    objects: Vec<Option<KernelObject>>,
+}
+
+#[derive(Debug, Default)]
+struct UntypedStorage {
+    allocations: Vec<Option<UntypedAllocation>>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -434,9 +453,9 @@ pub struct CapabilitySpace {
     next_object: u64,
     next_slot: u64,
     free_slots: Vec<SlotId>,
-    objects: HashMap<ObjectId, KernelObject>,
-    untyped_allocations: HashMap<ObjectId, UntypedAllocation>,
-    slots: HashMap<SlotId, CapabilitySlot>,
+    objects: ObjectStorage,
+    untyped_allocations: UntypedStorage,
+    slots: CteSlots,
 }
 
 impl CapabilitySpace {
@@ -445,9 +464,9 @@ impl CapabilitySpace {
             next_object: 1,
             next_slot: 1,
             free_slots: Vec::new(),
-            objects: HashMap::new(),
-            untyped_allocations: HashMap::new(),
-            slots: HashMap::new(),
+            objects: ObjectStorage::default(),
+            untyped_allocations: UntypedStorage::default(),
+            slots: CteSlots::default(),
         }
     }
 
@@ -669,7 +688,7 @@ impl CapabilitySpace {
 
         let moved_from = self
             .slots
-            .get_mut(&source.slot)
+            .get_mut(source.slot)
             .expect("validated source slot must remain in CSpace during move");
         let mut moved = moved_from.clone();
         moved_from.alive = false;
@@ -682,30 +701,30 @@ impl CapabilitySpace {
         if let Some(parent) = moved.parent {
             let parent_slot = self
                 .slots
-                .get_mut(&parent)
+                .get_mut(parent)
                 .expect("moved capability parent slot must remain in CSpace");
             parent_slot.children.remove(&source.slot);
             parent_slot.children.insert(destination);
         }
 
         let children = moved.children.clone();
-        for child in children {
+        for child in children.iter() {
             self.slots
-                .get_mut(&child)
+                .get_mut(child)
                 .expect("moved capability child slot must remain in CSpace")
                 .parent = Some(destination);
         }
 
         if let Some(prev) = moved.mdb.prev {
             self.slots
-                .get_mut(&prev)
+                .get_mut(prev)
                 .expect("moved capability previous MDB slot must remain in CSpace")
                 .mdb
                 .next = Some(destination);
         }
         if let Some(next) = moved.mdb.next {
             self.slots
-                .get_mut(&next)
+                .get_mut(next)
                 .expect("moved capability next MDB slot must remain in CSpace")
                 .mdb
                 .prev = Some(destination);
@@ -747,6 +766,15 @@ impl CapabilitySpace {
     }
 
     pub fn consume_reply_cap(&mut self, descriptor: CapabilityDescriptor) -> Result<(), CapError> {
+        self.validate_consumable_reply_cap(descriptor)?;
+        self.delete_slot(descriptor.slot);
+        Ok(())
+    }
+
+    pub fn validate_consumable_reply_cap(
+        &self,
+        descriptor: CapabilityDescriptor,
+    ) -> Result<(), CapError> {
         self.validate_descriptor(descriptor)?;
 
         let slot = self.live_slot(descriptor.slot)?;
@@ -757,7 +785,6 @@ impl CapabilitySpace {
             });
         }
 
-        self.delete_slot(descriptor.slot);
         Ok(())
     }
 
@@ -767,18 +794,18 @@ impl CapabilitySpace {
     ) -> Result<CapabilityRevocation, CapError> {
         let (target_slot, _) = self.validated_slot(descriptor)?;
         let target_object = target_slot.object;
-        let mut revoked_object_ids = HashSet::new();
-        let mut final_object_ids = HashSet::new();
+        let mut revoked_object_ids = Vec::new();
+        let mut final_object_ids = Vec::new();
 
         loop {
             let Some(next_slot_id) = self
                 .slots
-                .get(&descriptor.slot)
+                .get(descriptor.slot)
                 .and_then(|slot| slot.mdb.next)
             else {
                 break;
             };
-            let Some(next_slot) = self.slots.get(&next_slot_id).filter(|slot| slot.alive) else {
+            let Some(next_slot) = self.slots.get(next_slot_id).filter(|slot| slot.alive) else {
                 break;
             };
             if !self.is_mdb_parent_of(descriptor.slot, next_slot_id) {
@@ -786,10 +813,10 @@ impl CapabilitySpace {
             }
 
             if self.is_final_capability(next_slot_id) {
-                final_object_ids.insert(next_slot.object);
+                push_unique_object(&mut final_object_ids, next_slot.object);
             }
             if next_slot.object != target_object {
-                revoked_object_ids.insert(next_slot.object);
+                push_unique_object(&mut revoked_object_ids, next_slot.object);
             }
 
             self.delete_slot(next_slot_id);
@@ -799,12 +826,10 @@ impl CapabilitySpace {
         }
         self.reset_untyped_allocation(descriptor.slot);
 
-        let mut revoked_objects: Vec<_> = final_object_ids
-            .into_iter()
-            .chain(revoked_object_ids)
-            .collect::<HashSet<_>>()
-            .into_iter()
-            .collect();
+        let mut revoked_objects = final_object_ids;
+        for object in revoked_object_ids {
+            push_unique_object(&mut revoked_objects, object);
+        }
         revoked_objects.sort_by_key(|object| object.raw());
 
         Ok(CapabilityRevocation { revoked_objects })
@@ -812,23 +837,23 @@ impl CapabilitySpace {
 
     pub fn object_has_live_cap(&self, object: ObjectId) -> bool {
         self.slots
-            .values()
+            .live_values()
             .any(|slot| slot.alive && slot.object == object)
     }
 
     fn is_final_capability(&self, slot: SlotId) -> bool {
-        let Some(slot_ref) = self.slots.get(&slot).filter(|slot| slot.alive) else {
+        let Some(slot_ref) = self.slots.get(slot).filter(|slot| slot.alive) else {
             return false;
         };
         if let Some(prev) = slot_ref.mdb.prev
-            && let Some(prev_slot) = self.slots.get(&prev).filter(|slot| slot.alive)
+            && let Some(prev_slot) = self.slots.get(prev).filter(|slot| slot.alive)
             && same_object_as(&prev_slot.capability, &slot_ref.capability)
             && prev_slot.object == slot_ref.object
         {
             return false;
         }
         if let Some(next) = slot_ref.mdb.next
-            && let Some(next_slot) = self.slots.get(&next).filter(|slot| slot.alive)
+            && let Some(next_slot) = self.slots.get(next).filter(|slot| slot.alive)
             && same_object_as(&next_slot.capability, &slot_ref.capability)
             && next_slot.object == slot_ref.object
         {
@@ -839,10 +864,10 @@ impl CapabilitySpace {
     }
 
     fn is_mdb_parent_of(&self, parent: SlotId, child: SlotId) -> bool {
-        let Some(parent_slot) = self.slots.get(&parent).filter(|slot| slot.alive) else {
+        let Some(parent_slot) = self.slots.get(parent).filter(|slot| slot.alive) else {
             return false;
         };
-        let Some(child_slot) = self.slots.get(&child).filter(|slot| slot.alive) else {
+        let Some(child_slot) = self.slots.get(child).filter(|slot| slot.alive) else {
             return false;
         };
 
@@ -887,8 +912,8 @@ impl CapabilitySpace {
 
         let slots_to_remove: Vec<_> = self
             .slots
-            .iter()
-            .filter_map(|(slot_id, slot)| (slot.object == object).then_some(*slot_id))
+            .iter_live()
+            .filter_map(|(slot_id, slot)| (slot.object == object).then_some(slot_id))
             .collect();
         for slot in slots_to_remove {
             self.delete_slot(slot);
@@ -905,7 +930,7 @@ impl CapabilitySpace {
 
     #[cfg(test)]
     pub fn slot_exists(&self, slot: SlotId) -> bool {
-        self.slots.get(&slot).is_some_and(|slot| slot.alive)
+        self.slots.get(slot).is_some_and(|slot| slot.alive)
     }
 
     fn insert_derived_capability(
@@ -964,13 +989,13 @@ impl CapabilitySpace {
                 slot_generation,
                 object_generation_snapshot,
                 parent: Some(parent_slot_id),
-                children: HashSet::new(),
+                children: ChildSlots::new(),
                 mdb,
                 alive: true,
             },
         );
         self.slots
-            .get_mut(&parent_slot_id)
+            .get_mut(parent_slot_id)
             .expect("validated parent slot must remain in CSpace during derivation")
             .children
             .insert(destination);
@@ -996,7 +1021,7 @@ impl CapabilitySpace {
         };
         let (object, object_generation) = self.alloc_object(kind);
         self.untyped_allocations
-            .get_mut(&allocation.parent_object)
+            .get_mut(allocation.parent_object)
             .expect("validated parent untyped allocation must remain in CSpace")
             .watermark = allocation.next_watermark;
         if let Some(size_bits) = child_untyped_size {
@@ -1012,7 +1037,7 @@ impl CapabilitySpace {
         self.detach_reused_slot(slot);
         let parent_capability = self
             .slots
-            .get(&parent)
+            .get(parent)
             .expect("validated parent slot must remain in CSpace during retype")
             .capability
             .clone();
@@ -1026,13 +1051,13 @@ impl CapabilitySpace {
                 slot_generation,
                 object_generation_snapshot: object_generation,
                 parent: Some(parent),
-                children: HashSet::new(),
+                children: ChildSlots::new(),
                 mdb,
                 alive: true,
             },
         );
         self.slots
-            .get_mut(&parent)
+            .get_mut(parent)
             .expect("validated parent slot must remain in CSpace during retype")
             .children
             .insert(slot);
@@ -1068,7 +1093,7 @@ impl CapabilitySpace {
     }
 
     fn validate_empty_slot(&self, slot: SlotId) -> Result<(), CapError> {
-        if self.slots.get(&slot).is_some_and(|slot| slot.alive) {
+        if self.slots.get(slot).is_some_and(|slot| slot.alive) {
             return Err(CapError::SlotOccupied(slot));
         }
         Ok(())
@@ -1110,7 +1135,7 @@ impl CapabilitySpace {
 
         let allocation = self
             .untyped_allocations
-            .get(&source_object)
+            .get(source_object)
             .expect("validated Untyped cap must have allocation metadata");
         let next_watermark = allocation.next_watermark(source.slot, requested_size, count)?;
         Ok(UntypedAllocationPlan {
@@ -1156,7 +1181,7 @@ impl CapabilitySpace {
                 slot_generation,
                 object_generation_snapshot: generation,
                 parent: None,
-                children: HashSet::new(),
+                children: ChildSlots::new(),
                 mdb: MdbNode {
                     revocable: true,
                     first_badged: true,
@@ -1193,7 +1218,7 @@ impl CapabilitySpace {
 
     fn slot_generation_for_insert(&self, slot: SlotId) -> u64 {
         self.slots
-            .get(&slot)
+            .get(slot)
             .map_or(1, |slot| slot.slot_generation + 1)
     }
 
@@ -1232,7 +1257,7 @@ impl CapabilitySpace {
     }
 
     fn live_slot(&self, slot: SlotId) -> Result<&CapabilitySlot, CapError> {
-        let slot_ref = self.slots.get(&slot).ok_or(CapError::SlotNotFound(slot))?;
+        let slot_ref = self.slots.get(slot).ok_or(CapError::SlotNotFound(slot))?;
         if !slot_ref.alive {
             return Err(CapError::SlotNotFound(slot));
         }
@@ -1242,19 +1267,19 @@ impl CapabilitySpace {
 
     fn object(&self, object: ObjectId) -> Result<&KernelObject, CapError> {
         self.objects
-            .get(&object)
+            .get(object)
             .ok_or(CapError::ObjectNotFound(object))
     }
 
     #[cfg(test)]
     fn object_mut(&mut self, object: ObjectId) -> Result<&mut KernelObject, CapError> {
         self.objects
-            .get_mut(&object)
+            .get_mut(object)
             .ok_or(CapError::ObjectNotFound(object))
     }
 
     fn delete_slot(&mut self, slot: SlotId) {
-        let Some(removed) = self.slots.get_mut(&slot) else {
+        let Some(removed) = self.slots.get_mut(slot) else {
             return;
         };
 
@@ -1272,11 +1297,11 @@ impl CapabilitySpace {
     }
 
     fn detach_reused_slot(&mut self, slot: SlotId) {
-        let Some(old_parent) = self.slots.get(&slot).and_then(|slot| slot.parent) else {
+        let Some(old_parent) = self.slots.get(slot).and_then(|slot| slot.parent) else {
             return;
         };
 
-        if let Some(parent) = self.slots.get_mut(&old_parent) {
+        if let Some(parent) = self.slots.get_mut(old_parent) {
             parent.children.remove(&slot);
         }
         self.empty_mdb_slot(slot);
@@ -1289,17 +1314,17 @@ impl CapabilitySpace {
         new_cap: &Capability,
         parent_cap: &Capability,
     ) -> MdbNode {
-        let next = self.slots.get(&parent).and_then(|parent| parent.mdb.next);
+        let next = self.slots.get(parent).and_then(|parent| parent.mdb.next);
         let revocable = is_cap_revocable(new_cap, parent_cap);
         if let Some(next) = next {
             self.slots
-                .get_mut(&next)
+                .get_mut(next)
                 .expect("parent MDB next slot must remain in CSpace")
                 .mdb
                 .prev = Some(slot);
         }
         self.slots
-            .get_mut(&parent)
+            .get_mut(parent)
             .expect("validated parent slot must remain in CSpace during cteInsert")
             .mdb
             .next = Some(slot);
@@ -1313,36 +1338,169 @@ impl CapabilitySpace {
     }
 
     fn empty_mdb_slot(&mut self, slot: SlotId) {
-        let Some(mdb) = self.slots.get(&slot).map(|slot| slot.mdb) else {
+        let Some(mdb) = self.slots.get(slot).map(|slot| slot.mdb) else {
             return;
         };
         if let Some(prev) = mdb.prev
-            && let Some(prev_slot) = self.slots.get_mut(&prev)
+            && let Some(prev_slot) = self.slots.get_mut(prev)
         {
             prev_slot.mdb.next = mdb.next;
         }
         if let Some(next) = mdb.next
-            && let Some(next_slot) = self.slots.get_mut(&next)
+            && let Some(next_slot) = self.slots.get_mut(next)
         {
             next_slot.mdb.prev = mdb.prev;
             next_slot.mdb.first_badged |= mdb.first_badged;
         }
-        if let Some(slot_ref) = self.slots.get_mut(&slot) {
+        if let Some(slot_ref) = self.slots.get_mut(slot) {
             slot_ref.mdb = MdbNode::default();
         }
     }
 
     fn reset_untyped_allocation(&mut self, slot: SlotId) {
-        let Some(slot_ref) = self.slots.get(&slot) else {
+        let Some(slot_ref) = self.slots.get(slot) else {
             return;
         };
         if !matches!(slot_ref.capability, Capability::Untyped(_)) {
             return;
         };
 
-        if let Some(allocation) = self.untyped_allocations.get_mut(&slot_ref.object) {
+        if let Some(allocation) = self.untyped_allocations.get_mut(slot_ref.object) {
             allocation.watermark = 0;
         }
+    }
+}
+
+impl ChildSlots {
+    const fn new() -> Self {
+        Self { slots: Vec::new() }
+    }
+
+    fn insert(&mut self, slot: SlotId) {
+        if !self.slots.contains(&slot) {
+            self.slots.push(slot);
+        }
+    }
+
+    fn remove(&mut self, slot: &SlotId) -> bool {
+        let Some(index) = self.slots.iter().position(|child| child == slot) else {
+            return false;
+        };
+        self.slots.remove(index);
+        true
+    }
+
+    fn clear(&mut self) {
+        self.slots.clear();
+    }
+
+    fn is_empty(&self) -> bool {
+        self.slots.is_empty()
+    }
+
+    fn iter(&self) -> impl Iterator<Item = SlotId> + '_ {
+        self.slots.iter().copied()
+    }
+}
+
+impl CteSlots {
+    fn get(&self, slot: SlotId) -> Option<&CapabilitySlot> {
+        self.slots.get(slot_index(slot)).and_then(Option::as_ref)
+    }
+
+    fn get_mut(&mut self, slot: SlotId) -> Option<&mut CapabilitySlot> {
+        self.slots
+            .get_mut(slot_index(slot))
+            .and_then(Option::as_mut)
+    }
+
+    fn insert(&mut self, slot: SlotId, value: CapabilitySlot) {
+        self.ensure_slot(slot);
+        self.slots[slot_index(slot)] = Some(value);
+    }
+
+    fn ensure_slot(&mut self, slot: SlotId) {
+        let index = slot_index(slot);
+        if self.slots.len() <= index {
+            self.slots.resize_with(index + 1, || None);
+        }
+    }
+
+    fn live_values(&self) -> impl Iterator<Item = &CapabilitySlot> {
+        self.slots.iter().filter_map(Option::as_ref)
+    }
+
+    #[cfg(test)]
+    fn iter_live(&self) -> impl Iterator<Item = (SlotId, &CapabilitySlot)> {
+        self.slots.iter().enumerate().filter_map(|(index, slot)| {
+            let raw = u64::try_from(index).ok()?;
+            slot.as_ref().map(|slot| (SlotId(raw), slot))
+        })
+    }
+}
+
+impl ObjectStorage {
+    fn get(&self, object: ObjectId) -> Option<&KernelObject> {
+        self.objects
+            .get(object_index(object))
+            .and_then(Option::as_ref)
+    }
+
+    #[cfg(test)]
+    fn get_mut(&mut self, object: ObjectId) -> Option<&mut KernelObject> {
+        self.objects
+            .get_mut(object_index(object))
+            .and_then(Option::as_mut)
+    }
+
+    fn insert(&mut self, object: ObjectId, value: KernelObject) {
+        let index = object_index(object);
+        if self.objects.len() <= index {
+            self.objects.resize_with(index + 1, || None);
+        }
+        self.objects[index] = Some(value);
+    }
+}
+
+impl UntypedStorage {
+    fn get(&self, object: ObjectId) -> Option<&UntypedAllocation> {
+        self.allocations
+            .get(object_index(object))
+            .and_then(Option::as_ref)
+    }
+
+    fn get_mut(&mut self, object: ObjectId) -> Option<&mut UntypedAllocation> {
+        self.allocations
+            .get_mut(object_index(object))
+            .and_then(Option::as_mut)
+    }
+
+    fn insert(&mut self, object: ObjectId, value: UntypedAllocation) {
+        let index = object_index(object);
+        if self.allocations.len() <= index {
+            self.allocations.resize_with(index + 1, || None);
+        }
+        self.allocations[index] = Some(value);
+    }
+
+    fn remove(&mut self, object: &ObjectId) -> Option<UntypedAllocation> {
+        self.allocations
+            .get_mut(object_index(*object))
+            .and_then(Option::take)
+    }
+}
+
+fn slot_index(slot: SlotId) -> usize {
+    usize::try_from(slot.raw()).expect("slot id must fit host usize")
+}
+
+fn object_index(object: ObjectId) -> usize {
+    usize::try_from(object.raw()).expect("object id must fit host usize")
+}
+
+fn push_unique_object(objects: &mut Vec<ObjectId>, object: ObjectId) {
+    if !objects.contains(&object) {
+        objects.push(object);
     }
 }
 

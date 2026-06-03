@@ -1,6 +1,4 @@
-use alloc::collections::VecDeque;
-
-use hashbrown::HashMap;
+use alloc::vec::Vec;
 
 use crate::tcb::{CpuId, Tcb, ThreadId, ThreadState};
 
@@ -102,20 +100,39 @@ pub enum SchedulerError {
 pub struct PerCpuRunQueue {
     cpu: CpuId,
     current: Option<ThreadId>,
-    ready: VecDeque<ThreadId>,
+    ready: [ReadyLane; READY_LANES],
+    ready_bitmap: u64,
 }
 
 #[derive(Debug)]
 pub struct Scheduler {
-    run_queues: HashMap<CpuId, PerCpuRunQueue>,
+    run_queues: Vec<PerCpuRunQueue>,
 }
+
+#[derive(Debug, Default)]
+struct ReadyLane {
+    threads: Vec<ThreadId>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct ReadySelector {
+    priority: usize,
+    domain: usize,
+}
+
+const READY_LANES: usize = 1;
+const DEFAULT_SELECTOR: ReadySelector = ReadySelector {
+    priority: 0,
+    domain: 0,
+};
 
 impl PerCpuRunQueue {
     pub const fn new(cpu: CpuId) -> Self {
         Self {
             cpu,
             current: None,
-            ready: VecDeque::new(),
+            ready: [ReadyLane::new()],
+            ready_bitmap: 0,
         }
     }
 
@@ -158,7 +175,7 @@ impl PerCpuRunQueue {
 
         self.validate_enqueue_fields(thread, actual_cpu, state)?;
 
-        self.ready.push_back(thread);
+        self.push_ready(DEFAULT_SELECTOR, thread);
         Ok(SchedulerAction::Enqueued {
             thread,
             cpu: self.cpu,
@@ -166,7 +183,7 @@ impl PerCpuRunQueue {
     }
 
     fn enqueue_validated(&mut self, thread: ThreadId) -> SchedulerAction {
-        self.ready.push_back(thread);
+        self.push_ready(DEFAULT_SELECTOR, thread);
         SchedulerAction::Enqueued {
             thread,
             cpu: self.cpu,
@@ -181,7 +198,7 @@ impl PerCpuRunQueue {
             });
         }
 
-        let Some(next) = self.ready.pop_front() else {
+        let Some(next) = self.pop_next_ready() else {
             return Ok(SchedulerAction::NoRunnableThread { cpu: self.cpu });
         };
 
@@ -195,7 +212,7 @@ impl PerCpuRunQueue {
 
     pub fn yield_current(&mut self) -> SchedulerAction {
         let Some(previous) = self.current else {
-            return match self.ready.pop_front() {
+            return match self.pop_next_ready() {
                 Some(next) => {
                     self.current = Some(next);
                     SchedulerAction::Switched {
@@ -208,7 +225,7 @@ impl PerCpuRunQueue {
             };
         };
 
-        if self.ready.is_empty() {
+        if self.ready_bitmap == 0 {
             return SchedulerAction::KeptCurrent {
                 cpu: self.cpu,
                 current: previous,
@@ -216,11 +233,10 @@ impl PerCpuRunQueue {
         }
 
         self.current = None;
-        self.ready.push_back(previous);
+        self.push_ready(DEFAULT_SELECTOR, previous);
         let next = self
-            .ready
-            .pop_front()
-            .expect("non-empty ready queue must provide next thread during yield");
+            .pop_next_ready()
+            .expect("non-empty ready bitmap must provide next thread during yield");
         self.current = Some(next);
 
         SchedulerAction::Switched {
@@ -246,7 +262,7 @@ impl PerCpuRunQueue {
     }
 
     pub fn ready_len(&self) -> usize {
-        self.ready.len()
+        self.ready.iter().map(ReadyLane::len).sum()
     }
 
     pub fn placement(&self, thread: ThreadId) -> Option<ThreadPlacement> {
@@ -256,7 +272,7 @@ impl PerCpuRunQueue {
 
         self.ready
             .iter()
-            .any(|ready| *ready == thread)
+            .any(|lane| lane.contains(thread))
             .then_some(ThreadPlacement::Ready { cpu: self.cpu })
     }
 
@@ -266,9 +282,41 @@ impl PerCpuRunQueue {
             return Some(ThreadPlacement::Current { cpu: self.cpu });
         }
 
-        let index = self.ready.iter().position(|ready| *ready == thread)?;
-        self.ready.remove(index);
-        Some(ThreadPlacement::Ready { cpu: self.cpu })
+        for lane_index in 0..READY_LANES {
+            if self.ready[lane_index].remove(thread) {
+                self.update_lane_bitmap(lane_index);
+                return Some(ThreadPlacement::Ready { cpu: self.cpu });
+            }
+        }
+        None
+    }
+
+    fn push_ready(&mut self, selector: ReadySelector, thread: ThreadId) {
+        let lane = selector.lane();
+        self.ready[lane].push(thread);
+        self.ready_bitmap |= 1 << lane;
+    }
+
+    fn pop_next_ready(&mut self) -> Option<ThreadId> {
+        let lane = self.next_ready_lane()?;
+        let thread = self.ready[lane].pop_front();
+        self.update_lane_bitmap(lane);
+        thread
+    }
+
+    fn next_ready_lane(&self) -> Option<usize> {
+        if self.ready_bitmap == 0 {
+            return None;
+        }
+        Some(self.ready_bitmap.trailing_zeros() as usize)
+    }
+
+    fn update_lane_bitmap(&mut self, lane: usize) {
+        if self.ready[lane].is_empty() {
+            self.ready_bitmap &= !(1 << lane);
+        } else {
+            self.ready_bitmap |= 1 << lane;
+        }
     }
 }
 
@@ -280,11 +328,15 @@ impl Scheduler {
             });
         }
 
-        let mut run_queues = HashMap::new();
+        let mut run_queues = Vec::new();
         for cpu in cpus {
-            if run_queues.insert(*cpu, PerCpuRunQueue::new(*cpu)).is_some() {
+            if run_queues
+                .iter()
+                .any(|queue: &PerCpuRunQueue| queue.cpu() == *cpu)
+            {
                 return Err(SchedulerError::DuplicateCpu { cpu: *cpu });
             }
+            run_queues.push(PerCpuRunQueue::new(*cpu));
         }
 
         Ok(Self { run_queues })
@@ -292,13 +344,15 @@ impl Scheduler {
 
     pub fn run_queue(&self, cpu: CpuId) -> Result<&PerCpuRunQueue, SchedulerError> {
         self.run_queues
-            .get(&cpu)
+            .iter()
+            .find(|queue| queue.cpu() == cpu)
             .ok_or(SchedulerError::UnknownCpu { cpu })
     }
 
     pub fn run_queue_mut(&mut self, cpu: CpuId) -> Result<&mut PerCpuRunQueue, SchedulerError> {
         self.run_queues
-            .get_mut(&cpu)
+            .iter_mut()
+            .find(|queue| queue.cpu() == cpu)
             .ok_or(SchedulerError::UnknownCpu { cpu })
     }
 
@@ -350,14 +404,61 @@ impl Scheduler {
 
     pub fn placement(&self, thread: ThreadId) -> Option<ThreadPlacement> {
         self.run_queues
-            .values()
+            .iter()
             .find_map(|queue| queue.placement(thread))
     }
 
     pub fn remove_thread(&mut self, thread: ThreadId) -> Option<ThreadPlacement> {
         self.run_queues
-            .values_mut()
+            .iter_mut()
             .find_map(|queue| queue.remove_thread(thread))
+    }
+}
+
+impl ReadyLane {
+    const fn new() -> Self {
+        Self {
+            threads: Vec::new(),
+        }
+    }
+
+    fn push(&mut self, thread: ThreadId) {
+        self.threads.push(thread);
+    }
+
+    fn pop_front(&mut self) -> Option<ThreadId> {
+        if self.threads.is_empty() {
+            return None;
+        }
+        Some(self.threads.remove(0))
+    }
+
+    fn remove(&mut self, thread: ThreadId) -> bool {
+        let Some(index) = self.threads.iter().position(|ready| *ready == thread) else {
+            return false;
+        };
+        self.threads.remove(index);
+        true
+    }
+
+    fn contains(&self, thread: ThreadId) -> bool {
+        self.threads.contains(&thread)
+    }
+
+    fn is_empty(&self) -> bool {
+        self.threads.is_empty()
+    }
+
+    fn len(&self) -> usize {
+        self.threads.len()
+    }
+}
+
+impl ReadySelector {
+    const fn lane(self) -> usize {
+        let _ = self.priority;
+        let _ = self.domain;
+        0
     }
 }
 
@@ -469,6 +570,29 @@ mod tests {
             })
         );
         assert_eq!(scheduler.run_queue(cpu(1)).unwrap().ready_len(), 1);
+    }
+
+    #[test]
+    fn ready_bitmap_tracks_non_empty_ready_lane() {
+        // Goal: scheduler readiness is represented by the seL4-style bitmap shape.
+        // Scope: unit test for the first priority/domain lane.
+        // Semantics: enqueue sets the lane bit and schedule clears it after the lane drains.
+        let mut scheduler = scheduler();
+        let tcb = thread(21, cpu(0), ThreadState::Restart);
+
+        assert_eq!(scheduler.run_queue(cpu(0)).unwrap().ready_bitmap, 0);
+        scheduler.enqueue(&tcb).unwrap();
+        assert_eq!(scheduler.run_queue(cpu(0)).unwrap().ready_bitmap, 1);
+
+        assert_eq!(
+            scheduler.schedule_next(cpu(0)),
+            Ok(SchedulerAction::Switched {
+                cpu: cpu(0),
+                previous: None,
+                next: ThreadId::new(21),
+            })
+        );
+        assert_eq!(scheduler.run_queue(cpu(0)).unwrap().ready_bitmap, 0);
     }
 
     #[test]
