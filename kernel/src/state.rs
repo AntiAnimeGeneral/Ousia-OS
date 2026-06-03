@@ -548,7 +548,9 @@ impl KernelState {
         self.objects
             .expect_kind(endpoint, KernelObjectKind::Endpoint)?;
         let waiting_receiver = self.objects.endpoint(endpoint)?.next_receiver();
-        let reply = if options.mode.is_call() {
+        let call_creates_reply =
+            options.mode.is_call() && (options.can_grant || options.can_grant_reply);
+        let reply = if call_creates_reply {
             match waiting_receiver {
                 Some(receiver) => self.reply_from_receiver_state(endpoint, receiver.thread())?,
                 None => None,
@@ -642,14 +644,16 @@ impl KernelState {
     ) -> Result<ExecutionOutcome, KernelExecutionError> {
         self.objects
             .expect_kind(endpoint, KernelObjectKind::Endpoint)?;
-        let queued_call_requires_reply = self
-            .objects
-            .endpoint(endpoint)?
-            .next_sender()
-            .is_some_and(|message| message.is_call());
+        let queued_call_creates_reply =
+            self.objects
+                .endpoint(endpoint)?
+                .next_sender()
+                .is_some_and(|message| {
+                    message.is_call() && (message.can_grant() || message.can_grant_reply())
+                });
         let reply =
-            self.reply_for_endpoint(endpoint, context.reply(), queued_call_requires_reply)?;
-        let caller_object = if queued_call_requires_reply {
+            self.reply_for_endpoint(endpoint, context.reply(), queued_call_creates_reply)?;
+        let caller_object = if queued_call_creates_reply {
             let message = self
                 .objects
                 .endpoint(endpoint)?
@@ -1289,6 +1293,65 @@ mod tests {
     }
 
     #[test]
+    fn endpoint_call_without_reply_authority_stops_caller_without_reply_object() {
+        let mut cspace = CapabilitySpace::new();
+        let endpoint_descriptor = cspace
+            .insert_initial_capability(Capability::Endpoint(EndpointCap {
+                badge: 7,
+                rights: Rights::READ | Rights::WRITE,
+            }))
+            .unwrap();
+        let endpoint_object = cspace.object_of(endpoint_descriptor).unwrap();
+        let mut objects = ObjectTable::new();
+        objects
+            .insert_endpoint(endpoint_object, Endpoint::new())
+            .unwrap();
+        let mut threads = ThreadTable::new();
+        let caller = runnable_tcb(1, cpu(0));
+        let receiver = runnable_tcb(2, cpu(1));
+        threads.insert(caller.clone());
+        threads.insert(receiver.clone());
+        let mut scheduler = Scheduler::new(&[cpu(0), cpu(1)]).unwrap();
+        scheduler.enqueue(&caller).unwrap();
+        scheduler.enqueue(&receiver).unwrap();
+        scheduler.schedule_next(cpu(0)).unwrap();
+        scheduler.schedule_next(cpu(1)).unwrap();
+        let mut state = KernelState::from_parts(cspace, objects, threads, scheduler);
+
+        state
+            .execute_invocation(
+                InvocationContext::new(thread(2), cpu(1)),
+                endpoint_descriptor,
+                Invocation::EndpointRecv { blocking: true },
+            )
+            .unwrap();
+
+        assert_eq!(
+            state.execute_invocation(
+                InvocationContext::new(thread(1), cpu(0)),
+                endpoint_descriptor,
+                Invocation::EndpointSend {
+                    message_words: 0,
+                    op: EndpointSendOp::Call,
+                },
+            ),
+            Ok(ExecutionOutcome::Thread(ThreadAction::Woken {
+                thread: thread(2),
+                cpu: cpu(1),
+                scheduler: SchedulerAction::Enqueued {
+                    thread: thread(2),
+                    cpu: cpu(1),
+                },
+            }))
+        );
+        assert_eq!(
+            state.threads().state(thread(1)),
+            Some(ThreadState::Inactive)
+        );
+        assert_eq!(state.threads().state(thread(2)), Some(ThreadState::Running));
+    }
+
+    #[test]
     fn endpoint_call_records_true_caller_tcb_object() {
         let mut cspace = CapabilitySpace::new();
         let endpoint_descriptor = cspace
@@ -1298,6 +1361,7 @@ mod tests {
             }))
             .unwrap();
         let endpoint_object = cspace.object_of(endpoint_descriptor).unwrap();
+
         let reply_descriptor = cspace
             .insert_reply_capability_for_test(ReplyCap {
                 caller: object(1000),
