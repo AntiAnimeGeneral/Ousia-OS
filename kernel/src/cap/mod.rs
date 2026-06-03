@@ -249,6 +249,7 @@ pub struct CNodePath {
 pub struct CNodeLookup {
     pub slot: SlotId,
     pub bits_remaining: u8,
+    pub slots_remaining: usize,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -420,6 +421,11 @@ pub enum CapError {
     },
     SlotOccupied(SlotId),
     EmptyRetypeWindow,
+    RetypeWindowExceedsCNode {
+        start: SlotId,
+        requested: usize,
+        available: usize,
+    },
     InvalidCNodeDepth {
         depth: u8,
     },
@@ -829,6 +835,18 @@ impl CapabilitySpace {
         }
 
         Ok(lookup.slot)
+    }
+
+    pub fn lookup_cnode_window(&self, path: CNodePath) -> Result<CNodeLookup, CapError> {
+        let lookup = self.resolve_cnode_path(path)?;
+        if lookup.bits_remaining != 0 {
+            return Err(CapError::CNodeLookupUnresolved {
+                slot: lookup.slot,
+                bits_remaining: lookup.bits_remaining,
+            });
+        }
+
+        Ok(lookup)
     }
 
     pub fn descriptor_for_live_slot(&self, slot: SlotId) -> Result<CapabilityDescriptor, CapError> {
@@ -1267,10 +1285,12 @@ impl CapabilitySpace {
 
             let offset = extract_cptr_bits(capptr, bits_remaining - node.guard_size, node.radix);
             let slot = SlotId(node.window_start.raw() + offset);
+            let slots_remaining = slots_remaining_in_level(node.radix, offset);
             if bits_remaining == level_bits {
                 return Ok(CNodeLookup {
                     slot,
                     bits_remaining: 0,
+                    slots_remaining,
                 });
             }
 
@@ -1279,12 +1299,14 @@ impl CapabilitySpace {
                 return Ok(CNodeLookup {
                     slot,
                     bits_remaining,
+                    slots_remaining,
                 });
             };
             let Capability::CNode(next_node) = &slot_ref.capability else {
                 return Ok(CNodeLookup {
                     slot,
                     bits_remaining,
+                    slots_remaining,
                 });
             };
             node = next_node.clone();
@@ -1936,6 +1958,14 @@ fn extract_cptr_bits(capptr: u64, bits_remaining: u8, width: u8) -> u64 {
 
     let shift = bits_remaining.saturating_sub(width);
     (capptr >> shift) & guard_mask(width)
+}
+
+fn slots_remaining_in_level(radix: u8, offset: u64) -> usize {
+    if radix >= usize::BITS as u8 {
+        return usize::MAX;
+    }
+
+    (1usize << radix).saturating_sub(offset as usize)
 }
 
 #[cfg(test)]

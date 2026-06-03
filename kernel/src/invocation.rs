@@ -18,6 +18,12 @@ impl CNodePathTarget {
         }
     }
 }
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RetypeDestinationPath {
+    pub start: CNodePath,
+    pub count: usize,
+}
 use crate::tcb::{CpuId, ThreadId};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -39,6 +45,10 @@ pub enum Invocation {
     UntypedRetypeInto {
         target: RetypeTarget,
         destination: RetypeDestination,
+    },
+    UntypedRetypePath {
+        target: RetypeTarget,
+        destination: RetypeDestinationPath,
     },
     CNodeCopyInto {
         source: CapabilityDescriptor,
@@ -340,6 +350,39 @@ pub fn invoke(
                     untyped: view.object,
                     target,
                     destination: Some(destination),
+                })
+            }
+            actual => Err(wrong_capability(InvocationTarget::Untyped, actual)),
+        },
+        Invocation::UntypedRetypePath {
+            target,
+            destination,
+        } => match view.capability {
+            Capability::Untyped(cap) => {
+                target.validate_rights()?;
+                let requested_size = target.minimum_size_bits();
+                if requested_size > cap.size_bits {
+                    return Err(InvocationError::InvalidRetypeSize {
+                        requested: requested_size,
+                        source: cap.size_bits,
+                    });
+                }
+                let lookup = cspace.lookup_cnode_window(destination.start)?;
+                if destination.count > lookup.slots_remaining {
+                    return Err(CapError::RetypeWindowExceedsCNode {
+                        start: lookup.slot,
+                        requested: destination.count,
+                        available: lookup.slots_remaining,
+                    }
+                    .into());
+                }
+                Ok(InvocationOutcome::UntypedRetypeAuthorized {
+                    untyped: view.object,
+                    target,
+                    destination: Some(RetypeDestination {
+                        start: lookup.slot,
+                        count: destination.count,
+                    }),
                 })
             }
             actual => Err(wrong_capability(InvocationTarget::Untyped, actual)),

@@ -1,9 +1,9 @@
 mod support;
 
 use kernel::{
-    cap::{CapError, CapabilityDescriptor, RetypeDestination},
+    cap::{CNodeCap, CNodePath, CapError, CapabilityDescriptor, RetypeDestination},
     cap::{Capability, EndpointCap, FrameCap, RetypeTarget, Rights, TcbCap},
-    invocation::Invocation,
+    invocation::{Invocation, RetypeDestinationPath},
     notification::NotificationState,
     object::{FrameObject, KernelObjectRef, ObjectTableError},
     state::{ExecutionOutcome, InvocationContext, KernelExecutionError},
@@ -295,6 +295,217 @@ fn untyped_retype_into_window_creates_all_runtime_objects() {
             Ok(KernelObjectRef::Frame { size_bits: 12 })
         );
     }
+}
+
+#[test]
+fn untyped_retype_path_creates_all_runtime_objects_in_resolved_window() {
+    // Goal: Untyped retype can target a CNode path instead of a raw SlotId window.
+    // Scope: host integration through explicit UntypedRetypePath invocation.
+    // Semantics: the CNode path resolves the first destination slot before CSpace/Object mutation.
+    let (mut state, untyped) = state_with_untyped(13);
+    let target_root = state
+        .cspace_mut()
+        .insert_initial_capability(Capability::CNode(CNodeCap::with_window(
+            4,
+            0b10,
+            2,
+            kernel::cap::SlotId::new(120),
+        )))
+        .unwrap();
+
+    let outcome = state
+        .execute_invocation(
+            InvocationContext::new(thread(1), cpu(0)),
+            untyped,
+            Invocation::UntypedRetypePath {
+                target: RetypeTarget::Frame {
+                    rights: Rights::READ,
+                },
+                destination: RetypeDestinationPath {
+                    start: CNodePath {
+                        root: target_root,
+                        capptr: 0b10_0010,
+                        depth: 6,
+                    },
+                    count: 2,
+                },
+            },
+        )
+        .unwrap();
+    let ExecutionOutcome::Retyped { descriptors } = outcome else {
+        panic!("path window retype must return retyped descriptors");
+    };
+
+    assert_eq!(descriptors.len(), 2);
+    assert_eq!(descriptors[0].slot, kernel::cap::SlotId::new(120 + 0b0010));
+    assert_eq!(descriptors[1].slot, kernel::cap::SlotId::new(120 + 0b0011));
+    for descriptor in descriptors {
+        let view = state.cspace().lookup(descriptor).unwrap();
+        assert_eq!(
+            view.capability,
+            Capability::Frame(FrameCap {
+                rights: Rights::READ,
+            })
+        );
+        assert_eq!(
+            state.objects().get(view.object),
+            Ok(KernelObjectRef::Frame { size_bits: 12 })
+        );
+    }
+}
+
+#[test]
+fn untyped_retype_path_guard_mismatch_fails_without_side_effects() {
+    // Goal: destination CNode lookup faults are Untyped retype preflight failures.
+    // Scope: host integration through explicit UntypedRetypePath invocation.
+    // Semantics: guard mismatch does not consume Untyped capacity or create target slots.
+    let (mut state, untyped) = state_with_untyped(13);
+    let target_root = state
+        .cspace_mut()
+        .insert_initial_capability(Capability::CNode(CNodeCap::with_window(
+            4,
+            0b10,
+            2,
+            kernel::cap::SlotId::new(140),
+        )))
+        .unwrap();
+    let predicted_object = state
+        .cspace()
+        .preview_retype_untyped(
+            untyped,
+            &RetypeTarget::Frame {
+                rights: Rights::READ,
+            },
+        )
+        .unwrap();
+
+    assert_eq!(
+        state.execute_invocation(
+            InvocationContext::new(thread(1), cpu(0)),
+            untyped,
+            Invocation::UntypedRetypePath {
+                target: RetypeTarget::Frame {
+                    rights: Rights::READ,
+                },
+                destination: RetypeDestinationPath {
+                    start: CNodePath {
+                        root: target_root,
+                        capptr: 0b11_0010,
+                        depth: 6,
+                    },
+                    count: 1,
+                },
+            },
+        ),
+        Err(KernelExecutionError::Invocation(
+            kernel::invocation::InvocationError::Cap(CapError::CNodeGuardMismatch {
+                expected_guard: 0b10,
+                actual_guard: 0b11,
+                bits_remaining: 6,
+                guard_size: 2,
+            })
+        ))
+    );
+    assert_eq!(
+        state.cspace().lookup(CapabilityDescriptor {
+            slot: kernel::cap::SlotId::new(140 + 0b0010),
+            slot_generation: 1,
+        }),
+        Err(CapError::SlotNotFound(kernel::cap::SlotId::new(
+            140 + 0b0010
+        )))
+    );
+
+    let descriptor = retyped_descriptor(
+        state
+            .execute_invocation(
+                InvocationContext::new(thread(1), cpu(0)),
+                untyped,
+                Invocation::UntypedRetype {
+                    target: RetypeTarget::Frame {
+                        rights: Rights::READ,
+                    },
+                },
+            )
+            .unwrap(),
+        "frame retype after path guard mismatch",
+    );
+    assert_eq!(
+        state.cspace().lookup(descriptor).map(|view| view.object),
+        Ok(predicted_object)
+    );
+}
+
+#[test]
+fn untyped_retype_path_rejects_window_exceeding_cnode_bounds() {
+    // Goal: path-based Untyped retype respects the resolved CNode slot window.
+    // Scope: host integration through explicit UntypedRetypePath invocation.
+    // Semantics: count cannot run past the CNode radix window after the start slot resolves.
+    let (mut state, untyped) = state_with_untyped(13);
+    let target_root = state
+        .cspace_mut()
+        .insert_initial_capability(Capability::CNode(CNodeCap::with_window(
+            2,
+            0b10,
+            2,
+            kernel::cap::SlotId::new(160),
+        )))
+        .unwrap();
+    let predicted_object = state
+        .cspace()
+        .preview_retype_untyped(
+            untyped,
+            &RetypeTarget::Frame {
+                rights: Rights::READ,
+            },
+        )
+        .unwrap();
+
+    assert_eq!(
+        state.execute_invocation(
+            InvocationContext::new(thread(1), cpu(0)),
+            untyped,
+            Invocation::UntypedRetypePath {
+                target: RetypeTarget::Frame {
+                    rights: Rights::READ,
+                },
+                destination: RetypeDestinationPath {
+                    start: CNodePath {
+                        root: target_root,
+                        capptr: 0b10_11,
+                        depth: 4,
+                    },
+                    count: 2,
+                },
+            },
+        ),
+        Err(KernelExecutionError::Invocation(
+            kernel::invocation::InvocationError::Cap(CapError::RetypeWindowExceedsCNode {
+                start: kernel::cap::SlotId::new(160 + 0b11),
+                requested: 2,
+                available: 1,
+            })
+        ))
+    );
+
+    let descriptor = retyped_descriptor(
+        state
+            .execute_invocation(
+                InvocationContext::new(thread(1), cpu(0)),
+                untyped,
+                Invocation::UntypedRetype {
+                    target: RetypeTarget::Frame {
+                        rights: Rights::READ,
+                    },
+                },
+            )
+            .unwrap(),
+        "frame retype after path window overflow",
+    );
+    assert_eq!(
+        state.cspace().lookup(descriptor).map(|view| view.object),
+        Ok(predicted_object)
+    );
 }
 
 #[test]
