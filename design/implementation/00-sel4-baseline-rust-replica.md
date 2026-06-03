@@ -37,7 +37,7 @@ Ousia 的平台目标包括浏览器权限、服务授权、lease、session、Pa
 - 删除、撤销、retype、IPC transfer 等状态变化必须有单元测试覆盖主路径和失败路径。
 - 对 capability derivation tree、slot generation、object generation、free list 和并发 revoke 建立专门测试。
 - 公共入口返回显式错误，不在权限路径上使用隐式 panic。
-- 每个阶段保留 `cargo fmt --check`、`cargo check`、`cargo test`，进入裸机后增加 kernel-mode test。
+- 每个阶段保留 `cargo fmt --check`、`cargo check`、`cargo nextest run`，进入裸机后增加 kernel-mode test。
 - 从一开始按多核不变量建模 scheduler、IPC、revoke 和 CSpace 生命周期；早期测试可以先覆盖较小实现面，但不能把单核执行当作设计前提。跨核 revoke、IPC、TLB shootdown 后续需要 stress / model-like 测试。
 
 ## Asterinas OSTD / OSDK 调研结论

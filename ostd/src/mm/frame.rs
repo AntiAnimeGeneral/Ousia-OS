@@ -404,21 +404,38 @@ const fn align_down(value: usize, align: usize) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rstest::rstest;
 
-    #[test]
-    fn rejects_empty_or_unaligned_regions() {
-        assert_eq!(
-            FrameRange::new(0x1000, 0x1000),
-            Err(FrameAllocError::EmptyRegion)
-        );
-        assert_eq!(
-            FrameRange::new(0x1001, 0x3000),
-            Err(FrameAllocError::UnalignedRegion)
-        );
-        assert_eq!(
-            FrameRange::new(0x1000, 0x3001),
-            Err(FrameAllocError::UnalignedRegion)
-        );
+    #[rstest]
+    #[case::empty_region(0x1000, 0x1000, FrameAllocError::EmptyRegion)]
+    #[case::unaligned_start(0x1001, 0x3000, FrameAllocError::UnalignedRegion)]
+    #[case::unaligned_end(0x1000, 0x3001, FrameAllocError::UnalignedRegion)]
+    fn frame_range_rejects_invalid_boundaries(
+        #[case] start: Paddr,
+        #[case] end: Paddr,
+        #[case] expected: FrameAllocError,
+    ) {
+        // Goal: FrameRange establishes the page-aligned non-empty range invariant.
+        // Scope: pure FrameRange construction without allocator state changes.
+        // Semantics: invalid boundaries fail at construction and never enter allocator state.
+        assert_eq!(FrameRange::new(start, end), Err(expected));
+    }
+
+    #[rstest]
+    #[case::oversized_request(Layout::from_size_align(0x3000, PAGE_SIZE).unwrap(), FrameAllocError::Exhausted)]
+    #[case::zero_sized_request(Layout::from_size_align(0, PAGE_SIZE).unwrap(), FrameAllocError::InvalidLayout)]
+    fn frame_allocator_rejects_invalid_requests_without_advancing(
+        #[case] layout: Layout,
+        #[case] expected: FrameAllocError,
+    ) {
+        // Goal: EarlyFrameAllocator rejects invalid requests before committing allocation state.
+        // Scope: single-range host unit test for allocation prechecks.
+        // Semantics: exhausted and invalid layouts both leave the allocation cursor unchanged.
+        let range = FrameRange::new(0x1000, 0x3000).unwrap();
+        let mut allocator = EarlyFrameAllocator::new(range);
+
+        assert_eq!(allocator.allocate(layout), Err(expected));
+        assert_eq!(allocator.allocated(), 0x1000..0x1000);
     }
 
     #[test]
@@ -447,29 +464,6 @@ mod tests {
             .allocate(Layout::from_size_align(PAGE_SIZE, 0x4000).unwrap())
             .unwrap();
         assert_eq!(allocated.as_range(), 0x4000..0x5000);
-    }
-
-    #[test]
-    fn reports_exhaustion_without_advancing() {
-        let range = FrameRange::new(0x1000, 0x3000).unwrap();
-        let mut allocator = EarlyFrameAllocator::new(range);
-
-        assert_eq!(
-            allocator.allocate(Layout::from_size_align(0x3000, PAGE_SIZE).unwrap()),
-            Err(FrameAllocError::Exhausted)
-        );
-        assert_eq!(allocator.allocated(), 0x1000..0x1000);
-    }
-
-    #[test]
-    fn rejects_zero_sized_allocations() {
-        let range = FrameRange::new(0x1000, 0x3000).unwrap();
-        let mut allocator = EarlyFrameAllocator::new(range);
-
-        assert_eq!(
-            allocator.allocate(Layout::from_size_align(0, PAGE_SIZE).unwrap()),
-            Err(FrameAllocError::InvalidLayout)
-        );
     }
 
     #[test]
@@ -538,6 +532,9 @@ mod tests {
 
     #[test]
     fn normalizing_empty_usable_result_is_allowed() {
+        // Goal: normalization accepts maps with no usable page range.
+        // Scope: host unit test for memory map normalization without allocator creation.
+        // Semantics: empty usable output is valid map data, distinct from allocator exhaustion.
         let map = normalize_memory_regions::<2>(&[
             MemoryRegion::new(0x1001, 0x1fff, MemoryRegionKind::Usable),
             MemoryRegion::new(0x2000, 0x4000, MemoryRegionKind::Reserved),
@@ -549,6 +546,9 @@ mod tests {
 
     #[test]
     fn normalizing_reports_capacity_exhaustion() {
+        // Goal: normalization reports when usable ranges exceed destination map capacity.
+        // Scope: host unit test for NormalizedMemoryMap capacity during region normalization.
+        // Semantics: capacity exhaustion is reported before silently dropping usable ranges.
         assert_eq!(
             normalize_memory_regions::<1>(&[
                 MemoryRegion::new(0x1000, 0x2000, MemoryRegionKind::Usable),
@@ -619,9 +619,12 @@ mod tests {
 
     #[test]
     fn reports_capacity_exhaustion_after_reserved_subtraction() {
+        // Goal: reserved subtraction can split one usable region into more ranges than the map can hold.
+        // Scope: host unit test for normalization capacity after reserved-range filtering.
+        // Semantics: split-range overflow is reported instead of dropping the later usable segment.
         assert_eq!(
             normalize_memory_regions_with_reserved::<1>(
-                &[MemoryRegion::new(0x1000, 0x9000, MemoryRegionKind::Usable,)],
+                &[MemoryRegion::new(0x1000, 0x9000, MemoryRegionKind::Usable)],
                 &[FrameRange::new(0x3000, 0x5000).unwrap()],
             ),
             Err(FrameAllocError::TooManyRegions)

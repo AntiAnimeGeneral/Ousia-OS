@@ -565,6 +565,7 @@ mod tests {
     use crate::cap::{
         CNodeCap, EndpointCap, FrameCap, NotificationCap, ReplyCap, TcbCap, UntypedCap,
     };
+    use rstest::rstest;
 
     fn endpoint(rights: Rights, badge: u64) -> Capability {
         Capability::Endpoint(EndpointCap { badge, rights })
@@ -588,6 +589,14 @@ mod tests {
 
     fn cnode() -> Capability {
         Capability::CNode(CNodeCap::new(4))
+    }
+
+    fn configure_thread() -> ThreadId {
+        ThreadId::new(10)
+    }
+
+    fn configure_affinity() -> CpuId {
+        CpuId::new(1)
     }
 
     #[test]
@@ -659,22 +668,49 @@ mod tests {
         );
     }
 
-    #[test]
-    fn endpoint_recv_requires_read_rights() {
-        // Goal: receive authorization depends on endpoint receive rights.
-        // Scope: unit test for invocation rights at the CSpace boundary.
-        // Semantics: WRITE-only endpoint caps cannot authorize receive-side IPC.
+    #[rstest]
+    #[case::endpoint_recv_requires_read(
+        endpoint(Rights::WRITE, 0),
+        Invocation::EndpointRecv { blocking: true },
+        Rights::READ,
+        Rights::WRITE
+    )]
+    #[case::notification_wait_requires_read(
+        notification(Rights::WRITE, 0),
+        Invocation::NotificationWait { blocking: false },
+        Rights::READ,
+        Rights::WRITE
+    )]
+    #[case::tcb_resume_requires_manage(
+        tcb(Rights::NONE),
+        Invocation::TcbResume,
+        Rights::MANAGE,
+        Rights::NONE
+    )]
+    #[case::tcb_configure_requires_manage(
+        tcb(Rights::NONE),
+        Invocation::TcbConfigure {
+            thread: configure_thread(),
+            affinity: configure_affinity(),
+        },
+        Rights::MANAGE,
+        Rights::NONE
+    )]
+    fn invocation_rejects_missing_capability_rights(
+        #[case] capability: Capability,
+        #[case] invocation: Invocation,
+        #[case] required: Rights,
+        #[case] actual: Rights,
+    ) {
+        // Goal: invocation authorization rejects insufficient rights at the CSpace boundary.
+        // Scope: unit test for typed capabilities with the right object kind but missing rights.
+        // Semantics: missing rights fail before executor-owned endpoint, notification, or TCB side effects.
         let mut cspace = CapabilitySpace::new();
-        let cap = cspace
-            .insert_initial_capability(endpoint(Rights::WRITE, 0))
-            .unwrap();
+        let cap = cspace.insert_initial_capability(capability).unwrap();
 
         assert_eq!(
-            invoke(&cspace, cap, Invocation::EndpointRecv { blocking: true }),
-            Err(InvocationError::MissingRights {
-                required: Rights::READ,
-                actual: Rights::WRITE,
-            })
+            invoke(&cspace, cap, invocation),
+            Err(InvocationError::MissingRights { required, actual })
         );
     }
 
@@ -989,24 +1025,7 @@ mod tests {
     }
 
     #[test]
-    fn tcb_resume_requires_manage_rights() {
-        // Goal: TCB resume cannot be authorized without manage rights.
-        // Scope: unit test for TCB invocation rights.
-        // Semantics: thread state and scheduler placement are owned by executor paths.
-        let mut cspace = CapabilitySpace::new();
-        let cap = cspace.insert_initial_capability(tcb(Rights::NONE)).unwrap();
-
-        assert_eq!(
-            invoke(&cspace, cap, Invocation::TcbResume),
-            Err(InvocationError::MissingRights {
-                required: Rights::MANAGE,
-                actual: Rights::NONE,
-            })
-        );
-    }
-
-    #[test]
-    fn tcb_configure_requires_manage_rights_and_exports_configuration() {
+    fn tcb_configure_exports_configuration_after_rights_check() {
         // Goal: TCB configure authorization exports thread identity and affinity only after rights check.
         // Scope: unit test for TCB invocation authorization output.
         // Semantics: object binding, thread creation, and CPU validation happen in KernelState.
@@ -1031,22 +1050,6 @@ mod tests {
                 affinity: CpuId::new(1),
             })
         );
-
-        let read_only = cspace.insert_initial_capability(tcb(Rights::NONE)).unwrap();
-        assert_eq!(
-            invoke(
-                &cspace,
-                read_only,
-                Invocation::TcbConfigure {
-                    thread: ThreadId::new(10),
-                    affinity: CpuId::new(1),
-                },
-            ),
-            Err(InvocationError::MissingRights {
-                required: Rights::MANAGE,
-                actual: Rights::NONE,
-            })
-        );
     }
 
     #[test]
@@ -1065,29 +1068,6 @@ mod tests {
             Ok(InvocationOutcome::NotificationSignalAuthorized {
                 notification: object,
                 badge: 0x55,
-            })
-        );
-    }
-
-    #[test]
-    fn notification_wait_requires_read_rights() {
-        // Goal: notification wait authorization requires receive rights.
-        // Scope: unit test for notification invocation rights.
-        // Semantics: blocking and waiter queue side effects are handled after authorization.
-        let mut cspace = CapabilitySpace::new();
-        let cap = cspace
-            .insert_initial_capability(notification(Rights::WRITE, 0))
-            .unwrap();
-
-        assert_eq!(
-            invoke(
-                &cspace,
-                cap,
-                Invocation::NotificationWait { blocking: false },
-            ),
-            Err(InvocationError::MissingRights {
-                required: Rights::READ,
-                actual: Rights::WRITE,
             })
         );
     }

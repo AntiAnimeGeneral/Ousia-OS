@@ -20,6 +20,7 @@ description: "测试与演进规范：测试语义、失败无副作用、黑队
 - 测试不得只是复述实现，例如直接构造内部 error variant、逐项复制映射表、或断言 helper 的机械返回值。
 - 除非测试的是 ABI 编号、协议常量或稳定格式这类外部契约，否则应通过真实调用路径触发行为。
 - 每个非平凡测试应有简短注释或足够语义化的测试名，说明它保护的约束。
+- 非平凡测试应被写成轻量行为契约：用领域词汇说明前置状态、动作、可观察结果和失败后保持不变的 owner 状态。这是项目当前采用的 BDD 内核，不要求 `.feature` 文件，也不把内部实现步骤暴露给测试读者。
 - 优先写端到端边界、状态转移、不变量、权限/能力语义、失败无副作用和跨模块协作测试。
 - 测试用于防止语义意外漂移，不是禁止语义演进。确实需要改变语义时，应先说明新语义、目标/非目标、迁移和回滚风险，再同步更新 owning doc、test contract 和测试断言；不要把失败测试当作实现细节噪音直接改到通过。
 
@@ -28,12 +29,19 @@ description: "测试与演进规范：测试语义、失败无副作用、黑队
 - 单元测试验证单一 owner 内部的本地语义，例如权限判断、输入校验、状态 enum 转换、对象表 lookup 或 capability lineage。单元测试可以直接调用模块 API，但不应把 private helper 的机械返回值当成产品语义。
 - Host integration 测试验证宿主 Rust test harness 下的跨 owner 行为，例如 `KernelState::execute_invocation`、CSpace/ObjectTable/ThreadTable/Scheduler 协作、失败无副作用和边界错误映射。它们仍不是 QEMU 或 bare-metal 测试。
 - QEMU smoke 测试只验证 boot/platform 链路没有断裂，例如 kernel entry、early heap、serial marker、exception marker 和 runner 参数。Smoke 不负责证明 capability、IPC 或 scheduler 深层语义。
-- Platform/bare-metal integration 测试用于未来验证 no_std 环境下 kernel、OSTD、基础服务和硬件模拟协作；在该 harness 未形成前，不要把 host integration 结果说成 bare-metal 语义已经验证。
-- 模型/形式化测试用于未来冻结 capability derivation、IPC、mapping、revoke 和并发不变量；当前如果没有工具链，不要在实现 review 中假装已有形式化覆盖。
+- 尚未进入当前测试体系的层级和 crate split 条件写入 owning design doc；进入 workflow 前必须先明确目标语义、执行环境、验证命令和不覆盖的风险。
+
+## 测试工具栈
+
+- Host-side Rust 测试使用 `cargo nextest run` 作为标准 runner。
+- `rstest` 用于 host-side 单元测试和 host integration 测试中的参数化 case 与 fixture 复用。只有当 case label、fixture 复用或失败定位比手写 `Case` 表更清楚时才使用。
+- 快照测试只允许用于稳定文本、trace、AST、JSON 或协议格式。内核状态、权限、capability、调度和事务测试必须使用语义断言，不得用快照替代。
+- 未纳入当前工具栈的测试库不写入 workflow 要求；引入前必须先更新 owning design doc，说明所在测试层级、依赖边界和验证命令。
 
 ## Test contract
 
 - 每个非平凡测试应能从测试名或短注释中读出 `Goal`、`Scope` 和 `Semantics`：目标语义是什么，测试层级/调用边界是什么，成功或失败后哪些状态必须成立或保持不变。
+- `Goal`、`Scope` 和 `Semantics` 是 Rust 测试内的轻量 BDD contract。它们应描述用户、调用方、状态 owner 或边界观察到的行为，不应描述 helper 调用顺序、局部变量安排或实现里的 match 分支。
 - Table-driven 测试可以在测试组上写统一 contract，但每个 case 必须有语义化 label，不能只复制实现 match table。
 - 语义相同、调用边界相同、只改变输入参数或 invocation variant 的 case 应优先收敛为一个带 case label 的测试集，复用构造并缩小后续改动面；不同状态 owner、不同副作用边界或不同失败不变量的测试应保持独立。
 - 测试集的注释说明整组 `Goal`、`Scope` 和 `Semantics`，case label 说明单个场景的语义差异，确保失败输出能定位到具体场景。

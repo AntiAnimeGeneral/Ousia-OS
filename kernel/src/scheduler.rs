@@ -466,6 +466,7 @@ impl ReadySelector {
 mod tests {
     use super::*;
     use crate::error::KernelErrorCode;
+    use rstest::rstest;
 
     struct FakeThread {
         id: ThreadId,
@@ -511,39 +512,50 @@ mod tests {
         Scheduler::new(&[cpu(0), cpu(1)]).unwrap()
     }
 
-    #[test]
-    fn scheduler_requires_multi_core_topology() {
-        assert_eq!(
-            Scheduler::new(&[]).unwrap_err(),
-            SchedulerError::NotEnoughCpus { provided: 0 }
-        );
-        assert_eq!(
-            Scheduler::new(&[cpu(0)]).unwrap_err(),
-            SchedulerError::NotEnoughCpus { provided: 1 }
-        );
-        assert_eq!(
-            Scheduler::new(&[cpu(0), cpu(0)]).unwrap_err(),
-            SchedulerError::DuplicateCpu { cpu: cpu(0) }
-        );
+    #[rstest]
+    #[case::empty_topology(&[], SchedulerError::NotEnoughCpus { provided: 0 })]
+    #[case::single_cpu_topology(&[cpu(0)], SchedulerError::NotEnoughCpus { provided: 1 })]
+    #[case::duplicate_cpu_topology(&[cpu(0), cpu(0)], SchedulerError::DuplicateCpu { cpu: cpu(0) })]
+    fn scheduler_requires_multi_core_topology(
+        #[case] cpus: &[CpuId],
+        #[case] expected: SchedulerError,
+    ) {
+        // Goal: Scheduler construction establishes the multi-core topology invariant.
+        // Scope: host unit test for Scheduler::new without run queue mutation.
+        // Semantics: invalid CPU lists fail before producing a Scheduler instance.
+        assert_eq!(Scheduler::new(cpus).unwrap_err(), expected);
+    }
+
+    #[rstest]
+    #[case::read_only_lookup(|scheduler: &mut Scheduler, cpu| scheduler.run_queue(cpu).map(|_| ()), SchedulerError::UnknownCpu { cpu: cpu(9) })]
+    #[case::mutable_lookup(|scheduler: &mut Scheduler, cpu| scheduler.run_queue_mut(cpu).map(|_| ()), SchedulerError::UnknownCpu { cpu: cpu(9) })]
+    fn unknown_cpu_run_queue_lookup_reports_topology_error(
+        #[case] lookup: fn(&mut Scheduler, CpuId) -> Result<(), SchedulerError>,
+        #[case] expected: SchedulerError,
+    ) {
+        // Goal: run queue lookup rejects CPUs outside the fixed topology.
+        // Scope: host unit test for read-only and mutable Scheduler queue accessors.
+        // Semantics: unknown CPU lookup reports topology error without changing queues.
+        let mut scheduler = scheduler();
+
+        assert_eq!(lookup(&mut scheduler, cpu(9)), Err(expected));
+        assert_eq!(scheduler.run_queue(cpu(0)).unwrap().ready_len(), 0);
+        assert_eq!(scheduler.run_queue(cpu(1)).unwrap().ready_len(), 0);
     }
 
     #[test]
-    fn topology_exposes_per_cpu_run_queues() {
+    fn topology_exposes_known_per_cpu_run_queues() {
         let mut scheduler = scheduler();
 
         assert_eq!(scheduler.run_queue(cpu(0)).unwrap().cpu(), cpu(0));
-        assert_eq!(
-            scheduler.run_queue(cpu(9)).unwrap_err(),
-            SchedulerError::UnknownCpu { cpu: cpu(9) }
-        );
-        assert_eq!(
-            scheduler.run_queue_mut(cpu(9)).unwrap_err(),
-            SchedulerError::UnknownCpu { cpu: cpu(9) }
-        );
+        assert_eq!(scheduler.run_queue_mut(cpu(1)).unwrap().cpu(), cpu(1));
     }
 
     #[test]
     fn enqueue_uses_tcb_affinity_and_requires_runnable_state() {
+        // Goal: Scheduler enqueue routes runnable TCBs by affinity and rejects blocked TCBs.
+        // Scope: host unit test for Scheduler-level enqueue over full TCB input.
+        // Semantics: a successful enqueue touches only the affinity CPU; rejected blocked input is not placed.
         let mut scheduler = scheduler();
         let tcb = thread(1, cpu(1), ThreadState::Restart);
 
@@ -597,6 +609,9 @@ mod tests {
 
     #[test]
     fn enqueue_accepts_thread_schedule_view_without_full_tcb() {
+        // Goal: scheduler enqueue consumes the sealed scheduling view rather than full TCB internals.
+        // Scope: host unit test for ThreadScheduleView input at Scheduler boundary.
+        // Semantics: runnable fake views enqueue; blocked fake views are rejected without placement.
         let mut scheduler = scheduler();
         let runnable = fake_thread(11, cpu(0), ThreadState::Restart);
 
@@ -722,31 +737,46 @@ mod tests {
         assert_eq!(queue.placement(ThreadId::new(1)), None);
     }
 
-    #[test]
-    fn duplicate_thread_is_rejected_without_side_effects() {
+    #[derive(Clone, Copy, Debug)]
+    enum DuplicateSetup {
+        Ready,
+        Current,
+    }
+
+    #[rstest]
+    #[case::ready_same_fields_after_enqueue(DuplicateSetup::Ready, ThreadState::Restart, cpu(0), ThreadPlacement::Ready { cpu: cpu(0) })]
+    #[case::ready_changed_fields_after_enqueue(DuplicateSetup::Ready, ThreadState::BlockedOnReply, cpu(1), ThreadPlacement::Ready { cpu: cpu(0) })]
+    #[case::current_changed_fields_after_schedule(DuplicateSetup::Current, ThreadState::BlockedOnReply, cpu(1), ThreadPlacement::Current { cpu: cpu(0) })]
+    fn duplicate_thread_is_rejected_without_side_effects(
+        #[case] setup: DuplicateSetup,
+        #[case] state: ThreadState,
+        #[case] retry_affinity: CpuId,
+        #[case] expected_placement: ThreadPlacement,
+    ) {
+        // Goal: scheduler placement remains the single authority for already scheduled threads.
+        // Scope: host unit test for duplicate enqueue rejection through Scheduler::enqueue.
+        // Semantics: changing a TCB after placement cannot duplicate it or move it implicitly.
         let mut scheduler = scheduler();
         let mut tcb = thread(2, cpu(0), ThreadState::Restart);
 
         scheduler.enqueue(&tcb).unwrap();
+        if matches!(setup, DuplicateSetup::Current) {
+            scheduler.schedule_next(cpu(0)).unwrap();
+        }
+        tcb.set_state(state);
+        tcb.set_affinity(retry_affinity);
 
         assert_eq!(
             scheduler.enqueue(&tcb),
             Err(SchedulerError::ThreadAlreadyScheduled {
                 thread: ThreadId::new(2),
-                placement: ThreadPlacement::Ready { cpu: cpu(0) },
+                placement: expected_placement,
             })
         );
-        assert_eq!(scheduler.run_queue(cpu(0)).unwrap().ready_len(), 1);
-
-        tcb.set_affinity(cpu(1));
         assert_eq!(
-            scheduler.enqueue(&tcb),
-            Err(SchedulerError::ThreadAlreadyScheduled {
-                thread: ThreadId::new(2),
-                placement: ThreadPlacement::Ready { cpu: cpu(0) },
-            })
+            scheduler.placement(ThreadId::new(2)),
+            Some(expected_placement)
         );
-        assert_eq!(scheduler.run_queue(cpu(0)).unwrap().ready_len(), 1);
         assert_eq!(scheduler.run_queue(cpu(1)).unwrap().ready_len(), 0);
     }
 

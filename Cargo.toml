@@ -14,3 +14,4 @@ license = "GPL-3.0"
 
 [workspace.dependencies]
 # 在这里声明公共依赖，子项目可以直接引用
+rstest = "0.26.1"

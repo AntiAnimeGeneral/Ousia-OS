@@ -131,6 +131,7 @@ impl Tcb {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rstest::rstest;
 
     fn object(raw: u64) -> ObjectId {
         ObjectId::new(raw)
@@ -147,97 +148,55 @@ mod tests {
         assert!(tcb.state().is_stopped());
     }
 
-    #[test]
-    fn thread_state_predicates_match_sel4_scheduling_classes() {
+    #[rstest]
+    #[case::inactive_is_stopped_before_configuration(ThreadState::Inactive, false, false, true)]
+    #[case::blocked_receive_is_blocked_and_stopped(
+        ThreadState::BlockedOnReceive { endpoint: object(1), can_grant: true, reply: None },
+        true,
+        false,
+        true
+    )]
+    #[case::blocked_send_is_blocked_and_stopped(
+        ThreadState::BlockedOnSend {
+            endpoint: object(1),
+            sender_cpu: CpuId::new(0),
+            badge: 1,
+            can_grant: true,
+            can_grant_reply: false,
+            is_call: true,
+            payload: IpcPayload::empty(),
+        },
+        true,
+        false,
+        true
+    )]
+    #[case::blocked_reply_is_blocked_and_stopped(ThreadState::BlockedOnReply, true, false, true)]
+    #[case::blocked_notification_is_blocked_and_stopped(
+        ThreadState::BlockedOnNotification { notification: object(2) },
+        true,
+        false,
+        true
+    )]
+    #[case::running_is_runnable_only(ThreadState::Running, false, true, false)]
+    #[case::restart_is_runnable_only(ThreadState::Restart, false, true, false)]
+    #[case::idle_thread_state_is_outside_normal_scheduling_classes(
+        ThreadState::IdleThreadState,
+        false,
+        false,
+        false
+    )]
+    fn thread_state_predicates_match_sel4_scheduling_classes(
+        #[case] state: ThreadState,
+        #[case] blocked: bool,
+        #[case] runnable: bool,
+        #[case] stopped: bool,
+    ) {
         // Goal: ThreadState predicates expose seL4 blocked, runnable, and stopped classes.
         // Scope: pure ThreadState classification without scheduler or endpoint side effects.
-        // Semantics: each state belongs to the expected scheduling class matrix.
-        struct Case {
-            label: &'static str,
-            state: ThreadState,
-            blocked: bool,
-            runnable: bool,
-            stopped: bool,
-        }
-
-        let cases = [
-            Case {
-                label: "inactive is stopped before configuration",
-                state: ThreadState::Inactive,
-                blocked: false,
-                runnable: false,
-                stopped: true,
-            },
-            Case {
-                label: "blocked receive is blocked and stopped",
-                state: ThreadState::BlockedOnReceive {
-                    endpoint: object(1),
-                    can_grant: true,
-                    reply: None,
-                },
-                blocked: true,
-                runnable: false,
-                stopped: true,
-            },
-            Case {
-                label: "blocked send is blocked and stopped",
-                state: ThreadState::BlockedOnSend {
-                    endpoint: object(1),
-                    sender_cpu: CpuId::new(0),
-                    badge: 1,
-                    can_grant: true,
-                    can_grant_reply: false,
-                    is_call: true,
-                    payload: IpcPayload::empty(),
-                },
-                blocked: true,
-                runnable: false,
-                stopped: true,
-            },
-            Case {
-                label: "blocked reply is blocked and stopped",
-                state: ThreadState::BlockedOnReply,
-                blocked: true,
-                runnable: false,
-                stopped: true,
-            },
-            Case {
-                label: "blocked notification is blocked and stopped",
-                state: ThreadState::BlockedOnNotification {
-                    notification: object(2),
-                },
-                blocked: true,
-                runnable: false,
-                stopped: true,
-            },
-            Case {
-                label: "running is runnable only",
-                state: ThreadState::Running,
-                blocked: false,
-                runnable: true,
-                stopped: false,
-            },
-            Case {
-                label: "restart is runnable only",
-                state: ThreadState::Restart,
-                blocked: false,
-                runnable: true,
-                stopped: false,
-            },
-            Case {
-                label: "idle thread state is outside normal scheduling classes",
-                state: ThreadState::IdleThreadState,
-                blocked: false,
-                runnable: false,
-                stopped: false,
-            },
-        ];
-
-        for case in cases {
-            assert_eq!(case.state.is_blocked(), case.blocked, "{}", case.label);
-            assert_eq!(case.state.is_runnable(), case.runnable, "{}", case.label);
-            assert_eq!(case.state.is_stopped(), case.stopped, "{}", case.label);
-        }
+        // Semantics: each case belongs to the expected scheduling class matrix.
+        assert_eq!(state.is_blocked(), blocked);
+        assert_eq!(state.is_runnable(), runnable);
+        assert_eq!(state.is_stopped(), stopped);
     }
 
     #[test]

@@ -141,6 +141,7 @@ impl Reply {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rstest::rstest;
 
     fn cpu(raw: u32) -> CpuId {
         CpuId::new(raw)
@@ -154,6 +155,16 @@ mod tests {
         ObjectId::new(raw)
     }
 
+    fn caller(caller: u64, target: u64, thread: u64, cpu: u32, can_grant: bool) -> ReplyCaller {
+        ReplyCaller::new(ReplyCallerParams {
+            caller: object(caller),
+            target: object(target),
+            thread: self::thread(thread),
+            cpu: self::cpu(cpu),
+            can_grant,
+        })
+    }
+
     #[test]
     fn new_reply_starts_empty() {
         let reply = Reply::new();
@@ -161,89 +172,67 @@ mod tests {
         assert_eq!(reply.state(), ReplyState::Empty);
     }
 
-    #[test]
-    fn records_single_pending_caller() {
+    #[rstest]
+    #[case::caller_can_grant(caller(100, 200, 1, 0, true))]
+    #[case::caller_cannot_grant(caller(101, 201, 2, 1, false))]
+    fn reply_records_and_consumes_single_pending_caller(#[case] caller: ReplyCaller) {
+        // Goal: Reply owns exactly one pending caller and exposes record/reply transitions.
+        // Scope: local Reply state machine without CSpace slot consumption or scheduler wakeup.
+        // Semantics: record stores caller metadata; reply consumes the same metadata and returns Empty.
         let mut reply = Reply::new();
-        let caller = ReplyCaller::new(ReplyCallerParams {
-            caller: object(100),
-            target: object(200),
-            thread: thread(1),
-            cpu: cpu(0),
-            can_grant: true,
-        });
 
         assert_eq!(
             reply.record_caller(caller),
             Ok(ReplyAction::CallerRecorded {
-                caller_object: object(100),
-                target_object: object(200),
-                caller_thread: thread(1),
-                caller_cpu: cpu(0),
-                can_grant: true,
+                caller_object: caller.caller(),
+                target_object: caller.target(),
+                caller_thread: caller.thread(),
+                caller_cpu: caller.cpu(),
+                can_grant: caller.can_grant(),
             })
         );
         assert_eq!(reply.state(), ReplyState::Pending { caller });
-    }
-
-    #[test]
-    fn cannot_overwrite_pending_caller() {
-        let mut reply = Reply::new();
-
-        reply
-            .record_caller(ReplyCaller::new(ReplyCallerParams {
-                caller: object(100),
-                target: object(200),
-                thread: thread(1),
-                cpu: cpu(0),
-                can_grant: true,
-            }))
-            .unwrap();
-
-        assert_eq!(
-            reply.record_caller(ReplyCaller::new(ReplyCallerParams {
-                caller: object(101),
-                target: object(200),
-                thread: thread(2),
-                cpu: cpu(1),
-                can_grant: false,
-            })),
-            Err(ReplyError::AlreadyPending {
-                existing: thread(1),
-            })
-        );
-    }
-
-    #[test]
-    fn reply_consumes_pending_caller() {
-        let mut reply = Reply::new();
-
-        reply
-            .record_caller(ReplyCaller::new(ReplyCallerParams {
-                caller: object(100),
-                target: object(200),
-                thread: thread(1),
-                cpu: cpu(0),
-                can_grant: true,
-            }))
-            .unwrap();
 
         assert_eq!(
             reply.reply(),
             Ok(ReplyAction::Replied {
-                caller_object: object(100),
-                target_object: object(200),
-                caller_thread: thread(1),
-                caller_cpu: cpu(0),
-                can_grant: true,
+                caller_object: caller.caller(),
+                target_object: caller.target(),
+                caller_thread: caller.thread(),
+                caller_cpu: caller.cpu(),
+                can_grant: caller.can_grant(),
             })
         );
         assert_eq!(reply.state(), ReplyState::Empty);
     }
 
     #[test]
+    fn cannot_overwrite_pending_caller() {
+        // Goal: Reply rejects a second caller while one reply slot is pending.
+        // Scope: local Reply state machine error path.
+        // Semantics: the original caller remains pending after the overwrite attempt fails.
+        let mut reply = Reply::new();
+        let existing = caller(100, 200, 1, 0, true);
+
+        reply.record_caller(existing).unwrap();
+
+        assert_eq!(
+            reply.record_caller(caller(101, 200, 2, 1, false)),
+            Err(ReplyError::AlreadyPending {
+                existing: thread(1),
+            })
+        );
+        assert_eq!(reply.state(), ReplyState::Pending { caller: existing });
+    }
+
+    #[test]
     fn reply_requires_pending_caller() {
+        // Goal: Reply cannot consume a caller that was never recorded.
+        // Scope: local Reply state machine empty-state error path.
+        // Semantics: replying from Empty fails and leaves the Reply empty.
         let mut reply = Reply::new();
 
         assert_eq!(reply.reply(), Err(ReplyError::NoPendingCaller));
+        assert_eq!(reply.state(), ReplyState::Empty);
     }
 }

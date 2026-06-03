@@ -74,7 +74,8 @@ cargo check -p kernel-bin --target aarch64-unknown-none -Zbuild-std=core,alloc -
 cargo check -p ostd --target x86_64-unknown-none -Zbuild-std=core,alloc -Zbuild-std-features=compiler-builtins-mem
 cargo check -p kernel --target x86_64-unknown-none -Zbuild-std=core,alloc -Zbuild-std-features=compiler-builtins-mem
 cargo check -p kernel-bin --target x86_64-unknown-none -Zbuild-std=core,alloc -Zbuild-std-features=compiler-builtins-mem
-cargo test -p kernel
+cargo nextest run -p kernel
+cargo nextest run -p ostd
 ```
 
 ## Editor analysis

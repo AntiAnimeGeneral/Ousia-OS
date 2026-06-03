@@ -8,4 +8,4 @@ edition.workspace = true
 bitflags = { version = "2", default-features = false }
 
 [dev-dependencies]
-rstest = "0.26.1"
+rstest.workspace = true
