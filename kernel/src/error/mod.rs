@@ -41,7 +41,9 @@ impl CapError {
             // A missing or dead slot failed CSpace lookup. A descriptor that
             // still names a slot but no longer matches its object/slot state is
             // an invalid capability at the syscall boundary.
-            Self::SlotNotFound(_) => KernelErrorCode::FailedLookup,
+            Self::SlotNotFound(_) | Self::InvalidCteReference { .. } => {
+                KernelErrorCode::FailedLookup
+            }
             Self::ObjectNotFound(_) | Self::ObjectDestroyed(_) | Self::StaleDescriptor { .. } => {
                 KernelErrorCode::InvalidCapability
             }

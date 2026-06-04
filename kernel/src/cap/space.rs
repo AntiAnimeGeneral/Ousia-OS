@@ -243,25 +243,25 @@ pub struct CNodeLookup {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct ResolvedCte {
-    pub(crate) slot: SlotId,
-    pub(crate) cte: CteRef,
+pub struct ResolvedCte {
+    pub slot: SlotId,
+    pub cte: CteRef,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct ResolvedCapabilitySlot {
-    pub(crate) descriptor: CapabilityDescriptor,
-    pub(crate) cte: CteRef,
+pub struct ResolvedCapabilitySlot {
+    pub descriptor: CapabilityDescriptor,
+    pub cte: CteRef,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct CteRef {
-    handle: SlotId,
-    storage: CteStorageRef,
+pub struct CteRef {
+    pub handle: SlotId,
+    pub storage: CteStorageRef,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum CteStorageRef {
+pub enum CteStorageRef {
     Root,
     CNode(CteLocation),
 }
@@ -279,14 +279,14 @@ impl RetypeDestination {
 }
 
 impl CteRef {
-    const fn root(handle: SlotId) -> Self {
+    pub const fn root(handle: SlotId) -> Self {
         Self {
             handle,
             storage: CteStorageRef::Root,
         }
     }
 
-    const fn cnode(handle: SlotId, location: CteLocation) -> Self {
+    pub const fn cnode(handle: SlotId, location: CteLocation) -> Self {
         Self {
             handle,
             storage: CteStorageRef::CNode(location),
@@ -325,7 +325,7 @@ pub enum RetypedObjectKind {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RetypeCommitPlan {
-    source: CapabilityDescriptor,
+    source: ResolvedCapabilitySlot,
     allocation: UntypedAllocationPlan,
     entries: Vec<RetypeCommitEntry>,
     next_slot: u64,
@@ -333,7 +333,7 @@ pub struct RetypeCommitPlan {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct RetypeCommitEntry {
-    slot: SlotId,
+    destination: ResolvedCte,
     object: ObjectId,
     capability: Capability,
     kind: RetypedObjectKind,
@@ -363,7 +363,7 @@ pub enum RetypeTarget {
 }
 
 impl RetypeTarget {
-    pub(crate) fn validate_retype_bounds(&self) -> Result<(), CapError> {
+    pub fn validate_retype_bounds(&self) -> Result<(), CapError> {
         if let Self::CNode { radix } = self {
             validate_cnode_radix(*radix)?;
         }
@@ -371,7 +371,7 @@ impl RetypeTarget {
         Ok(())
     }
 
-    pub(crate) const fn minimum_size_bits(&self) -> u8 {
+    pub const fn minimum_size_bits(&self) -> u8 {
         match self {
             Self::Endpoint => MODEL_ENDPOINT_SIZE_BITS,
             Self::Frame { .. } => MIN_FRAME_SIZE_BITS,
@@ -382,7 +382,7 @@ impl RetypeTarget {
         }
     }
 
-    pub(crate) fn validate_rights(&self) -> Result<(), CapError> {
+    pub fn validate_rights(&self) -> Result<(), CapError> {
         let object = self.object_kind();
         let requested_rights = self.requested_rights();
         validate_rights_for(object, requested_rights)
@@ -466,6 +466,9 @@ pub struct CapabilityDeletion {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum CapError {
     SlotNotFound(SlotId),
+    InvalidCteReference {
+        slot: SlotId,
+    },
     ObjectNotFound(ObjectId),
     ObjectDestroyed(ObjectId),
     StaleDescriptor {
@@ -569,9 +572,9 @@ struct CNodeSlotEntry {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct CteLocation {
-    object: ObjectId,
-    offset: usize,
+pub struct CteLocation {
+    pub object: ObjectId,
+    pub offset: usize,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -676,7 +679,7 @@ impl CapabilitySpace {
     }
 
     #[cfg(test)]
-    pub(crate) fn insert_reply_capability_for_test(
+    pub fn insert_reply_capability_for_test(
         &mut self,
         capability: ReplyCap,
     ) -> Result<CapabilityDescriptor, CapError> {
@@ -754,7 +757,7 @@ impl CapabilitySpace {
         self.copy_resolved(source, destination, requested_rights)
     }
 
-    pub(crate) fn copy_resolved(
+    pub fn copy_resolved(
         &mut self,
         source: ResolvedCapabilitySlot,
         destination: ResolvedCte,
@@ -790,7 +793,7 @@ impl CapabilitySpace {
         self.mint_resolved(source, destination, requested_rights, params)
     }
 
-    pub(crate) fn mint_resolved(
+    pub fn mint_resolved(
         &mut self,
         source: ResolvedCapabilitySlot,
         destination: ResolvedCte,
@@ -839,14 +842,16 @@ impl CapabilitySpace {
         target: RetypeTarget,
         destination: RetypeDestination,
     ) -> Result<RetypeCommitPlan, CapError> {
-        let allocation = self.validate_retype_untyped_into(source, &target, destination)?;
+        let source = self.resolve_descriptor_ref(source)?;
+        let (allocation, destinations) =
+            self.validate_retype_untyped_into(source, &target, destination)?;
         let mut next_slot = self.next_slot_after_retype_destinations(destination)?;
         let mut entries = Vec::new();
-        for offset in 0..destination.count {
+        for (offset, destination) in destinations.into_iter().enumerate() {
             let window_start = self.planned_retype_window_start(&target, &mut next_slot)?;
             let capability = target.clone().into_capability();
             entries.push(RetypeCommitEntry {
-                slot: slot_in_window(destination.start, offset),
+                destination,
                 object: ObjectId(self.next_object + offset as u64),
                 capability,
                 kind: self.planned_retype_kind(&target, window_start),
@@ -892,11 +897,46 @@ impl CapabilitySpace {
         capability: ReplyCap,
     ) -> Result<CapabilityDescriptor, CapError> {
         self.validate_reply_capability(reply_object, &capability)?;
+        let destination = self.alloc_empty_cte();
+        self.insert_reply_capability_resolved(reply_object, capability, destination)
+    }
+
+    pub fn insert_reply_capability_resolved(
+        &mut self,
+        reply_object: ObjectId,
+        capability: ReplyCap,
+        destination: ResolvedCte,
+    ) -> Result<CapabilityDescriptor, CapError> {
+        self.validate_reply_capability(reply_object, &capability)?;
         let generation = self
             .object(reply_object)
             .expect("validated reply object must remain in CSpace")
             .generation;
-        Ok(self.insert_root_slot(reply_object, Capability::Reply(capability), generation))
+        self.reserve_empty_cte_for_insert(destination)?;
+        let slot_generation = self.slot_generation_for_cte(destination);
+        self.detach_reused_cte(destination);
+        self.insert_cte(
+            destination.cte,
+            CapabilitySlot {
+                object: reply_object,
+                rights: REPLY_ALLOWED_RIGHTS,
+                capability: Capability::Reply(capability),
+                slot_generation,
+                object_generation_snapshot: generation,
+                parent: None,
+                children: ChildSlots::new(),
+                mdb: MdbNode {
+                    revocable: true,
+                    first_badged: true,
+                    ..MdbNode::default()
+                },
+                alive: true,
+            },
+        );
+        Ok(CapabilityDescriptor {
+            slot: destination.slot,
+            slot_generation,
+        })
     }
 
     pub fn move_capability(
@@ -917,7 +957,7 @@ impl CapabilitySpace {
         self.move_resolved(source, destination)
     }
 
-    pub(crate) fn move_resolved(
+    pub fn move_resolved(
         &mut self,
         source: ResolvedCapabilitySlot,
         destination: ResolvedCte,
@@ -1036,10 +1076,7 @@ impl CapabilitySpace {
         Ok(self.resolve_cnode_empty_slot(path)?.slot)
     }
 
-    pub(crate) fn resolve_cnode_empty_slot(
-        &self,
-        path: CNodePath,
-    ) -> Result<ResolvedCte, CapError> {
+    pub fn resolve_cnode_empty_slot(&self, path: CNodePath) -> Result<ResolvedCte, CapError> {
         let lookup = self.lookup_cnode_window(path)?;
         if self.slot_by_ref(lookup.cte).is_some_and(|slot| slot.alive) {
             return Err(CapError::SlotOccupied(lookup.slot));
@@ -1057,7 +1094,7 @@ impl CapabilitySpace {
         Ok(self.resolve_cnode_descriptor(path)?.descriptor)
     }
 
-    pub(crate) fn resolve_cnode_descriptor(
+    pub fn resolve_cnode_descriptor(
         &self,
         path: CNodePath,
     ) -> Result<ResolvedCapabilitySlot, CapError> {
@@ -1104,7 +1141,7 @@ impl CapabilitySpace {
         self.delete_resolved(resolved)
     }
 
-    pub(crate) fn delete_resolved(
+    pub fn delete_resolved(
         &mut self,
         resolved: ResolvedCapabilitySlot,
     ) -> Result<CapabilityDeletion, CapError> {
@@ -1153,7 +1190,7 @@ impl CapabilitySpace {
         self.revoke_resolved(resolved)
     }
 
-    pub(crate) fn revoke_resolved(
+    pub fn revoke_resolved(
         &mut self,
         resolved: ResolvedCapabilitySlot,
     ) -> Result<CapabilityRevocation, CapError> {
@@ -1262,14 +1299,14 @@ impl CapabilitySpace {
     }
 
     #[cfg(test)]
-    pub(crate) fn bump_generation(&mut self, object: ObjectId) -> Result<u64, CapError> {
+    pub fn bump_generation(&mut self, object: ObjectId) -> Result<u64, CapError> {
         let kernel_object = self.object_mut(object)?;
         kernel_object.generation += 1;
         Ok(kernel_object.generation)
     }
 
     #[cfg(test)]
-    pub(crate) fn destroy_object(&mut self, object: ObjectId) -> Result<(), CapError> {
+    pub fn destroy_object(&mut self, object: ObjectId) -> Result<(), CapError> {
         let kernel_object = self.object_mut(object)?;
         kernel_object.destroyed = true;
         kernel_object.generation += 1;
@@ -1336,17 +1373,6 @@ impl CapabilitySpace {
             CteStorageRef::Root => self.slots.insert(cte.handle, value),
             CteStorageRef::CNode(location) => self.cnode_slot_insert(location, value),
         }
-    }
-
-    fn insert_slot(&mut self, slot: SlotId, value: CapabilitySlot) {
-        if !self.slots.has_root_entry(slot)
-            && let Some(location) = self.slots.cnode_location(slot)
-        {
-            self.cnode_slot_insert(location, value);
-            return;
-        }
-
-        self.slots.insert(slot, value);
     }
 
     fn root_live_slots(&self) -> impl Iterator<Item = (SlotId, &CapabilitySlot)> {
@@ -1475,20 +1501,23 @@ impl CapabilitySpace {
 
     fn validate_retype_untyped_into(
         &self,
-        source: CapabilityDescriptor,
+        source: ResolvedCapabilitySlot,
         target: &RetypeTarget,
         destination: RetypeDestination,
-    ) -> Result<UntypedAllocationPlan, CapError> {
+    ) -> Result<(UntypedAllocationPlan, Vec<ResolvedCte>), CapError> {
         if destination.count == 0 {
             return Err(CapError::EmptyRetypeWindow);
         }
         validate_slot_window_bounds(destination.start, destination.count)?;
         destination_window_end(destination)?;
+        let mut destinations = Vec::new();
         for offset in 0..destination.count {
             let slot = slot_in_window(destination.start, offset);
-            self.validate_empty_slot(slot)?;
+            destinations.push(self.empty_cte_for_slot(slot)?);
         }
-        self.validate_retype_untyped_capacity(source, target, destination.count)
+        let allocation =
+            self.validate_retype_untyped_capacity(source, target, destination.count)?;
+        Ok((allocation, destinations))
     }
 
     fn validate_empty_slot(&self, slot: SlotId) -> Result<(), CapError> {
@@ -1505,15 +1534,11 @@ impl CapabilitySpace {
     }
 
     fn validate_empty_cte(&self, cte: ResolvedCte) -> Result<(), CapError> {
+        self.validate_resolved_cte_ref(cte)?;
         if self.slot_by_ref(cte.cte).is_some_and(|slot| slot.alive) {
             return Err(CapError::SlotOccupied(cte.slot));
         }
         Ok(())
-    }
-
-    fn reserve_empty_slot_for_insert(&mut self, slot: SlotId) -> Result<(), CapError> {
-        let cte = self.empty_cte_for_slot(slot)?;
-        self.reserve_empty_cte_for_insert(cte)
     }
 
     fn reserve_empty_cte_for_insert(&mut self, cte: ResolvedCte) -> Result<(), CapError> {
@@ -1534,6 +1559,8 @@ impl CapabilitySpace {
     }
 
     fn slot_generation_for_cte(&self, cte: ResolvedCte) -> u64 {
+        self.validate_resolved_cte_ref(cte)
+            .expect("validated CTE generation lookup requires a coherent CTE reference");
         self.slot_by_ref(cte.cte)
             .map_or(1, |slot| slot.slot_generation + 1)
     }
@@ -1542,13 +1569,10 @@ impl CapabilitySpace {
         self.detach_reused_slot(cte.slot)
     }
 
-    pub(crate) fn commit_retype_plan(
-        &mut self,
-        plan: RetypeCommitPlan,
-    ) -> Result<RetypeResult, CapError> {
-        self.validate_descriptor(plan.source)?;
+    pub fn commit_retype_plan(&mut self, plan: RetypeCommitPlan) -> Result<RetypeResult, CapError> {
+        self.validated_resolved_slot(plan.source)?;
         for entry in &plan.entries {
-            self.validate_empty_slot(entry.slot)?;
+            self.validate_empty_cte(entry.destination)?;
             if let RetypedObjectKind::CNode {
                 radix,
                 window_start,
@@ -1560,10 +1584,11 @@ impl CapabilitySpace {
         }
 
         let parent_capability = self
-            .slot(plan.source.slot)
+            .slot_by_ref(plan.source.cte)
             .expect("validated parent slot must remain in CSpace during retype")
             .capability
             .clone();
+        let parent_slot = plan.source.descriptor.slot;
         let mut expected_object = self.next_object;
         for entry in &plan.entries {
             assert_eq!(
@@ -1593,36 +1618,36 @@ impl CapabilitySpace {
                 );
             }
 
-            self.reserve_empty_slot_for_insert(entry.slot)?;
-            let slot_generation = self.slot_generation_for_insert(entry.slot);
-            self.detach_reused_slot(entry.slot);
+            self.reserve_empty_cte_for_insert(entry.destination)?;
+            let slot_generation = self.slot_generation_for_cte(entry.destination);
+            self.detach_reused_cte(entry.destination);
             let mdb = self.cte_insert_mdb(
-                plan.source.slot,
-                entry.slot,
+                parent_slot,
+                entry.destination.slot,
                 &entry.capability,
                 &parent_capability,
             );
-            self.insert_slot(
-                entry.slot,
+            self.insert_cte(
+                entry.destination.cte,
                 CapabilitySlot {
                     object: entry.object,
                     rights: capability_rights(&entry.capability),
                     capability: entry.capability,
                     slot_generation,
                     object_generation_snapshot: object_generation,
-                    parent: Some(plan.source.slot),
+                    parent: Some(parent_slot),
                     children: ChildSlots::new(),
                     mdb,
                     alive: true,
                 },
             );
-            self.slot_mut(plan.source.slot)
+            self.slot_mut(parent_slot)
                 .expect("validated parent slot must remain in CSpace during retype")
                 .children
-                .insert(entry.slot);
+                .insert(entry.destination.slot);
 
             descriptors.push(CapabilityDescriptor {
-                slot: entry.slot,
+                slot: entry.destination.slot,
                 slot_generation,
             });
             objects.push(entry.object);
@@ -1688,14 +1713,14 @@ impl CapabilitySpace {
 
     fn validate_retype_untyped_capacity(
         &self,
-        source: CapabilityDescriptor,
+        source: ResolvedCapabilitySlot,
         target: &RetypeTarget,
         count: usize,
     ) -> Result<UntypedAllocationPlan, CapError> {
         target.validate_retype_bounds()?;
 
         let (source_size, source_object) = {
-            let (parent_slot, _) = self.validated_slot(source)?;
+            let (parent_slot, _) = self.validated_resolved_slot(source)?;
             let Capability::Untyped(parent_cap) = &parent_slot.capability else {
                 return Err(CapError::WrongCapability {
                     expected: ObjectKind::Untyped,
@@ -1708,7 +1733,7 @@ impl CapabilitySpace {
         let requested_size = target.minimum_size_bits();
         if requested_size > source_size {
             return Err(CapError::InvalidRetypeSize {
-                parent: source.slot,
+                parent: source.descriptor.slot,
                 requested: requested_size,
                 source: source_size,
             });
@@ -1720,7 +1745,8 @@ impl CapabilitySpace {
             .untyped_allocations
             .get(source_object)
             .expect("validated Untyped cap must have allocation metadata");
-        let next_watermark = allocation.next_watermark(source.slot, requested_size, count)?;
+        let next_watermark =
+            allocation.next_watermark(source.descriptor.slot, requested_size, count)?;
         Ok(UntypedAllocationPlan {
             parent_object: source_object,
             next_watermark,
@@ -2089,6 +2115,10 @@ impl CapabilitySpace {
         &self,
         resolved: ResolvedCapabilitySlot,
     ) -> Result<(&CapabilitySlot, &KernelObject), CapError> {
+        self.validate_resolved_cte_ref(ResolvedCte {
+            slot: resolved.descriptor.slot,
+            cte: resolved.cte,
+        })?;
         let slot = self
             .slot_by_ref(resolved.cte)
             .filter(|slot| slot.alive)
@@ -2116,6 +2146,33 @@ impl CapabilitySpace {
         }
 
         Ok((slot, object))
+    }
+
+    fn validate_resolved_cte_ref(&self, resolved: ResolvedCte) -> Result<(), CapError> {
+        if resolved.cte.handle != resolved.slot {
+            return Err(CapError::InvalidCteReference {
+                slot: resolved.slot,
+            });
+        }
+
+        match resolved.cte.storage {
+            CteStorageRef::Root => {
+                if self.slots.cnode_location(resolved.slot).is_some() {
+                    return Err(CapError::InvalidCteReference {
+                        slot: resolved.slot,
+                    });
+                }
+            }
+            CteStorageRef::CNode(location) => {
+                if self.slots.cnode_location(resolved.slot) != Some(location) {
+                    return Err(CapError::InvalidCteReference {
+                        slot: resolved.slot,
+                    });
+                }
+            }
+        }
+
+        Ok(())
     }
 
     fn validate_descriptor(&self, descriptor: CapabilityDescriptor) -> Result<(), CapError> {
@@ -3937,6 +3994,83 @@ mod tests {
     }
 
     #[test]
+    fn public_resolved_destination_must_match_its_cte_reference() {
+        // Goal: public resolved CTE tokens cannot forge a descriptor slot separate from storage.
+        // Scope: resolved CTE commit boundary for derived cap insertion.
+        // Semantics: mismatch fails before writing either the reported slot or the referenced CTE.
+        let mut cspace = CapabilitySpace::new();
+        let source = cspace
+            .insert_initial_capability(endpoint(Rights::READ | Rights::WRITE))
+            .unwrap();
+        let destination = ResolvedCte {
+            slot: SlotId(30),
+            cte: CteRef::root(SlotId(31)),
+        };
+
+        assert_eq!(
+            cspace.copy_resolved(
+                cspace.resolve_descriptor_ref(source).unwrap(),
+                destination,
+                Rights::READ,
+            ),
+            Err(CapError::InvalidCteReference { slot: SlotId(30) })
+        );
+        assert_eq!(
+            cspace.lookup(CapabilityDescriptor {
+                slot: SlotId(30),
+                slot_generation: 1,
+            }),
+            Err(CapError::SlotNotFound(SlotId(30)))
+        );
+        assert_eq!(
+            cspace.lookup(CapabilityDescriptor {
+                slot: SlotId(31),
+                slot_generation: 1,
+            }),
+            Err(CapError::SlotNotFound(SlotId(31)))
+        );
+    }
+
+    #[test]
+    fn public_resolved_source_must_match_its_descriptor_slot() {
+        // Goal: public resolved source tokens cannot validate one CTE and mutate lineage under another slot id.
+        // Scope: resolved CTE source boundary for move/delete style commits.
+        // Semantics: mismatch fails before invalidating the real source cap or touching destination.
+        let mut cspace = CapabilitySpace::new();
+        let first = cspace
+            .insert_initial_capability(endpoint(Rights::READ))
+            .unwrap();
+        let second = cspace
+            .insert_initial_capability(endpoint(Rights::READ))
+            .unwrap();
+        let forged_source = ResolvedCapabilitySlot {
+            descriptor: CapabilityDescriptor {
+                slot: first.slot,
+                slot_generation: second.slot_generation,
+            },
+            cte: CteRef::root(second.slot),
+        };
+        let destination = ResolvedCte {
+            slot: SlotId(40),
+            cte: CteRef::root(SlotId(40)),
+        };
+
+        assert_eq!(
+            cspace.move_resolved(forged_source, destination),
+            Err(CapError::InvalidCteReference { slot: first.slot })
+        );
+        assert!(cspace.lookup(first).is_ok());
+        assert!(cspace.lookup(second).is_ok());
+        assert_eq!(
+            cspace.lookup(CapabilityDescriptor {
+                slot: SlotId(40),
+                slot_generation: 1,
+            }),
+            Err(CapError::SlotNotFound(SlotId(40)))
+        );
+    }
+
+    #[test]
     fn model_sized_kernel_objects_consume_untyped_capacity() {
         // Goal: kernel object model sizes consume Untyped capacity consistently.
         // Scope: TCB and CNode allocation before later Notification allocation.
@@ -4567,6 +4701,46 @@ mod tests {
             })
         );
         assert_eq!(cspace.lookup(endpoint).unwrap().object, endpoint_object);
+    }
+
+    #[test]
+    fn reply_capability_resolved_install_requires_coherent_destination() {
+        // Goal: reply cap installation uses the same resolved CTE invariant as other commits.
+        // Scope: explicit resolved Reply cap install boundary.
+        // Semantics: mismatched destination fails before writing the referenced CTE.
+        let mut cspace = CapabilitySpace::new();
+        let initial = cspace
+            .insert_reply_capability_for_test(ReplyCap {
+                caller: ObjectId::new(100),
+                target: ObjectId::new(200),
+                can_grant: true,
+            })
+            .unwrap();
+        let reply_object = cspace.object_of(initial).unwrap();
+        cspace.consume_reply_cap(initial).unwrap();
+
+        assert_eq!(
+            cspace.insert_reply_capability_resolved(
+                reply_object,
+                ReplyCap {
+                    caller: ObjectId::new(101),
+                    target: ObjectId::new(201),
+                    can_grant: false,
+                },
+                ResolvedCte {
+                    slot: SlotId(70),
+                    cte: CteRef::root(SlotId(71)),
+                },
+            ),
+            Err(CapError::InvalidCteReference { slot: SlotId(70) })
+        );
+        assert_eq!(
+            cspace.lookup(CapabilityDescriptor {
+                slot: SlotId(71),
+                slot_generation: 1,
+            }),
+            Err(CapError::SlotNotFound(SlotId(71)))
+        );
     }
 
     #[test]
