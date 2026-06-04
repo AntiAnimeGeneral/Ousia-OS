@@ -3,8 +3,10 @@ use kernel::{
     object::ObjectTable,
     scheduler::Scheduler,
     state::KernelState,
-    tcb::{CpuId, ThreadId},
-    thread_action::ThreadTable,
+    thread::{
+        action::ThreadTable,
+        tcb::{CpuId, ThreadId},
+    },
 };
 
 pub fn cpu(raw: u32) -> CpuId {

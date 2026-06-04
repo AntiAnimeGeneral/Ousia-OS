@@ -3,7 +3,7 @@ use core::panic::PanicInfo;
 use kernel::cap::{Capability, CapabilitySpace, EndpointCap, ObjectId, Rights};
 use kernel::invocation::{EndpointSendOp, Invocation, InvocationOutcome, invoke};
 use kernel::state::KernelState;
-use kernel::tcb::{CpuId, Tcb, ThreadId};
+use kernel::thread::tcb::{CpuId, Tcb, ThreadId};
 use ostd::boot::{early_println, wait_forever};
 
 #[unsafe(no_mangle)]

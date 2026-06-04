@@ -13,11 +13,13 @@ use crate::{
     },
     reply::ReplyState,
     scheduler::{Scheduler, SchedulerError},
-    tcb::{CpuId, Tcb, ThreadId, ThreadState},
-    thread_action::{
-        ReceiveIpcRequest, SendIpcRequest, ThreadAction, ThreadActionError, ThreadTable,
-        poll_notification, recv_ipc, reply_to_caller, resume_tcb, send_ipc, signal_notification,
-        wait_notification,
+    thread::{
+        action::{
+            ReceiveIpcRequest, SendIpcRequest, ThreadAction, ThreadActionError, ThreadTable,
+            poll_notification, recv_ipc, reply_to_caller, resume_tcb, send_ipc,
+            signal_notification, wait_notification,
+        },
+        tcb::{CpuId, Tcb, ThreadId, ThreadState},
     },
 };
 
@@ -1014,7 +1016,7 @@ mod tests {
         notification::{Notification, NotificationState},
         reply::{Reply, ReplyCaller, ReplyCallerParams},
         scheduler::{Scheduler, SchedulerAction},
-        tcb::{Tcb, ThreadState},
+        thread::tcb::{Tcb, ThreadState},
     };
 
     fn cpu(raw: u32) -> CpuId {

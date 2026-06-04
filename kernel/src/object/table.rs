@@ -5,7 +5,7 @@ use crate::{
     ipc::Endpoint,
     notification::Notification,
     reply::Reply,
-    tcb::ThreadId,
+    thread::tcb::ThreadId,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

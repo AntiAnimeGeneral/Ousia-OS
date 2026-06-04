@@ -9,7 +9,7 @@ use crate::{
     notification::{BoundTcbSignal, Notification, NotificationAction, NotificationState},
     reply::{Reply, ReplyAction, ReplyCaller, ReplyCallerParams, ReplyError, ReplyState},
     scheduler::{Scheduler, SchedulerAction, SchedulerError},
-    tcb::{CpuId, Tcb, ThreadId, ThreadState},
+    thread::tcb::{CpuId, Tcb, ThreadId, ThreadState},
 };
 
 fn reply_setup_for(request: ReplyRequest, receiver_can_grant: bool) -> ReplySetup {

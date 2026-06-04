@@ -8,7 +8,10 @@ use kernel::{
     invocation::{CNodePathTarget, Invocation},
     object::{KernelObjectRef, ObjectTableError},
     state::{ExecutionOutcome, InvocationContext, KernelExecutionError},
-    tcb::{Tcb, ThreadState},
+    thread::{
+        action::ThreadAction,
+        tcb::{CpuId, Tcb, ThreadState},
+    },
 };
 use support::{cpu, thread};
 
@@ -76,7 +79,7 @@ fn configure_thread(state: &mut kernel::state::KernelState, id: u64) -> Capabili
 fn configure_thread_on_cpu(
     state: &mut kernel::state::KernelState,
     id: u64,
-    affinity: kernel::tcb::CpuId,
+    affinity: CpuId,
 ) -> CapabilityDescriptor {
     let descriptor = state
         .cspace_mut()
@@ -894,16 +897,14 @@ fn cnode_revoke_endpoint_restarts_blocked_sender_before_removing_object() {
             sender_tcb,
             Invocation::TcbResume,
         ),
-        Ok(ExecutionOutcome::Thread(
-            kernel::thread_action::ThreadAction::Resumed {
+        Ok(ExecutionOutcome::Thread(ThreadAction::Resumed {
+            thread: thread(7),
+            cpu: cpu(0),
+            scheduler: kernel::scheduler::SchedulerAction::Enqueued {
                 thread: thread(7),
                 cpu: cpu(0),
-                scheduler: kernel::scheduler::SchedulerAction::Enqueued {
-                    thread: thread(7),
-                    cpu: cpu(0),
-                },
-            }
-        ))
+            },
+        }))
     );
     state.scheduler_mut().schedule_next(cpu(0)).unwrap();
 
@@ -916,12 +917,10 @@ fn cnode_revoke_endpoint_restarts_blocked_sender_before_removing_object() {
                 op: kernel::invocation::EndpointSendOp::Send,
             },
         ),
-        Ok(ExecutionOutcome::Thread(
-            kernel::thread_action::ThreadAction::Blocked {
-                thread: thread(7),
-                cpu: cpu(0),
-            }
-        ))
+        Ok(ExecutionOutcome::Thread(ThreadAction::Blocked {
+            thread: thread(7),
+            cpu: cpu(0),
+        }))
     );
     assert_eq!(
         state.threads().state(thread(7)),
@@ -989,16 +988,14 @@ fn cnode_revoke_notification_restarts_waiter_from_tcb_blocked_cpu() {
             waiter_tcb,
             Invocation::TcbResume,
         ),
-        Ok(ExecutionOutcome::Thread(
-            kernel::thread_action::ThreadAction::Resumed {
+        Ok(ExecutionOutcome::Thread(ThreadAction::Resumed {
+            thread: thread(11),
+            cpu: cpu(1),
+            scheduler: kernel::scheduler::SchedulerAction::Enqueued {
                 thread: thread(11),
                 cpu: cpu(1),
-                scheduler: kernel::scheduler::SchedulerAction::Enqueued {
-                    thread: thread(11),
-                    cpu: cpu(1),
-                },
-            }
-        ))
+            },
+        }))
     );
     state.scheduler_mut().schedule_next(cpu(1)).unwrap();
 
@@ -1008,12 +1005,10 @@ fn cnode_revoke_notification_restarts_waiter_from_tcb_blocked_cpu() {
             notification,
             Invocation::NotificationWait { blocking: true },
         ),
-        Ok(ExecutionOutcome::Thread(
-            kernel::thread_action::ThreadAction::Blocked {
-                thread: thread(11),
-                cpu: cpu(1),
-            }
-        ))
+        Ok(ExecutionOutcome::Thread(ThreadAction::Blocked {
+            thread: thread(11),
+            cpu: cpu(1),
+        }))
     );
     assert_eq!(
         state.threads().state(thread(11)),
@@ -1063,16 +1058,14 @@ fn cnode_delete_final_tcb_cap_removes_thread_scheduler_and_runtime_object() {
             tcb,
             Invocation::TcbResume,
         ),
-        Ok(ExecutionOutcome::Thread(
-            kernel::thread_action::ThreadAction::Resumed {
+        Ok(ExecutionOutcome::Thread(ThreadAction::Resumed {
+            thread: thread(8),
+            cpu: cpu(0),
+            scheduler: kernel::scheduler::SchedulerAction::Enqueued {
                 thread: thread(8),
                 cpu: cpu(0),
-                scheduler: kernel::scheduler::SchedulerAction::Enqueued {
-                    thread: thread(8),
-                    cpu: cpu(0),
-                },
-            }
-        ))
+            },
+        }))
     );
 
     assert_eq!(

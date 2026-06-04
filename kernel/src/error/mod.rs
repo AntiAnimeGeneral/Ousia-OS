@@ -11,7 +11,7 @@ use crate::object::ObjectTableError;
 use crate::reply::ReplyError;
 use crate::scheduler::SchedulerError;
 use crate::state::KernelExecutionError;
-use crate::thread_action::ThreadActionError;
+use crate::thread::action::ThreadActionError;
 
 #[repr(u32)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -172,8 +172,10 @@ mod tests {
     use crate::reply::{Reply, ReplyCaller, ReplyCallerParams, ReplyError};
     use crate::scheduler::Scheduler;
     use crate::state::{InvocationContext, KernelState};
-    use crate::tcb::{CpuId, Tcb, ThreadId, ThreadState};
-    use crate::thread_action::ThreadTable;
+    use crate::thread::{
+        action::ThreadTable,
+        tcb::{CpuId, Tcb, ThreadId, ThreadState},
+    };
 
     fn endpoint(rights: Rights) -> Capability {
         Capability::Endpoint(EndpointCap { badge: 0, rights })

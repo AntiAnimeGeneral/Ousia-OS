@@ -65,9 +65,12 @@ AArch64 and amd64 are both first-class targets. The current runner only exercise
 
 ## Lower-level checks
 
+Plain `cargo check` validates the default workspace members `kernel` and `ostd` on the host target. `kernel-bin` is a bare-metal image crate, so validate it with an explicit `*-unknown-none` target instead of forcing host-only fallbacks into OSTD boot or heap modules.
+
 If you want to check pieces separately:
 
 ```bash
+cargo check
 cargo check -p ostd --target aarch64-unknown-none -Zbuild-std=core,alloc -Zbuild-std-features=compiler-builtins-mem
 cargo check -p kernel --target aarch64-unknown-none -Zbuild-std=core,alloc -Zbuild-std-features=compiler-builtins-mem
 cargo check -p kernel-bin --target aarch64-unknown-none -Zbuild-std=core,alloc -Zbuild-std-features=compiler-builtins-mem
@@ -80,7 +83,7 @@ cargo nextest run -p ostd
 
 ## Editor analysis
 
-The root workspace contains the architecture-neutral `kernel` library, the bare-metal `kernel-bin` image crate, and `ostd`. The workspace VS Code settings make rust-analyzer analyze bare-metal crates through the `aarch64-unknown-none` target with `core` and `alloc` built from source. This keeps `#[cfg(target_os = "none")]` modules visible to LSP while editing `kernel-bin` and `ostd` code.
+The root workspace contains the architecture-neutral `kernel` library, the bare-metal `kernel-bin` image crate, and `ostd`. Default Cargo members are limited to host-checkable library crates, while `kernel-bin` remains a workspace member for explicit bare-metal builds. The workspace VS Code settings make rust-analyzer analyze bare-metal crates through the `aarch64-unknown-none` target with `core` and `alloc` built from source. This keeps `#[cfg(target_os = "none")]` modules visible to LSP while editing `kernel-bin` and `ostd` code.
 
 `tools/qemu-runner` is intentionally outside the root workspace. Validate it with `cargo check --manifest-path tools/qemu-runner/Cargo.toml` when changing runner code rather than making bare-metal modules carry host-only fallback implementations for editor analysis.
 

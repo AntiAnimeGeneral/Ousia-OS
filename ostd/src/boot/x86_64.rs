@@ -5,7 +5,7 @@ global_asm!(
     .section .text.boot, "ax"
     .global _start
 _start:
-    lea __ousia_boot_stack_end(%rip), %rsp
+    lea rsp, [rip + __ousia_boot_stack_end]
     call kernel_main
 
 1:

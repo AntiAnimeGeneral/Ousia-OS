@@ -1,7 +1,7 @@
 use alloc::vec::Vec;
 
-pub use crate::message::{IpcError, IpcPayload, MAX_IPC_WORDS};
-use crate::tcb::{CpuId, ThreadId};
+use super::message::IpcPayload;
+use crate::thread::tcb::{CpuId, ThreadId};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct QueuedReceiver {

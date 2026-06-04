@@ -2,7 +2,7 @@ use alloc::vec::Vec;
 
 use crate::{
     cap::ObjectId,
-    tcb::{CpuId, ThreadId},
+    thread::tcb::{CpuId, ThreadId},
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

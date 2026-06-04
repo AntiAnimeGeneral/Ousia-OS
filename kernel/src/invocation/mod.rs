@@ -24,7 +24,7 @@ pub struct RetypeDestinationPath {
     pub start: CNodePath,
     pub count: usize,
 }
-use crate::tcb::{CpuId, ThreadId};
+use crate::thread::tcb::{CpuId, ThreadId};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Invocation {

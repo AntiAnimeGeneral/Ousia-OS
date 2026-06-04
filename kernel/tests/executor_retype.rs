@@ -9,6 +9,7 @@ use kernel::{
     notification::NotificationState,
     object::{FrameObject, KernelObjectRef, ObjectTableError},
     state::{ExecutionOutcome, InvocationContext, KernelExecutionError},
+    thread::action::ThreadAction,
 };
 use support::{cpu, state_with_untyped, thread};
 
@@ -93,9 +94,7 @@ fn untyped_retype_notification_creates_object_and_can_signal() {
             descriptor,
             Invocation::NotificationSignal,
         ),
-        Ok(ExecutionOutcome::Thread(
-            kernel::thread_action::ThreadAction::NoThread
-        ))
+        Ok(ExecutionOutcome::Thread(ThreadAction::NoThread))
     );
     assert_eq!(
         state

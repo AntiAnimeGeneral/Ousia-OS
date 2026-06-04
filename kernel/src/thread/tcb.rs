@@ -1,4 +1,4 @@
-use crate::{cap::ObjectId, message::IpcPayload};
+use crate::{cap::ObjectId, ipc::message::IpcPayload};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub struct CpuId(u32);

@@ -1,6 +1,6 @@
 use alloc::vec::Vec;
 
-use crate::tcb::{CpuId, Tcb, ThreadId, ThreadState};
+use crate::thread::tcb::{CpuId, Tcb, ThreadId, ThreadState};
 
 mod sealed {
     pub trait Sealed {}

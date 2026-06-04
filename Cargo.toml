@@ -3,8 +3,9 @@
 members = ["kernel", "kernel-bin", "ostd"]
 resolver = "3"
 
-# 可选：指定默认运行/构建的项目（当直接运行 cargo run 时）
-# default-members = [""]
+# 默认 Cargo 命令只覆盖能在 host target 下检查的库 crate。
+# `kernel-bin` 是 bare-metal image crate，使用显式 `--target *-unknown-none` 命令验证。
+default-members = ["kernel", "ostd"]
 
 [workspace.package]
 version = "0.0.1"
@@ -14,4 +15,5 @@ license = "GPL-3.0"
 
 [workspace.dependencies]
 # 在这里声明公共依赖，子项目可以直接引用
+bitflags = { version = "2", default-features = false }
 rstest = "0.26.1"
