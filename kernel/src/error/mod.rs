@@ -540,10 +540,10 @@ mod tests {
             KernelErrorCode::InvalidArgument
         );
         assert_eq!(
-            state.objects().tcb_thread(object),
+            state.objects.tcb_thread(object),
             Err(ObjectTableError::TcbObjectUnbound { object })
         );
-        assert_eq!(state.threads().get(thread(2)), None);
+        assert_eq!(state.threads.get(thread(2)), None);
     }
 
     #[test]
@@ -565,11 +565,11 @@ mod tests {
             KernelErrorCode::IllegalOperation
         );
         assert_eq!(
-            state.objects().tcb_thread(object),
+            state.objects.tcb_thread(object),
             Err(ObjectTableError::TcbObjectUnbound { object })
         );
-        assert_eq!(state.scheduler().run_queue(cpu(0)).unwrap().ready_len(), 0);
-        assert_eq!(state.scheduler().run_queue(cpu(1)).unwrap().ready_len(), 0);
+        assert_eq!(state.scheduler.run_queue(cpu(0)).unwrap().ready_len(), 0);
+        assert_eq!(state.scheduler.run_queue(cpu(1)).unwrap().ready_len(), 0);
     }
 
     #[test]
@@ -578,7 +578,7 @@ mod tests {
         // Scope: KernelState TCB resume path after ObjectTable binding succeeds.
         // Semantics: missing ThreadTable entry prevents scheduler mutation.
         let (mut state, descriptor, object) = tcb_state_with_object();
-        state.objects_mut().bind_tcb(object, thread(2)).unwrap();
+        state.objects.bind_tcb(object, thread(2)).unwrap();
 
         assert_eq!(
             state
@@ -591,8 +591,8 @@ mod tests {
                 .error_code(),
             KernelErrorCode::FailedLookup
         );
-        assert_eq!(state.scheduler().run_queue(cpu(0)).unwrap().ready_len(), 0);
-        assert_eq!(state.scheduler().run_queue(cpu(1)).unwrap().ready_len(), 0);
+        assert_eq!(state.scheduler.run_queue(cpu(0)).unwrap().ready_len(), 0);
+        assert_eq!(state.scheduler.run_queue(cpu(1)).unwrap().ready_len(), 0);
     }
 
     #[test]
@@ -601,11 +601,11 @@ mod tests {
         // Scope: KernelState path for TCB object/thread/scheduler ownership.
         // Semantics: the error code is illegal operation and all existing ownership stays intact.
         let mut state = KernelState::new(&[cpu(0), cpu(1)]).unwrap();
-        state.objects_mut().insert_tcb(ObjectId::new(1)).unwrap();
+        state.objects.insert_tcb(ObjectId::new(1)).unwrap();
         state
             .insert_thread_object(ObjectId::new(1), Tcb::new(thread(2), cpu(0)))
             .unwrap();
-        state.objects_mut().insert_tcb(ObjectId::new(2)).unwrap();
+        state.objects.insert_tcb(ObjectId::new(2)).unwrap();
 
         assert_eq!(
             state
@@ -615,13 +615,13 @@ mod tests {
             KernelErrorCode::IllegalOperation
         );
         assert_eq!(
-            state.objects().tcb_thread(ObjectId::new(2)),
+            state.objects.tcb_thread(ObjectId::new(2)),
             Err(ObjectTableError::TcbObjectUnbound {
                 object: ObjectId::new(2),
             })
         );
-        assert_eq!(state.threads().affinity(thread(2)), Some(cpu(0)));
-        assert_eq!(state.scheduler().run_queue(cpu(0)).unwrap().ready_len(), 0);
-        assert_eq!(state.scheduler().run_queue(cpu(1)).unwrap().ready_len(), 0);
+        assert_eq!(state.threads.affinity(thread(2)), Some(cpu(0)));
+        assert_eq!(state.scheduler.run_queue(cpu(0)).unwrap().ready_len(), 0);
+        assert_eq!(state.scheduler.run_queue(cpu(1)).unwrap().ready_len(), 0);
     }
 }

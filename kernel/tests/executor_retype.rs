@@ -38,7 +38,7 @@ fn planned_objects(
     target: RetypeTarget,
 ) -> Vec<kernel::cap::ObjectId> {
     state
-        .cspace()
+        .cspace
         .plan_retype_untyped(source, target)
         .unwrap()
         .objects()
@@ -64,7 +64,7 @@ fn untyped_retype_endpoint_creates_object_and_capability() {
             .unwrap(),
         "endpoint retype",
     );
-    let view = state.cspace().lookup(descriptor).unwrap();
+    let view = state.cspace.lookup(descriptor).unwrap();
 
     assert_eq!(
         view.capability,
@@ -74,7 +74,7 @@ fn untyped_retype_endpoint_creates_object_and_capability() {
         })
     );
     assert_eq!(
-        state.objects().get(view.object),
+        state.objects.get(view.object),
         Ok(KernelObjectRef::Endpoint)
     );
 }
@@ -106,11 +106,11 @@ fn untyped_retype_notification_creates_object_and_can_signal() {
             .unwrap(),
         "notification retype",
     );
-    let notification_object = state.cspace().lookup(descriptor).unwrap().object;
+    let notification_object = state.cspace.lookup(descriptor).unwrap().object;
 
     assert_eq!(
         state
-            .objects()
+            .objects
             .notification(notification_object)
             .unwrap()
             .state(),
@@ -127,7 +127,7 @@ fn untyped_retype_notification_creates_object_and_can_signal() {
     );
     assert_eq!(
         state
-            .objects()
+            .objects
             .notification(notification_object)
             .unwrap()
             .state(),
@@ -156,7 +156,7 @@ fn untyped_retype_frame_creates_object_and_capability() {
             .unwrap(),
         "frame retype",
     );
-    let view = state.cspace().lookup(descriptor).unwrap();
+    let view = state.cspace.lookup(descriptor).unwrap();
 
     assert_eq!(
         view.capability,
@@ -164,9 +164,9 @@ fn untyped_retype_frame_creates_object_and_capability() {
             rights: Rights::READ | Rights::WRITE,
         })
     );
-    assert_eq!(state.objects().frame(view.object), Ok(FrameObject::new(12)));
+    assert_eq!(state.objects.frame(view.object), Ok(FrameObject::new(12)));
     assert_eq!(
-        state.objects().get(view.object),
+        state.objects.get(view.object),
         Ok(KernelObjectRef::Frame { size_bits: 12 })
     );
 }
@@ -213,7 +213,7 @@ fn untyped_retype_capacity_allows_only_one_full_size_frame() {
         ))
     );
     assert_eq!(
-        state.cspace().lookup(first).unwrap().descriptor.slot.raw(),
+        state.cspace.lookup(first).unwrap().descriptor.slot.raw(),
         first.slot.raw()
     );
     assert_eq!(next_slot, untyped.slot.raw() + 2);
@@ -226,7 +226,7 @@ fn untyped_retype_into_occupied_destination_fails_without_side_effects() {
     // Semantics: an occupied destination slot fails before Untyped capacity or ObjectTable changes.
     let (mut state, untyped) = state_with_untyped(13);
     let occupied = state
-        .cspace_mut()
+        .cspace
         .insert_initial_capability(Capability::Endpoint(EndpointCap {
             badge: 0,
             rights: Rights::READ,
@@ -258,7 +258,7 @@ fn untyped_retype_into_occupied_destination_fails_without_side_effects() {
         ))
     );
     assert_eq!(
-        state.cspace().lookup(occupied).unwrap().capability,
+        state.cspace.lookup(occupied).unwrap().capability,
         Capability::Endpoint(EndpointCap {
             badge: 0,
             rights: Rights::READ,
@@ -280,7 +280,7 @@ fn untyped_retype_into_occupied_destination_fails_without_side_effects() {
         "frame retype after occupied destination failure",
     );
     assert_eq!(
-        state.cspace().lookup(descriptor).map(|view| view.object),
+        state.cspace.lookup(descriptor).map(|view| view.object),
         Ok(predicted_object)
     );
 }
@@ -313,7 +313,7 @@ fn untyped_retype_into_window_creates_all_runtime_objects() {
 
     assert_eq!(descriptors.len(), 2);
     for descriptor in descriptors {
-        let view = state.cspace().lookup(descriptor).unwrap();
+        let view = state.cspace.lookup(descriptor).unwrap();
         assert_eq!(
             view.capability,
             Capability::Frame(FrameCap {
@@ -321,7 +321,7 @@ fn untyped_retype_into_window_creates_all_runtime_objects() {
             })
         );
         assert_eq!(
-            state.objects().get(view.object),
+            state.objects.get(view.object),
             Ok(KernelObjectRef::Frame { size_bits: 12 })
         );
     }
@@ -334,7 +334,7 @@ fn untyped_retype_path_creates_all_runtime_objects_in_resolved_window() {
     // Semantics: the CNode path resolves the first destination slot before CSpace/Object mutation.
     let (mut state, untyped) = state_with_untyped(13);
     let target_root = state
-        .cspace_mut()
+        .cspace
         .insert_initial_capability(Capability::CNode(CNodeCap::with_window(
             4,
             0b10,
@@ -370,7 +370,7 @@ fn untyped_retype_path_creates_all_runtime_objects_in_resolved_window() {
     assert_eq!(descriptors[0].slot, kernel::cap::SlotId::new(120 + 0b0010));
     assert_eq!(descriptors[1].slot, kernel::cap::SlotId::new(120 + 0b0011));
     for descriptor in descriptors {
-        let view = state.cspace().lookup(descriptor).unwrap();
+        let view = state.cspace.lookup(descriptor).unwrap();
         assert_eq!(
             view.capability,
             Capability::Frame(FrameCap {
@@ -378,7 +378,7 @@ fn untyped_retype_path_creates_all_runtime_objects_in_resolved_window() {
             })
         );
         assert_eq!(
-            state.objects().get(view.object),
+            state.objects.get(view.object),
             Ok(KernelObjectRef::Frame { size_bits: 12 })
         );
     }
@@ -432,14 +432,14 @@ fn untyped_retype_path_failures_do_not_consume_capacity_or_target_slots() {
     for case in cases {
         let (mut state, untyped) = state_with_untyped(13);
         let target_root = state
-            .cspace_mut()
+            .cspace
             .insert_initial_capability(Capability::CNode(case.cnode))
             .unwrap();
         let frame_target = RetypeTarget::Frame {
             rights: Rights::READ,
         };
         let predicted_object = state
-            .cspace()
+            .cspace
             .plan_retype_untyped(untyped, frame_target.clone())
             .unwrap()
             .objects()
@@ -470,7 +470,7 @@ fn untyped_retype_path_failures_do_not_consume_capacity_or_target_slots() {
         );
         if let Some(slot) = case.empty_slot {
             assert_eq!(
-                state.cspace().lookup(CapabilityDescriptor {
+                state.cspace.lookup(CapabilityDescriptor {
                     slot,
                     slot_generation: 1,
                 }),
@@ -495,7 +495,7 @@ fn untyped_retype_path_failures_do_not_consume_capacity_or_target_slots() {
             case.label,
         );
         assert_eq!(
-            state.cspace().lookup(descriptor).map(|view| view.object),
+            state.cspace.lookup(descriptor).map(|view| view.object),
             Ok(predicted_object),
             "{}",
             case.label
@@ -510,7 +510,7 @@ fn untyped_retype_into_runtime_conflict_fails_before_cspace_commit() {
     // Semantics: no descriptor in the requested window becomes live after a later runtime conflict.
     let (mut state, untyped) = state_with_untyped(13);
     state
-        .objects_mut()
+        .objects
         .insert_frame(kernel::cap::ObjectId::new(2), FrameObject::new(12))
         .unwrap();
     let start = kernel::cap::SlotId::new(40);
@@ -534,7 +534,7 @@ fn untyped_retype_into_runtime_conflict_fails_before_cspace_commit() {
     );
 
     assert_eq!(
-        state.cspace().lookup(CapabilityDescriptor {
+        state.cspace.lookup(CapabilityDescriptor {
             slot: start,
             slot_generation: 1,
         }),
@@ -542,7 +542,7 @@ fn untyped_retype_into_runtime_conflict_fails_before_cspace_commit() {
     );
     let next = kernel::cap::SlotId::new(start.raw() + 1);
     assert_eq!(
-        state.cspace().lookup(CapabilityDescriptor {
+        state.cspace.lookup(CapabilityDescriptor {
             slot: next,
             slot_generation: 1,
         }),
@@ -606,7 +606,7 @@ fn untyped_capacity_failure_does_not_consume_next_object_or_watermark() {
         "endpoint retype after capacity failure",
     );
     assert_eq!(
-        state.cspace().lookup(descriptor).map(|view| view.object),
+        state.cspace.lookup(descriptor).map(|view| view.object),
         Ok(predicted_object)
     );
 }
@@ -630,10 +630,10 @@ fn untyped_retype_cnode_creates_object_and_capability() {
             .unwrap(),
         "CNode retype",
     );
-    let object = state.cspace().lookup(descriptor).unwrap().object;
+    let object = state.cspace.lookup(descriptor).unwrap().object;
 
     assert_eq!(
-        state.objects().get(object),
+        state.objects.get(object),
         Ok(KernelObjectRef::CNode {
             radix: 4,
             slots: 16,
@@ -661,12 +661,12 @@ fn untyped_retype_cnode_creates_usable_slot_window() {
             .unwrap(),
         "CNode retype",
     );
-    let cnode_view = state.cspace().lookup(cnode).unwrap();
+    let cnode_view = state.cspace.lookup(cnode).unwrap();
     let Capability::CNode(cnode_cap) = cnode_view.capability else {
         panic!("retype must install a CNode cap");
     };
     assert_eq!(
-        state.objects().get(cnode_view.object),
+        state.objects.get(cnode_view.object),
         Ok(KernelObjectRef::CNode {
             radix: 2,
             slots: 4,
@@ -675,7 +675,7 @@ fn untyped_retype_cnode_creates_usable_slot_window() {
     );
 
     let source_root = state
-        .cspace_mut()
+        .cspace
         .insert_initial_capability(Capability::CNode(CNodeCap::with_window(
             6,
             0,
@@ -684,7 +684,7 @@ fn untyped_retype_cnode_creates_usable_slot_window() {
         )))
         .unwrap();
     let source = state
-        .cspace_mut()
+        .cspace
         .insert_initial_capability(Capability::Endpoint(EndpointCap {
             badge: 0,
             rights: Rights::READ | Rights::WRITE,
@@ -714,7 +714,7 @@ fn untyped_retype_cnode_creates_usable_slot_window() {
         SlotId::new(cnode_cap.window_start.raw() + 0b10)
     );
     assert_eq!(
-        state.cspace().lookup(copied).unwrap().capability,
+        state.cspace.lookup(copied).unwrap().capability,
         Capability::Endpoint(EndpointCap {
             badge: 0x55,
             rights: Rights::READ,
@@ -739,7 +739,7 @@ fn untyped_retype_object_table_conflicts_do_not_commit_cspace() {
             target: RetypeTarget::CNode { radix: 4 },
             install_conflict: |state, object| {
                 state
-                    .objects_mut()
+                    .objects
                     .insert_cnode(
                         object,
                         kernel::object::CNodeObject::new(4, kernel::cap::SlotId::new(99)),
@@ -754,7 +754,7 @@ fn untyped_retype_object_table_conflicts_do_not_commit_cspace() {
             },
             install_conflict: |state, object| {
                 state
-                    .objects_mut()
+                    .objects
                     .insert_frame(object, FrameObject::new(12))
                     .unwrap();
             },
@@ -764,7 +764,7 @@ fn untyped_retype_object_table_conflicts_do_not_commit_cspace() {
     for case in cases {
         let (mut state, untyped) = state_with_untyped(13);
         let predicted_object = state
-            .cspace()
+            .cspace
             .plan_retype_untyped(untyped, case.target.clone())
             .unwrap()
             .objects()
@@ -790,7 +790,7 @@ fn untyped_retype_object_table_conflicts_do_not_commit_cspace() {
         );
 
         let endpoint = state
-            .cspace_mut()
+            .cspace
             .retype_untyped(untyped, RetypeTarget::Endpoint)
             .unwrap();
         assert_eq!(
@@ -800,7 +800,7 @@ fn untyped_retype_object_table_conflicts_do_not_commit_cspace() {
             case.label
         );
         assert_eq!(
-            state.cspace().lookup(endpoint).map(|view| view.object),
+            state.cspace.lookup(endpoint).map(|view| view.object),
             Ok(predicted_object),
             "{}",
             case.label
@@ -821,7 +821,7 @@ fn untyped_retype_object_table_conflict_does_not_consume_capacity() {
         panic!("single frame retype plan must contain one object");
     };
     state
-        .objects_mut()
+        .objects
         .insert_frame(predicted_object, FrameObject::new(12))
         .unwrap();
 
@@ -839,7 +839,7 @@ fn untyped_retype_object_table_conflict_does_not_consume_capacity() {
     );
 
     let descriptor = state
-        .cspace_mut()
+        .cspace
         .retype_untyped(
             untyped,
             RetypeTarget::Frame {
@@ -848,7 +848,7 @@ fn untyped_retype_object_table_conflict_does_not_consume_capacity() {
         )
         .unwrap();
     assert_eq!(
-        state.cspace().lookup(descriptor).map(|view| view.object),
+        state.cspace.lookup(descriptor).map(|view| view.object),
         Ok(predicted_object)
     );
 }
@@ -874,7 +874,7 @@ fn untyped_retype_tcb_creates_unbound_tcb_object() {
             .unwrap(),
         "TCB retype",
     );
-    let view = state.cspace().lookup(descriptor).unwrap();
+    let view = state.cspace.lookup(descriptor).unwrap();
 
     assert_eq!(
         view.capability,
@@ -883,13 +883,13 @@ fn untyped_retype_tcb_creates_unbound_tcb_object() {
         })
     );
     assert_eq!(
-        state.objects().tcb_thread(view.object),
+        state.objects.tcb_thread(view.object),
         Err(ObjectTableError::TcbObjectUnbound {
             object: view.object,
         })
     );
-    assert_eq!(state.threads().get(thread(2)), None);
-    assert_eq!(state.scheduler().placement(thread(2)), None);
+    assert_eq!(state.threads.get(thread(2)), None);
+    assert_eq!(state.scheduler.placement(thread(2)), None);
 }
 
 #[test]
@@ -911,7 +911,7 @@ fn nested_untyped_retype_commits_cspace_without_object_table_entry() {
             .unwrap(),
         "nested Untyped retype",
     );
-    let child_view = state.cspace().lookup(descriptor).unwrap();
+    let child_view = state.cspace.lookup(descriptor).unwrap();
     let child_object = child_view.object;
 
     assert_eq!(
@@ -919,7 +919,7 @@ fn nested_untyped_retype_commits_cspace_without_object_table_entry() {
         Capability::Untyped(kernel::cap::UntypedCap { size_bits: 10 })
     );
     assert_eq!(
-        state.objects().get(child_object),
+        state.objects.get(child_object),
         Err(ObjectTableError::ObjectNotFound {
             object: child_object,
         })
@@ -977,12 +977,9 @@ fn nested_untyped_retype_consumes_parent_and_has_own_capacity() {
             .unwrap(),
         "child frame retype",
     );
-    let frame_object = state.cspace().lookup(frame).unwrap().object;
+    let frame_object = state.cspace.lookup(frame).unwrap().object;
 
-    assert_eq!(
-        state.objects().frame(frame_object),
-        Ok(FrameObject::new(12))
-    );
+    assert_eq!(state.objects.frame(frame_object), Ok(FrameObject::new(12)));
 }
 
 #[test]
@@ -1013,12 +1010,12 @@ fn oversized_nested_untyped_retype_does_not_commit_cspace() {
     );
 
     let endpoint = state
-        .cspace_mut()
+        .cspace
         .retype_untyped(untyped, endpoint_target)
         .unwrap();
     assert_eq!(endpoint.slot.raw(), untyped.slot.raw() + 1);
     assert_eq!(
-        state.cspace().lookup(endpoint).map(|view| view.object),
+        state.cspace.lookup(endpoint).map(|view| view.object),
         Ok(predicted_object)
     );
 }

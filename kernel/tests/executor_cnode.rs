@@ -62,7 +62,7 @@ fn untyped(size_bits: u8) -> Capability {
 fn cnode_state() -> (kernel::state::KernelState, CapabilityDescriptor) {
     let mut state = kernel::state::KernelState::new(&[cpu(0), cpu(1)]).unwrap();
     let cnode = state
-        .cspace_mut()
+        .cspace
         .insert_initial_capability(root_cnode_cap())
         .unwrap();
     (state, cnode)
@@ -97,13 +97,13 @@ fn configure_thread_on_cpu(
     affinity: CpuId,
 ) -> CapabilityDescriptor {
     let descriptor = state
-        .cspace_mut()
+        .cspace
         .insert_initial_capability(Capability::Tcb(TcbCap {
             rights: Rights::MANAGE,
         }))
         .unwrap();
-    let object = state.cspace().lookup(descriptor).unwrap().object;
-    state.objects_mut().insert_tcb(object).unwrap();
+    let object = state.cspace.lookup(descriptor).unwrap().object;
+    state.objects.insert_tcb(object).unwrap();
     state
         .insert_thread_object(object, Tcb::new(thread(id), affinity))
         .unwrap();
@@ -165,11 +165,8 @@ fn cnode_copy_mint_and_move_path_commit_to_selected_slot() {
 
     for case in cases {
         let (mut state, cnode) = cnode_state();
-        let source = state
-            .cspace_mut()
-            .insert_initial_capability(case.source)
-            .unwrap();
-        let source_object = state.cspace().lookup(source).unwrap().object;
+        let source = state.cspace.insert_initial_capability(case.source).unwrap();
+        let source_object = state.cspace.lookup(source).unwrap().object;
         let destination = kernel::cap::SlotId::new(case.destination);
 
         let descriptor = capability_descriptor(
@@ -184,20 +181,17 @@ fn cnode_copy_mint_and_move_path_commit_to_selected_slot() {
         );
 
         assert_eq!(descriptor.slot, destination, "{}", case.label);
-        let view = state.cspace().lookup(descriptor).unwrap();
+        let view = state.cspace.lookup(descriptor).unwrap();
         assert_eq!(view.capability, case.expected_capability, "{}", case.label);
         assert_eq!(view.object, source_object, "{}", case.label);
         if case.invalidates_source {
             assert!(
-                matches!(
-                    state.cspace().lookup(source),
-                    Err(CapError::SlotNotFound(_))
-                ),
+                matches!(state.cspace.lookup(source), Err(CapError::SlotNotFound(_))),
                 "{}",
                 case.label
             );
         } else {
-            assert!(state.cspace().lookup(source).is_ok(), "{}", case.label);
+            assert!(state.cspace.lookup(source).is_ok(), "{}", case.label);
         }
     }
 }
@@ -262,18 +256,15 @@ fn cnode_path_copy_mint_and_move_resolve_destination_window() {
     for case in cases {
         let mut state = kernel::state::KernelState::new(&[cpu(0), cpu(1)]).unwrap();
         let cnode = state
-            .cspace_mut()
+            .cspace
             .insert_initial_capability(windowed_cnode(4, 0b10, 2, case.window_start))
             .unwrap();
         let source_root = state
-            .cspace_mut()
+            .cspace
             .insert_initial_capability(root_cnode_cap())
             .unwrap();
-        let source = state
-            .cspace_mut()
-            .insert_initial_capability(case.source)
-            .unwrap();
-        let source_object = state.cspace().lookup(source).unwrap().object;
+        let source = state.cspace.insert_initial_capability(case.source).unwrap();
+        let source_object = state.cspace.lookup(source).unwrap().object;
         let target = CNodePathTarget {
             capptr: case.capptr,
             depth: 6,
@@ -296,20 +287,17 @@ fn cnode_path_copy_mint_and_move_resolve_destination_window() {
             "{}",
             case.label
         );
-        let view = state.cspace().lookup(descriptor).unwrap();
+        let view = state.cspace.lookup(descriptor).unwrap();
         assert_eq!(view.capability, case.expected_capability, "{}", case.label);
         assert_eq!(view.object, source_object, "{}", case.label);
         if case.invalidates_source {
             assert!(
-                matches!(
-                    state.cspace().lookup(source),
-                    Err(CapError::SlotNotFound(_))
-                ),
+                matches!(state.cspace.lookup(source), Err(CapError::SlotNotFound(_))),
                 "{}",
                 case.label
             );
         } else {
-            assert!(state.cspace().lookup(source).is_ok(), "{}", case.label);
+            assert!(state.cspace.lookup(source).is_ok(), "{}", case.label);
         }
     }
 }
@@ -321,18 +309,18 @@ fn cnode_copy_path_resolves_source_under_explicit_source_root() {
     // Semantics: the invoked CNode selects the destination while the source root selects source authority.
     let mut state = kernel::state::KernelState::new(&[cpu(0), cpu(1)]).unwrap();
     let destination_root = state
-        .cspace_mut()
+        .cspace
         .insert_initial_capability(windowed_cnode(4, 0, 0, 80))
         .unwrap();
     let source_root = state
-        .cspace_mut()
+        .cspace
         .insert_initial_capability(root_cnode_cap())
         .unwrap();
     let source = state
-        .cspace_mut()
+        .cspace
         .insert_initial_capability(endpoint(Rights::READ | Rights::WRITE, 0x31))
         .unwrap();
-    let source_object = state.cspace().lookup(source).unwrap().object;
+    let source_object = state.cspace.lookup(source).unwrap().object;
 
     let copied = capability_descriptor(
         state
@@ -353,7 +341,7 @@ fn cnode_copy_path_resolves_source_under_explicit_source_root() {
     );
 
     assert_eq!(copied.slot, kernel::cap::SlotId::new(83));
-    let copied_view = state.cspace().lookup(copied).unwrap();
+    let copied_view = state.cspace.lookup(copied).unwrap();
     assert_eq!(copied_view.object, source_object);
     assert_eq!(copied_view.capability, endpoint(Rights::READ, 0x31));
 }
@@ -365,7 +353,7 @@ fn cnode_copy_path_rejects_non_cnode_source_root_without_destination_mutation() 
     // Semantics: an invalid source root does not occupy the destination selected by the invoked CNode.
     let (mut state, cnode) = cnode_state();
     let source_root = state
-        .cspace_mut()
+        .cspace
         .insert_initial_capability(endpoint(Rights::READ, 0x11))
         .unwrap();
     let destination = kernel::cap::SlotId::new(52);
@@ -389,7 +377,7 @@ fn cnode_copy_path_rejects_non_cnode_source_root_without_destination_mutation() 
     );
 
     assert_eq!(
-        state.cspace().descriptor_for_live_slot(destination),
+        state.cspace.descriptor_for_live_slot(destination),
         Err(CapError::SlotNotFound(destination))
     );
 }
@@ -401,15 +389,15 @@ fn cnode_copy_path_guard_mismatch_fails_without_source_mutation() {
     // Semantics: guard mismatch does not derive source authority or occupy the selected slot.
     let mut state = kernel::state::KernelState::new(&[cpu(0), cpu(1)]).unwrap();
     let cnode = state
-        .cspace_mut()
+        .cspace
         .insert_initial_capability(guarded_cnode(4, 0b10, 2))
         .unwrap();
     let source_root = state
-        .cspace_mut()
+        .cspace
         .insert_initial_capability(root_cnode_cap())
         .unwrap();
     let source = state
-        .cspace_mut()
+        .cspace
         .insert_initial_capability(endpoint(Rights::READ | Rights::WRITE, 0x42))
         .unwrap();
 
@@ -436,11 +424,11 @@ fn cnode_copy_path_guard_mismatch_fails_without_source_mutation() {
         ))
     );
     assert_eq!(
-        state.cspace().lookup(source).unwrap().capability,
+        state.cspace.lookup(source).unwrap().capability,
         endpoint(Rights::READ | Rights::WRITE, 0x42)
     );
     assert_eq!(
-        state.cspace().lookup(CapabilityDescriptor {
+        state.cspace.lookup(CapabilityDescriptor {
             slot: kernel::cap::SlotId::new(0b0110),
             slot_generation: 1,
         }),
@@ -455,19 +443,19 @@ fn cnode_delete_path_invalidates_resolved_target() {
     // Semantics: deleting a resolved target slot leaves sibling slots intact.
     let mut state = kernel::state::KernelState::new(&[cpu(0), cpu(1)]).unwrap();
     let cnode = state
-        .cspace_mut()
+        .cspace
         .insert_initial_capability(windowed_cnode(4, 0b10, 2, 80))
         .unwrap();
     let source = state
-        .cspace_mut()
+        .cspace
         .insert_initial_capability(endpoint(Rights::READ, 0x1))
         .unwrap();
     let target = state
-        .cspace_mut()
+        .cspace
         .copy_into(source, kernel::cap::SlotId::new(80 + 0b0101), Rights::READ)
         .unwrap();
     let sibling = state
-        .cspace_mut()
+        .cspace
         .insert_initial_capability(endpoint(Rights::READ, 0x2))
         .unwrap();
 
@@ -486,11 +474,11 @@ fn cnode_delete_path_invalidates_resolved_target() {
     );
 
     assert!(matches!(
-        state.cspace().lookup(target),
+        state.cspace.lookup(target),
         Err(CapError::SlotNotFound(_))
     ));
     assert_eq!(
-        state.cspace().lookup(sibling).unwrap().capability,
+        state.cspace.lookup(sibling).unwrap().capability,
         endpoint(Rights::READ, 0x2)
     );
 }
@@ -504,14 +492,14 @@ fn cnode_revoke_path_removes_descendants_but_keeps_resolved_target() {
     // The transitional descriptor facade allocates the invoked CNode at slot 1;
     // this window starts at the next initial slot so the path resolves to root.
     let cnode = state
-        .cspace_mut()
+        .cspace
         .insert_initial_capability(windowed_cnode(4, 0b10, 2, 2))
         .unwrap();
     let root = state
-        .cspace_mut()
+        .cspace
         .insert_initial_capability(frame(Rights::READ | Rights::WRITE))
         .unwrap();
-    let child = state.cspace_mut().copy(root, Rights::READ).unwrap();
+    let child = state.cspace.copy(root, Rights::READ).unwrap();
 
     assert_eq!(
         state.execute_invocation(
@@ -527,9 +515,9 @@ fn cnode_revoke_path_removes_descendants_but_keeps_resolved_target() {
         Ok(ExecutionOutcome::CapabilityMutation)
     );
 
-    assert!(state.cspace().lookup(root).is_ok());
+    assert!(state.cspace.lookup(root).is_ok());
     assert!(matches!(
-        state.cspace().lookup(child),
+        state.cspace.lookup(child),
         Err(CapError::SlotNotFound(_))
     ));
 }
@@ -570,11 +558,11 @@ fn cnode_copy_and_mint_path_to_occupied_destination_preserve_source() {
     for case in cases {
         let (mut state, cnode) = cnode_state();
         let source = state
-            .cspace_mut()
+            .cspace
             .insert_initial_capability(case.source.clone())
             .unwrap();
         let occupied = state
-            .cspace_mut()
+            .cspace
             .insert_initial_capability(endpoint(Rights::READ, 0x44))
             .unwrap();
 
@@ -591,13 +579,13 @@ fn cnode_copy_and_mint_path_to_occupied_destination_preserve_source() {
             case.label
         );
         assert_eq!(
-            state.cspace().lookup(source).unwrap().capability,
+            state.cspace.lookup(source).unwrap().capability,
             case.source,
             "{}",
             case.label
         );
         assert_eq!(
-            state.cspace().lookup(occupied).unwrap().capability,
+            state.cspace.lookup(occupied).unwrap().capability,
             endpoint(Rights::READ, 0x44),
             "{}",
             case.label
@@ -612,7 +600,7 @@ fn cnode_mint_rejects_rebadging_badged_endpoint() {
     // Semantics: a nonzero endpoint badge cannot be replaced by another badge.
     let (mut state, cnode) = cnode_state();
     let source = state
-        .cspace_mut()
+        .cspace
         .insert_initial_capability(endpoint(Rights::READ | Rights::WRITE, 0x11))
         .unwrap();
     let destination = kernel::cap::SlotId::new(44);
@@ -637,7 +625,7 @@ fn cnode_mint_rejects_rebadging_badged_endpoint() {
         ))
     );
     assert_eq!(
-        state.cspace().lookup(source).unwrap().capability,
+        state.cspace.lookup(source).unwrap().capability,
         endpoint(Rights::READ | Rights::WRITE, 0x11)
     );
 }
@@ -649,14 +637,14 @@ fn cnode_move_path_to_occupied_destination_fails_before_source_lookup() {
     // Semantics: occupied destination is reported even if the source path names a deleted slot.
     let (mut state, cnode) = cnode_state();
     let source = state
-        .cspace_mut()
+        .cspace
         .insert_initial_capability(endpoint(Rights::READ, 0x22))
         .unwrap();
     let occupied = state
-        .cspace_mut()
+        .cspace
         .insert_initial_capability(endpoint(Rights::READ, 0x44))
         .unwrap();
-    state.cspace_mut().delete(source).unwrap();
+    state.cspace.delete(source).unwrap();
 
     assert_eq!(
         state.execute_invocation(
@@ -672,7 +660,7 @@ fn cnode_move_path_to_occupied_destination_fails_before_source_lookup() {
         ))
     );
     assert_eq!(
-        state.cspace().lookup(occupied).unwrap().capability,
+        state.cspace.lookup(occupied).unwrap().capability,
         endpoint(Rights::READ, 0x44)
     );
 }
@@ -684,11 +672,11 @@ fn cnode_delete_invalidates_target_without_touching_sibling() {
     // Semantics: deleting one cap does not revoke unrelated caps or mutate ObjectTable.
     let (mut state, cnode) = cnode_state();
     let target = state
-        .cspace_mut()
+        .cspace
         .insert_initial_capability(endpoint(Rights::READ, 0x1))
         .unwrap();
     let sibling = state
-        .cspace_mut()
+        .cspace
         .insert_initial_capability(endpoint(Rights::READ, 0x2))
         .unwrap();
 
@@ -704,11 +692,11 @@ fn cnode_delete_invalidates_target_without_touching_sibling() {
     );
 
     assert!(matches!(
-        state.cspace().lookup(target),
+        state.cspace.lookup(target),
         Err(CapError::SlotNotFound(_))
     ));
     assert_eq!(
-        state.cspace().lookup(sibling).unwrap().capability,
+        state.cspace.lookup(sibling).unwrap().capability,
         endpoint(Rights::READ, 0x2)
     );
 }
@@ -720,11 +708,11 @@ fn cnode_revoke_removes_descendants_but_keeps_target() {
     // Semantics: descendants are removed, while the revoked slot itself remains usable.
     let (mut state, cnode) = cnode_state();
     let root = state
-        .cspace_mut()
+        .cspace
         .insert_initial_capability(endpoint(Rights::READ | Rights::WRITE, 0x7))
         .unwrap();
-    let child = state.cspace_mut().copy(root, Rights::READ).unwrap();
-    let grandchild = state.cspace_mut().copy(child, Rights::READ).unwrap();
+    let child = state.cspace.copy(root, Rights::READ).unwrap();
+    let grandchild = state.cspace.copy(child, Rights::READ).unwrap();
 
     assert_eq!(
         state.execute_invocation(
@@ -737,13 +725,13 @@ fn cnode_revoke_removes_descendants_but_keeps_target() {
         Ok(ExecutionOutcome::CapabilityMutation)
     );
 
-    assert!(state.cspace().lookup(root).is_ok());
+    assert!(state.cspace.lookup(root).is_ok());
     assert!(matches!(
-        state.cspace().lookup(child),
+        state.cspace.lookup(child),
         Err(CapError::SlotNotFound(_))
     ));
     assert!(matches!(
-        state.cspace().lookup(grandchild),
+        state.cspace.lookup(grandchild),
         Err(CapError::SlotNotFound(_))
     ));
 }
@@ -754,12 +742,9 @@ fn cnode_revoke_untyped_descendants_recovers_capacity() {
     // Scope: host integration for CSpace lineage and Untyped watermark mutation.
     // Semantics: revoked descendants disappear and the parent Untyped can retype again.
     let (mut state, cnode) = cnode_state();
-    let root = state
-        .cspace_mut()
-        .insert_initial_capability(untyped(12))
-        .unwrap();
+    let root = state.cspace.insert_initial_capability(untyped(12)).unwrap();
     let frame = state
-        .cspace_mut()
+        .cspace
         .retype_untyped(
             root,
             RetypeTarget::Frame {
@@ -780,11 +765,11 @@ fn cnode_revoke_untyped_descendants_recovers_capacity() {
     );
 
     assert!(matches!(
-        state.cspace().lookup(frame),
+        state.cspace.lookup(frame),
         Err(CapError::SlotNotFound(_))
     ));
     let recycled = state
-        .cspace_mut()
+        .cspace
         .retype_untyped(
             root,
             RetypeTarget::Frame {
@@ -793,7 +778,7 @@ fn cnode_revoke_untyped_descendants_recovers_capacity() {
         )
         .unwrap();
     assert_eq!(
-        state.cspace().lookup(recycled).unwrap().capability,
+        state.cspace.lookup(recycled).unwrap().capability,
         Capability::Frame(FrameCap {
             rights: Rights::READ,
         })
@@ -807,10 +792,7 @@ fn cnode_revoke_untyped_descendants_removes_unreachable_runtime_object() {
     // Scope: host integration across CSpace lineage, Untyped capacity reset, and ObjectTable cleanup.
     // Semantics: once the revoked Frame cap has no live aliases, ObjectTable no longer exposes it.
     let (mut state, cnode) = cnode_state();
-    let root = state
-        .cspace_mut()
-        .insert_initial_capability(untyped(12))
-        .unwrap();
+    let root = state.cspace.insert_initial_capability(untyped(12)).unwrap();
     let frame = retyped_descriptor(
         state
             .execute_invocation(
@@ -825,10 +807,10 @@ fn cnode_revoke_untyped_descendants_removes_unreachable_runtime_object() {
             .unwrap(),
         "Frame retype",
     );
-    let frame_object = state.cspace().lookup(frame).unwrap().object;
+    let frame_object = state.cspace.lookup(frame).unwrap().object;
 
     assert_eq!(
-        state.objects().get(frame_object),
+        state.objects.get(frame_object),
         Ok(KernelObjectRef::Frame { size_bits: 12 })
     );
     assert_eq!(
@@ -843,11 +825,11 @@ fn cnode_revoke_untyped_descendants_removes_unreachable_runtime_object() {
     );
 
     assert!(matches!(
-        state.cspace().lookup(frame),
+        state.cspace.lookup(frame),
         Err(CapError::SlotNotFound(_))
     ));
     assert_eq!(
-        state.objects().get(frame_object),
+        state.objects.get(frame_object),
         Err(ObjectTableError::ObjectNotFound {
             object: frame_object,
         })
@@ -866,9 +848,9 @@ fn cnode_revoke_untyped_descendants_removes_unreachable_runtime_object() {
             .unwrap(),
         "Frame retype after revoke",
     );
-    let recycled_object = state.cspace().lookup(recycled).unwrap().object;
+    let recycled_object = state.cspace.lookup(recycled).unwrap().object;
     assert_eq!(
-        state.objects().get(recycled_object),
+        state.objects.get(recycled_object),
         Ok(KernelObjectRef::Frame { size_bits: 12 })
     );
 }
@@ -879,10 +861,7 @@ fn cnode_revoke_typed_descendants_keeps_target_runtime_object() {
     // Scope: host integration across Endpoint retype, CNode mint, CNode revoke, and ObjectTable cleanup.
     // Semantics: revocable badged descendants disappear, but the target Endpoint remains live.
     let (mut state, cnode) = cnode_state();
-    let root = state
-        .cspace_mut()
-        .insert_initial_capability(untyped(12))
-        .unwrap();
+    let root = state.cspace.insert_initial_capability(untyped(12)).unwrap();
     let endpoint = retyped_descriptor(
         state
             .execute_invocation(
@@ -895,7 +874,7 @@ fn cnode_revoke_typed_descendants_keeps_target_runtime_object() {
             .unwrap(),
         "Endpoint retype",
     );
-    let endpoint_object = state.cspace().lookup(endpoint).unwrap().object;
+    let endpoint_object = state.cspace.lookup(endpoint).unwrap().object;
     let alias = capability_descriptor(
         state
             .execute_invocation(
@@ -923,13 +902,13 @@ fn cnode_revoke_typed_descendants_keeps_target_runtime_object() {
         Ok(ExecutionOutcome::CapabilityMutation)
     );
 
-    assert!(state.cspace().lookup(endpoint).is_ok());
+    assert!(state.cspace.lookup(endpoint).is_ok());
     assert!(matches!(
-        state.cspace().lookup(alias),
+        state.cspace.lookup(alias),
         Err(CapError::SlotNotFound(_))
     ));
     assert_eq!(
-        state.objects().get(endpoint_object),
+        state.objects.get(endpoint_object),
         Ok(KernelObjectRef::Endpoint)
     );
 }
@@ -940,10 +919,7 @@ fn cnode_revoke_untyped_endpoint_finalises_runtime_object() {
     // Scope: host integration across Untyped retype, CNode revoke, and ObjectTable finalisation.
     // Semantics: the final Endpoint cap disappears and its runtime object is removed.
     let (mut state, cnode) = cnode_state();
-    let root = state
-        .cspace_mut()
-        .insert_initial_capability(untyped(12))
-        .unwrap();
+    let root = state.cspace.insert_initial_capability(untyped(12)).unwrap();
     let endpoint = retyped_descriptor(
         state
             .execute_invocation(
@@ -956,7 +932,7 @@ fn cnode_revoke_untyped_endpoint_finalises_runtime_object() {
             .unwrap(),
         "Endpoint retype",
     );
-    let endpoint_object = state.cspace().lookup(endpoint).unwrap().object;
+    let endpoint_object = state.cspace.lookup(endpoint).unwrap().object;
 
     assert_eq!(
         state.execute_invocation(
@@ -970,11 +946,11 @@ fn cnode_revoke_untyped_endpoint_finalises_runtime_object() {
     );
 
     assert!(matches!(
-        state.cspace().lookup(endpoint),
+        state.cspace.lookup(endpoint),
         Err(CapError::SlotNotFound(_))
     ));
     assert_eq!(
-        state.objects().get(endpoint_object),
+        state.objects.get(endpoint_object),
         Err(ObjectTableError::ObjectNotFound {
             object: endpoint_object,
         })
@@ -987,10 +963,7 @@ fn cnode_revoke_endpoint_restarts_blocked_sender_before_removing_object() {
     // Scope: host integration across TCB scheduling, Endpoint send blocking, and CNode revoke.
     // Semantics: a sender blocked on the final Endpoint cap is restarted and requeued when revoke finalises it.
     let (mut state, cnode) = cnode_state();
-    let root = state
-        .cspace_mut()
-        .insert_initial_capability(untyped(12))
-        .unwrap();
+    let root = state.cspace.insert_initial_capability(untyped(12)).unwrap();
     let endpoint = retyped_descriptor(
         state
             .execute_invocation(
@@ -1003,7 +976,7 @@ fn cnode_revoke_endpoint_restarts_blocked_sender_before_removing_object() {
             .unwrap(),
         "Endpoint retype",
     );
-    let endpoint_object = state.cspace().lookup(endpoint).unwrap().object;
+    let endpoint_object = state.cspace.lookup(endpoint).unwrap().object;
     let sender_tcb = configure_thread(&mut state, 7);
 
     assert_eq!(
@@ -1021,7 +994,7 @@ fn cnode_revoke_endpoint_restarts_blocked_sender_before_removing_object() {
             },
         }))
     );
-    state.scheduler_mut().schedule_next(cpu(0)).unwrap();
+    state.scheduler.schedule_next(cpu(0)).unwrap();
 
     assert_eq!(
         state.execute_invocation(
@@ -1038,7 +1011,7 @@ fn cnode_revoke_endpoint_restarts_blocked_sender_before_removing_object() {
         }))
     );
     assert_eq!(
-        state.threads().state(thread(7)),
+        state.threads.state(thread(7)),
         Some(ThreadState::BlockedOnSend {
             endpoint: endpoint_object,
             sender_cpu: cpu(0),
@@ -1061,13 +1034,13 @@ fn cnode_revoke_endpoint_restarts_blocked_sender_before_removing_object() {
         Ok(ExecutionOutcome::CapabilityMutation)
     );
 
-    assert_eq!(state.threads().state(thread(7)), Some(ThreadState::Restart));
+    assert_eq!(state.threads.state(thread(7)), Some(ThreadState::Restart));
     assert_eq!(
-        state.scheduler().placement(thread(7)),
+        state.scheduler.placement(thread(7)),
         Some(kernel::scheduler::ThreadPlacement::Ready { cpu: cpu(0) })
     );
     assert_eq!(
-        state.objects().get(endpoint_object),
+        state.objects.get(endpoint_object),
         Err(ObjectTableError::ObjectNotFound {
             object: endpoint_object,
         })
@@ -1080,10 +1053,7 @@ fn cnode_revoke_notification_restarts_waiter_from_tcb_blocked_cpu() {
     // Scope: host integration across Notification wait blocking, ThreadTable state, and CNode revoke.
     // Semantics: a waiter blocked on a final Notification cap is restarted on its recorded receiver CPU.
     let (mut state, cnode) = cnode_state();
-    let root = state
-        .cspace_mut()
-        .insert_initial_capability(untyped(12))
-        .unwrap();
+    let root = state.cspace.insert_initial_capability(untyped(12)).unwrap();
     let notification = retyped_descriptor(
         state
             .execute_invocation(
@@ -1096,7 +1066,7 @@ fn cnode_revoke_notification_restarts_waiter_from_tcb_blocked_cpu() {
             .unwrap(),
         "Notification retype",
     );
-    let notification_object = state.cspace().lookup(notification).unwrap().object;
+    let notification_object = state.cspace.lookup(notification).unwrap().object;
     let waiter_tcb = configure_thread_on_cpu(&mut state, 11, cpu(1));
 
     assert_eq!(
@@ -1114,7 +1084,7 @@ fn cnode_revoke_notification_restarts_waiter_from_tcb_blocked_cpu() {
             },
         }))
     );
-    state.scheduler_mut().schedule_next(cpu(1)).unwrap();
+    state.scheduler.schedule_next(cpu(1)).unwrap();
 
     assert_eq!(
         state.execute_invocation(
@@ -1128,7 +1098,7 @@ fn cnode_revoke_notification_restarts_waiter_from_tcb_blocked_cpu() {
         }))
     );
     assert_eq!(
-        state.threads().state(thread(11)),
+        state.threads.state(thread(11)),
         Some(ThreadState::BlockedOnNotification {
             notification: notification_object,
             receiver_cpu: cpu(1),
@@ -1146,16 +1116,13 @@ fn cnode_revoke_notification_restarts_waiter_from_tcb_blocked_cpu() {
         Ok(ExecutionOutcome::CapabilityMutation)
     );
 
+    assert_eq!(state.threads.state(thread(11)), Some(ThreadState::Restart));
     assert_eq!(
-        state.threads().state(thread(11)),
-        Some(ThreadState::Restart)
-    );
-    assert_eq!(
-        state.scheduler().placement(thread(11)),
+        state.scheduler.placement(thread(11)),
         Some(kernel::scheduler::ThreadPlacement::Ready { cpu: cpu(1) })
     );
     assert_eq!(
-        state.objects().get(notification_object),
+        state.objects.get(notification_object),
         Err(ObjectTableError::ObjectNotFound {
             object: notification_object,
         })
@@ -1169,7 +1136,7 @@ fn cnode_delete_final_tcb_cap_removes_thread_scheduler_and_runtime_object() {
     // Semantics: deleting the final TCB cap suspends/removes thread state and clears scheduler placement.
     let (mut state, cnode) = cnode_state();
     let tcb = configure_thread(&mut state, 8);
-    let tcb_object = state.cspace().lookup(tcb).unwrap().object;
+    let tcb_object = state.cspace.lookup(tcb).unwrap().object;
 
     assert_eq!(
         state.execute_invocation(
@@ -1198,10 +1165,10 @@ fn cnode_delete_final_tcb_cap_removes_thread_scheduler_and_runtime_object() {
         Ok(ExecutionOutcome::CapabilityMutation)
     );
 
-    assert_eq!(state.threads().get(thread(8)), None);
-    assert_eq!(state.scheduler().placement(thread(8)), None);
+    assert_eq!(state.threads.get(thread(8)), None);
+    assert_eq!(state.scheduler.placement(thread(8)), None);
     assert_eq!(
-        state.objects().get(tcb_object),
+        state.objects.get(tcb_object),
         Err(ObjectTableError::ObjectNotFound { object: tcb_object })
     );
 }
@@ -1212,10 +1179,7 @@ fn cnode_delete_blocked_tcb_removes_endpoint_queue_entry() {
     // Scope: host integration across Endpoint queue state, ThreadTable, Scheduler, and CNode delete.
     // Semantics: deleting a TCB blocked on an Endpoint removes its queued sender while keeping the Endpoint live.
     let (mut state, cnode) = cnode_state();
-    let root = state
-        .cspace_mut()
-        .insert_initial_capability(untyped(12))
-        .unwrap();
+    let root = state.cspace.insert_initial_capability(untyped(12)).unwrap();
     let endpoint = retyped_descriptor(
         state
             .execute_invocation(
@@ -1228,9 +1192,9 @@ fn cnode_delete_blocked_tcb_removes_endpoint_queue_entry() {
             .unwrap(),
         "Endpoint retype",
     );
-    let endpoint_object = state.cspace().lookup(endpoint).unwrap().object;
+    let endpoint_object = state.cspace.lookup(endpoint).unwrap().object;
     let sender_tcb = configure_thread(&mut state, 9);
-    let sender_object = state.cspace().lookup(sender_tcb).unwrap().object;
+    let sender_object = state.cspace.lookup(sender_tcb).unwrap().object;
 
     state
         .execute_invocation(
@@ -1239,7 +1203,7 @@ fn cnode_delete_blocked_tcb_removes_endpoint_queue_entry() {
             Invocation::TcbResume,
         )
         .unwrap();
-    state.scheduler_mut().schedule_next(cpu(0)).unwrap();
+    state.scheduler.schedule_next(cpu(0)).unwrap();
     state
         .execute_invocation(
             InvocationContext::new(thread(9), cpu(0)),
@@ -1253,7 +1217,7 @@ fn cnode_delete_blocked_tcb_removes_endpoint_queue_entry() {
 
     assert_eq!(
         state
-            .objects()
+            .objects
             .endpoint(endpoint_object)
             .unwrap()
             .queued_senders(),
@@ -1272,22 +1236,22 @@ fn cnode_delete_blocked_tcb_removes_endpoint_queue_entry() {
 
     assert_eq!(
         state
-            .objects()
+            .objects
             .endpoint(endpoint_object)
             .unwrap()
             .queued_senders(),
         0
     );
-    assert_eq!(state.threads().get(thread(9)), None);
-    assert_eq!(state.scheduler().placement(thread(9)), None);
+    assert_eq!(state.threads.get(thread(9)), None);
+    assert_eq!(state.scheduler.placement(thread(9)), None);
     assert_eq!(
-        state.objects().get(sender_object),
+        state.objects.get(sender_object),
         Err(ObjectTableError::ObjectNotFound {
             object: sender_object
         })
     );
     assert_eq!(
-        state.objects().get(endpoint_object),
+        state.objects.get(endpoint_object),
         Ok(KernelObjectRef::Endpoint)
     );
 }
@@ -1298,12 +1262,9 @@ fn cnode_copy_rejects_untyped_with_children_without_recovering_capacity() {
     // Scope: host integration across Untyped retype, CNode copy, and capacity state.
     // Semantics: copy fails before creating an alias and leaves Untyped capacity consumed.
     let (mut state, cnode) = cnode_state();
-    let root = state
-        .cspace_mut()
-        .insert_initial_capability(untyped(12))
-        .unwrap();
+    let root = state.cspace.insert_initial_capability(untyped(12)).unwrap();
     state
-        .cspace_mut()
+        .cspace
         .retype_untyped(
             root,
             RetypeTarget::Frame {
@@ -1331,9 +1292,7 @@ fn cnode_copy_rejects_untyped_with_children_without_recovering_capacity() {
     );
 
     assert_eq!(
-        state
-            .cspace_mut()
-            .retype_untyped(root, RetypeTarget::Endpoint),
+        state.cspace.retype_untyped(root, RetypeTarget::Endpoint),
         Err(CapError::UntypedCapacityExhausted {
             parent: root.slot,
             requested: 4,
@@ -1349,7 +1308,7 @@ fn cnode_copy_rights_failure_does_not_consume_new_slot() {
     // Semantics: rights escalation is rejected before a child slot is inserted.
     let (mut state, cnode) = cnode_state();
     let source = state
-        .cspace_mut()
+        .cspace
         .insert_initial_capability(endpoint(Rights::READ, 0x33))
         .unwrap();
     let destination = kernel::cap::SlotId::new(48);
@@ -1388,7 +1347,7 @@ fn cnode_copy_rights_failure_does_not_consume_new_slot() {
         "later CNode copy",
     );
     assert_eq!(later.slot, destination);
-    assert!(state.cspace().lookup(source).is_ok());
+    assert!(state.cspace.lookup(source).is_ok());
 }
 
 #[test]
@@ -1398,11 +1357,11 @@ fn cnode_operation_requires_cnode_capability_without_mutating_source() {
     // Semantics: a non-CNode cap cannot mutate source or target slots.
     let mut state = kernel::state::KernelState::new(&[cpu(0), cpu(1)]).unwrap();
     let invoking_endpoint = state
-        .cspace_mut()
+        .cspace
         .insert_initial_capability(endpoint(Rights::READ, 0x43))
         .unwrap();
     let target = state
-        .cspace_mut()
+        .cspace
         .insert_initial_capability(endpoint(Rights::READ, 0x44))
         .unwrap();
     let cases = [
@@ -1444,7 +1403,7 @@ fn cnode_operation_requires_cnode_capability_without_mutating_source() {
             ))
         );
         assert_eq!(
-            state.cspace().lookup(target).unwrap().capability,
+            state.cspace.lookup(target).unwrap().capability,
             endpoint(Rights::READ, 0x44)
         );
     }

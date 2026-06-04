@@ -67,10 +67,10 @@ pub enum KernelExecutionError {
 
 #[derive(Debug)]
 pub struct KernelState {
-    cspace: CapabilitySpace,
-    objects: ObjectTable,
-    threads: ThreadTable,
-    scheduler: Scheduler,
+    pub cspace: CapabilitySpace,
+    pub objects: ObjectTable,
+    pub threads: ThreadTable,
+    pub scheduler: Scheduler,
 }
 
 impl InvocationContext {
@@ -132,38 +132,6 @@ impl KernelState {
             threads,
             scheduler,
         }
-    }
-
-    pub const fn cspace(&self) -> &CapabilitySpace {
-        &self.cspace
-    }
-
-    pub fn cspace_mut(&mut self) -> &mut CapabilitySpace {
-        &mut self.cspace
-    }
-
-    pub const fn objects(&self) -> &ObjectTable {
-        &self.objects
-    }
-
-    pub fn objects_mut(&mut self) -> &mut ObjectTable {
-        &mut self.objects
-    }
-
-    pub const fn threads(&self) -> &ThreadTable {
-        &self.threads
-    }
-
-    pub fn threads_mut(&mut self) -> &mut ThreadTable {
-        &mut self.threads
-    }
-
-    pub const fn scheduler(&self) -> &Scheduler {
-        &self.scheduler
-    }
-
-    pub fn scheduler_mut(&mut self) -> &mut Scheduler {
-        &mut self.scheduler
     }
 
     pub fn insert_thread_object(
@@ -1068,7 +1036,7 @@ mod tests {
             }))
         );
         assert_eq!(
-            state.threads().state(thread(1)),
+            state.threads.state(thread(1)),
             Some(ThreadState::BlockedOnSend {
                 endpoint: endpoint_object,
                 sender_cpu: cpu(0),
@@ -1101,7 +1069,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(
-            state.threads().state(thread(1)),
+            state.threads.state(thread(1)),
             Some(ThreadState::BlockedOnSend {
                 endpoint: endpoint_object,
                 sender_cpu: cpu(0),
@@ -1135,10 +1103,10 @@ mod tests {
                 cpu: cpu(0),
             }))
         );
-        assert_eq!(state.threads().state(thread(1)), Some(ThreadState::Running));
+        assert_eq!(state.threads.state(thread(1)), Some(ThreadState::Running));
         assert_eq!(
             state
-                .objects()
+                .objects
                 .endpoint(endpoint_object)
                 .unwrap()
                 .queued_senders(),
@@ -1179,7 +1147,7 @@ mod tests {
                 ObjectTableError::ObjectNotFound { .. }
             ))
         ));
-        assert_eq!(state.threads().state(thread(1)), Some(ThreadState::Running));
+        assert_eq!(state.threads.state(thread(1)), Some(ThreadState::Running));
     }
 
     #[test]
@@ -1213,7 +1181,7 @@ mod tests {
         );
         assert_eq!(
             state
-                .objects()
+                .objects
                 .notification(notification_object)
                 .unwrap()
                 .state(),
@@ -1221,7 +1189,7 @@ mod tests {
         );
         assert_eq!(
             state
-                .objects()
+                .objects
                 .notification(notification_object)
                 .unwrap()
                 .badge(),
@@ -1268,7 +1236,7 @@ mod tests {
         );
         assert_eq!(
             state
-                .objects()
+                .objects
                 .notification(notification_object)
                 .unwrap()
                 .state(),
@@ -1276,7 +1244,7 @@ mod tests {
         );
         assert_eq!(
             state
-                .objects()
+                .objects
                 .notification(notification_object)
                 .unwrap()
                 .badge(),
@@ -1290,22 +1258,22 @@ mod tests {
         // Scope: insert_thread_object transaction across ObjectTable and ThreadTable owners.
         // Semantics: existing binding and affinity remain, and the new TCB object stays unbound.
         let mut state = KernelState::new(&[cpu(0), cpu(1)]).unwrap();
-        state.objects_mut().insert_tcb(object(10)).unwrap();
+        state.objects.insert_tcb(object(10)).unwrap();
         state
             .insert_thread_object(object(10), Tcb::new(thread(1), cpu(0)))
             .unwrap();
-        state.objects_mut().insert_tcb(object(11)).unwrap();
+        state.objects.insert_tcb(object(11)).unwrap();
 
         assert_eq!(
             state.insert_thread_object(object(11), Tcb::new(thread(1), cpu(1))),
             Err(KernelExecutionError::ThreadAlreadyExists { thread: thread(1) })
         );
-        assert_eq!(state.objects().tcb_thread(object(10)), Ok(thread(1)));
+        assert_eq!(state.objects.tcb_thread(object(10)), Ok(thread(1)));
         assert_eq!(
-            state.objects().tcb_thread(object(11)),
+            state.objects.tcb_thread(object(11)),
             Err(ObjectTableError::TcbObjectUnbound { object: object(11) })
         );
-        assert_eq!(state.threads().affinity(thread(1)), Some(cpu(0)));
+        assert_eq!(state.threads.affinity(thread(1)), Some(cpu(0)));
     }
 
     #[test]
@@ -1314,7 +1282,7 @@ mod tests {
         // Scope: insert_thread_object failure ordering across Scheduler, ObjectTable, and ThreadTable.
         // Semantics: unknown CPU leaves the TCB object unbound and no thread inserted.
         let mut state = KernelState::new(&[cpu(0), cpu(1)]).unwrap();
-        state.objects_mut().insert_tcb(object(10)).unwrap();
+        state.objects.insert_tcb(object(10)).unwrap();
 
         assert_eq!(
             state.insert_thread_object(object(10), Tcb::new(thread(1), cpu(9))),
@@ -1323,10 +1291,10 @@ mod tests {
             ))
         );
         assert_eq!(
-            state.objects().tcb_thread(object(10)),
+            state.objects.tcb_thread(object(10)),
             Err(ObjectTableError::TcbObjectUnbound { object: object(10) })
         );
-        assert_eq!(state.threads().get(thread(1)), None);
+        assert_eq!(state.threads.get(thread(1)), None);
     }
 
     #[test]
@@ -1379,10 +1347,10 @@ mod tests {
                 },
             }))
         );
-        assert_eq!(state.threads().state(thread(1)), Some(ThreadState::Running));
-        assert!(!state.objects().reply(reply_object).unwrap().is_pending());
+        assert_eq!(state.threads.state(thread(1)), Some(ThreadState::Running));
+        assert!(!state.objects.reply(reply_object).unwrap().is_pending());
         assert_eq!(
-            state.cspace().lookup(reply_descriptor),
+            state.cspace.lookup(reply_descriptor),
             Err(crate::cap::CapError::SlotNotFound(reply_descriptor.slot))
         );
     }
@@ -1433,11 +1401,11 @@ mod tests {
             })
         );
         assert_eq!(
-            state.threads().state(thread(1)),
+            state.threads.state(thread(1)),
             Some(ThreadState::BlockedOnReply)
         );
-        assert!(state.objects().reply(reply_object).unwrap().is_pending());
-        assert!(state.cspace().lookup(reply_descriptor).is_ok());
+        assert!(state.objects.reply(reply_object).unwrap().is_pending());
+        assert!(state.cspace.lookup(reply_descriptor).is_ok());
     }
 
     #[test]
@@ -1495,11 +1463,8 @@ mod tests {
                 },
             }))
         );
-        assert_eq!(
-            state.threads().state(thread(1)),
-            Some(ThreadState::Inactive)
-        );
-        assert_eq!(state.threads().state(thread(2)), Some(ThreadState::Running));
+        assert_eq!(state.threads.state(thread(1)), Some(ThreadState::Inactive));
+        assert_eq!(state.threads.state(thread(2)), Some(ThreadState::Running));
     }
 
     #[test]
@@ -1543,14 +1508,14 @@ mod tests {
         scheduler.schedule_next(cpu(0)).unwrap();
         scheduler.schedule_next(cpu(1)).unwrap();
         let mut state = KernelState::from_parts(cspace, objects, threads, scheduler);
-        state.objects_mut().insert_tcb(caller_tcb_object).unwrap();
-        state.objects_mut().insert_tcb(receiver_tcb_object).unwrap();
+        state.objects.insert_tcb(caller_tcb_object).unwrap();
+        state.objects.insert_tcb(receiver_tcb_object).unwrap();
         state
-            .objects_mut()
+            .objects
             .bind_tcb(caller_tcb_object, thread(1))
             .unwrap();
         state
-            .objects_mut()
+            .objects
             .bind_tcb(receiver_tcb_object, thread(2))
             .unwrap();
         state
@@ -1590,7 +1555,7 @@ mod tests {
             }
         );
         assert_eq!(
-            state.cspace().lookup(reply_descriptor).unwrap().capability,
+            state.cspace.lookup(reply_descriptor).unwrap().capability,
             Capability::Reply(ReplyCap {
                 caller: caller_tcb_object,
                 target: endpoint_object,
@@ -1598,11 +1563,11 @@ mod tests {
             })
         );
         assert_eq!(
-            state.cspace().object_of(reply_descriptor).unwrap(),
+            state.cspace.object_of(reply_descriptor).unwrap(),
             reply_object
         );
         assert_eq!(
-            state.objects().reply(reply_object).unwrap().state(),
+            state.objects.reply(reply_object).unwrap().state(),
             ReplyState::Pending {
                 caller: ReplyCaller::new(ReplyCallerParams {
                     caller: caller_tcb_object,
@@ -1659,14 +1624,14 @@ mod tests {
         scheduler.schedule_next(cpu(0)).unwrap();
         scheduler.schedule_next(cpu(1)).unwrap();
         let mut state = KernelState::from_parts(cspace, objects, threads, scheduler);
-        state.objects_mut().insert_tcb(caller_tcb_object).unwrap();
-        state.objects_mut().insert_tcb(receiver_tcb_object).unwrap();
+        state.objects.insert_tcb(caller_tcb_object).unwrap();
+        state.objects.insert_tcb(receiver_tcb_object).unwrap();
         state
-            .objects_mut()
+            .objects
             .bind_tcb(caller_tcb_object, thread(1))
             .unwrap();
         state
-            .objects_mut()
+            .objects
             .bind_tcb(receiver_tcb_object, thread(2))
             .unwrap();
         state
@@ -1696,7 +1661,7 @@ mod tests {
         };
 
         assert_eq!(
-            state.cspace().lookup(reply_descriptor).unwrap().capability,
+            state.cspace.lookup(reply_descriptor).unwrap().capability,
             Capability::Reply(ReplyCap {
                 caller: caller_tcb_object,
                 target: endpoint_object,
@@ -1704,7 +1669,7 @@ mod tests {
             })
         );
         assert_eq!(
-            state.objects().reply(reply_object).unwrap().state(),
+            state.objects.reply(reply_object).unwrap().state(),
             ReplyState::Pending {
                 caller: ReplyCaller::new(ReplyCallerParams {
                     caller: caller_tcb_object,
@@ -1762,12 +1727,14 @@ mod tests {
                 Invocation::EndpointRecv { blocking: true },
             )
             .unwrap();
-        state.threads_mut().get_mut(thread(2)).unwrap().set_state(
-            ThreadState::BlockedOnNotification {
+        state
+            .threads
+            .get_mut(thread(2))
+            .unwrap()
+            .set_state(ThreadState::BlockedOnNotification {
                 notification: object(20),
                 receiver_cpu: cpu(1),
-            },
-        );
+            });
 
         assert_eq!(
             state.execute_invocation(
@@ -1795,27 +1762,27 @@ mod tests {
         );
         assert_eq!(
             state
-                .objects()
+                .objects
                 .endpoint(endpoint_object)
                 .unwrap()
                 .queued_receivers(),
             1
         );
-        assert_eq!(state.threads().state(thread(1)), Some(ThreadState::Running));
+        assert_eq!(state.threads.state(thread(1)), Some(ThreadState::Running));
         assert_eq!(
-            state.threads().state(thread(2)),
+            state.threads.state(thread(2)),
             Some(ThreadState::BlockedOnNotification {
                 notification: object(20),
                 receiver_cpu: cpu(1),
             })
         );
         assert_eq!(
-            state.scheduler().placement(thread(1)),
+            state.scheduler.placement(thread(1)),
             Some(crate::scheduler::ThreadPlacement::Current { cpu: cpu(0) })
         );
-        assert_eq!(state.scheduler().placement(thread(2)), None);
+        assert_eq!(state.scheduler.placement(thread(2)), None);
         assert_eq!(
-            state.objects().reply(reply_object).unwrap().state(),
+            state.objects.reply(reply_object).unwrap().state(),
             ReplyState::Empty
         );
     }
@@ -1857,17 +1824,17 @@ mod tests {
                 crate::cap::CapError::ObjectNotFound(reply_object),
             )))
         );
-        assert_eq!(state.threads().state(thread(2)), Some(ThreadState::Running));
+        assert_eq!(state.threads.state(thread(2)), Some(ThreadState::Running));
         assert_eq!(
             state
-                .objects()
+                .objects
                 .endpoint(endpoint_object)
                 .unwrap()
                 .queued_receivers(),
             0
         );
         assert_eq!(
-            state.scheduler().placement(thread(2)),
+            state.scheduler.placement(thread(2)),
             Some(crate::scheduler::ThreadPlacement::Current { cpu: cpu(1) })
         );
     }
@@ -1912,14 +1879,14 @@ mod tests {
         scheduler.schedule_next(cpu(0)).unwrap();
         scheduler.schedule_next(cpu(1)).unwrap();
         let mut state = KernelState::from_parts(cspace, objects, threads, scheduler);
-        state.objects_mut().insert_tcb(caller_tcb_object).unwrap();
-        state.objects_mut().insert_tcb(receiver_tcb_object).unwrap();
+        state.objects.insert_tcb(caller_tcb_object).unwrap();
+        state.objects.insert_tcb(receiver_tcb_object).unwrap();
         state
-            .objects_mut()
+            .objects
             .bind_tcb(caller_tcb_object, thread(1))
             .unwrap();
         state
-            .objects_mut()
+            .objects
             .bind_tcb(receiver_tcb_object, thread(2))
             .unwrap();
 
@@ -1963,7 +1930,7 @@ mod tests {
             }
         );
         assert_eq!(
-            state.cspace().lookup(reply_descriptor).unwrap().capability,
+            state.cspace.lookup(reply_descriptor).unwrap().capability,
             Capability::Reply(ReplyCap {
                 caller: caller_tcb_object,
                 target: endpoint_object,
@@ -1988,10 +1955,10 @@ mod tests {
                 },
             }))
         );
-        assert_eq!(state.threads().state(thread(1)), Some(ThreadState::Running));
-        assert!(!state.objects().reply(reply_object).unwrap().is_pending());
+        assert_eq!(state.threads.state(thread(1)), Some(ThreadState::Running));
+        assert!(!state.objects.reply(reply_object).unwrap().is_pending());
         assert_eq!(
-            state.cspace().lookup(reply_descriptor),
+            state.cspace.lookup(reply_descriptor),
             Err(crate::cap::CapError::SlotNotFound(reply_descriptor.slot))
         );
     }
@@ -2019,10 +1986,7 @@ mod tests {
         let scheduler = Scheduler::new(&[cpu(0), cpu(1)]).unwrap();
         let mut state = KernelState::from_parts(cspace, objects, threads, scheduler);
 
-        assert_eq!(
-            state.objects().get(reply_object),
-            Ok(KernelObjectRef::Reply)
-        );
+        assert_eq!(state.objects.get(reply_object), Ok(KernelObjectRef::Reply));
         assert_eq!(
             state.execute_invocation(
                 InvocationContext::new(thread(1), cpu(0)),
@@ -2038,11 +2002,11 @@ mod tests {
         );
 
         assert_eq!(
-            state.cspace().lookup(reply_descriptor),
+            state.cspace.lookup(reply_descriptor),
             Err(crate::cap::CapError::SlotNotFound(reply_descriptor.slot))
         );
         assert_eq!(
-            state.objects().get(reply_object),
+            state.objects.get(reply_object),
             Err(ObjectTableError::ObjectNotFound {
                 object: reply_object,
             })
@@ -2078,13 +2042,10 @@ mod tests {
             ),
             Ok(ExecutionOutcome::Thread(ThreadAction::NoThread))
         );
-        assert_eq!(state.objects().tcb_thread(tcb_object), Ok(thread(2)));
-        assert_eq!(
-            state.threads().state(thread(2)),
-            Some(ThreadState::Inactive)
-        );
-        assert_eq!(state.threads().affinity(thread(2)), Some(cpu(1)));
-        assert_eq!(state.scheduler().placement(thread(2)), None);
+        assert_eq!(state.objects.tcb_thread(tcb_object), Ok(thread(2)));
+        assert_eq!(state.threads.state(thread(2)), Some(ThreadState::Inactive));
+        assert_eq!(state.threads.affinity(thread(2)), Some(cpu(1)));
+        assert_eq!(state.scheduler.placement(thread(2)), None);
     }
 
     #[test]
@@ -2119,10 +2080,10 @@ mod tests {
             ))
         );
         assert_eq!(
-            state.objects().tcb_thread(tcb_object),
+            state.objects.tcb_thread(tcb_object),
             Err(ObjectTableError::TcbObjectUnbound { object: tcb_object })
         );
-        assert_eq!(state.threads().get(thread(2)), None);
+        assert_eq!(state.threads.get(thread(2)), None);
     }
 
     #[test]
@@ -2157,8 +2118,8 @@ mod tests {
                 ObjectTableError::ObjectIdAlreadyBound { object: tcb_object }
             ))
         );
-        assert_eq!(state.objects().tcb_thread(tcb_object), Ok(thread(2)));
-        assert_eq!(state.threads().get(thread(3)), None);
+        assert_eq!(state.objects.tcb_thread(tcb_object), Ok(thread(2)));
+        assert_eq!(state.threads.get(thread(3)), None);
     }
 
     #[test]
@@ -2192,10 +2153,10 @@ mod tests {
             Err(KernelExecutionError::ThreadAlreadyExists { thread: thread(2) })
         );
         assert_eq!(
-            state.objects().tcb_thread(tcb_object),
+            state.objects.tcb_thread(tcb_object),
             Err(ObjectTableError::TcbObjectUnbound { object: tcb_object })
         );
-        assert_eq!(state.threads().affinity(thread(2)), Some(cpu(1)));
+        assert_eq!(state.threads.affinity(thread(2)), Some(cpu(1)));
     }
 
     #[test]
@@ -2233,9 +2194,9 @@ mod tests {
                 },
             }))
         );
-        assert_eq!(state.threads().state(thread(2)), Some(ThreadState::Restart));
+        assert_eq!(state.threads.state(thread(2)), Some(ThreadState::Restart));
         assert_eq!(
-            state.scheduler().placement(thread(2)),
+            state.scheduler.placement(thread(2)),
             Some(crate::scheduler::ThreadPlacement::Ready { cpu: cpu(1) })
         );
     }
@@ -2269,11 +2230,8 @@ mod tests {
                 ObjectTableError::TcbObjectUnbound { object: tcb_object }
             ))
         );
-        assert_eq!(
-            state.threads().state(thread(2)),
-            Some(ThreadState::Inactive)
-        );
-        assert_eq!(state.scheduler().placement(thread(2)), None);
+        assert_eq!(state.threads.state(thread(2)), Some(ThreadState::Inactive));
+        assert_eq!(state.scheduler.placement(thread(2)), None);
     }
 
     #[test]
@@ -2305,7 +2263,7 @@ mod tests {
                 ThreadActionError::UnknownThread { thread: thread(2) }
             ))
         );
-        assert_eq!(state.scheduler().run_queue(cpu(0)).unwrap().ready_len(), 0);
-        assert_eq!(state.scheduler().run_queue(cpu(1)).unwrap().ready_len(), 0);
+        assert_eq!(state.scheduler.run_queue(cpu(0)).unwrap().ready_len(), 0);
+        assert_eq!(state.scheduler.run_queue(cpu(1)).unwrap().ready_len(), 0);
     }
 }
