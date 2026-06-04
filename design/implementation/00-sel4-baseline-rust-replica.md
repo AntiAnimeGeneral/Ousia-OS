@@ -33,6 +33,7 @@ Ousia 的平台目标包括浏览器权限、服务授权、lease、session、Pa
 
 不做形式化验证不等于放松正确性。近期实现必须用工程手段替代一部分证明资产：
 
+- 非平凡 Phase 1 kernel 语义实现采用 baseline-first：先读取对应本地 seL4/rust-sel4 reference 和 owning docs，抽取 decode/lookup/validation 顺序、authority root、状态 owner、副作用提交点和失败无副作用不变量，再决定 Rust API、owner 边界、错误边界和测试形状。无法映射 reference 时，把 baseline drift 作为剩余风险，而不是凭概括性记忆放行。
 - 能力不变量写进类型和构造函数，不依赖调用者自觉。
 - 删除、撤销、retype、IPC transfer 等状态变化必须有单元测试覆盖主路径和失败路径。
 - 对 capability derivation tree、slot generation、object generation、free list 和并发 revoke 建立专门测试。
