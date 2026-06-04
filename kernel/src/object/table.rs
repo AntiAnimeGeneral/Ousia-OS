@@ -1,7 +1,7 @@
 use alloc::vec::Vec;
 
 use crate::{
-    cap::{ObjectId, ObjectKind},
+    cap::{ObjectId, ObjectKind, SlotId},
     ipc::Endpoint,
     notification::Notification,
     reply::Reply,
@@ -21,11 +21,19 @@ pub enum KernelObjectKind {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum KernelObjectRef {
     Endpoint,
-    Frame { size_bits: u8 },
-    CNode { radix: u8, slots: usize },
+    Frame {
+        size_bits: u8,
+    },
+    CNode {
+        radix: u8,
+        slots: usize,
+        window_start: SlotId,
+    },
     Notification,
     Reply,
-    Tcb { thread: Option<ThreadId> },
+    Tcb {
+        thread: Option<ThreadId>,
+    },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -60,6 +68,7 @@ pub struct FrameObject {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct CNodeObject {
     radix: u8,
+    window_start: SlotId,
 }
 
 impl FrameObject {
@@ -73,8 +82,11 @@ impl FrameObject {
 }
 
 impl CNodeObject {
-    pub const fn new(radix: u8) -> Self {
-        Self { radix }
+    pub const fn new(radix: u8, window_start: SlotId) -> Self {
+        Self {
+            radix,
+            window_start,
+        }
     }
 
     pub const fn radix(self) -> u8 {
@@ -87,6 +99,10 @@ impl CNodeObject {
         }
 
         1usize << self.radix
+    }
+
+    pub const fn window_start(self) -> SlotId {
+        self.window_start
     }
 }
 
@@ -148,6 +164,7 @@ impl KernelObject {
             Self::CNode(cnode) => KernelObjectRef::CNode {
                 radix: cnode.radix(),
                 slots: cnode.slots(),
+                window_start: cnode.window_start(),
             },
             Self::Notification(_) => KernelObjectRef::Notification,
             Self::Reply(_) => KernelObjectRef::Reply,
@@ -553,13 +570,16 @@ mod tests {
         // Scope: CNode insertion and typed accessor mismatch reporting.
         // Semantics: CNode radix/slot metadata is visible, while Endpoint access reports wrong type.
         let mut table = ObjectTable::new();
-        table.insert_cnode(object(2), CNodeObject::new(4)).unwrap();
+        table
+            .insert_cnode(object(2), CNodeObject::new(4, SlotId::new(32)))
+            .unwrap();
 
         assert_eq!(
             table.get(object(2)),
             Ok(KernelObjectRef::CNode {
                 radix: 4,
                 slots: 16,
+                window_start: SlotId::new(32),
             })
         );
         assert_eq!(

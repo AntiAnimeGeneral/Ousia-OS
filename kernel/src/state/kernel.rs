@@ -3,7 +3,7 @@ use alloc::vec::Vec;
 use crate::{
     cap::{
         CNodePath, CapabilityDescriptor, CapabilitySpace, MintParams, ObjectId, ReplyCap,
-        RetypeDestination, RetypeTarget, Rights, SlotId,
+        RetypeDestination, RetypeTarget, RetypedObjectKind, Rights, SlotId,
     },
     invocation::{EndpointSendOp, Invocation, InvocationError, InvocationOutcome, invoke},
     ipc::{Endpoint, IpcPayload, IpcReceiveOptions, IpcSendOptions},
@@ -345,10 +345,17 @@ impl KernelState {
                         .expect("prevalidated frame object insertion must succeed");
                 }
             }
-            RetypeTarget::CNode { radix } => {
-                for object in &retype_result.objects {
+            RetypeTarget::CNode { .. } => {
+                for retyped in retype_result.retyped_objects() {
+                    let RetypedObjectKind::CNode {
+                        radix,
+                        window_start,
+                    } = retyped.kind
+                    else {
+                        unreachable!("CNode retype result must contain CNode object metadata")
+                    };
                     self.objects
-                        .insert_cnode(*object, CNodeObject::new(radix))
+                        .insert_cnode(retyped.object, CNodeObject::new(radix, window_start))
                         .expect("prevalidated CNode object insertion must succeed");
                 }
             }

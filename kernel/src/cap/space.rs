@@ -85,6 +85,7 @@ bitflags! {
 const MIN_FRAME_SIZE_BITS: u8 = 12;
 const MODEL_ENDPOINT_SIZE_BITS: u8 = 4;
 const MODEL_CNODE_SIZE_BITS: u8 = 6;
+const MAX_MODEL_CNODE_RADIX: u8 = 16;
 const MODEL_TCB_SIZE_BITS: u8 = 10;
 const MODEL_NOTIFICATION_SIZE_BITS: u8 = 5;
 const ENDPOINT_ALLOWED_RIGHTS: Rights = Rights::READ
@@ -268,6 +269,29 @@ impl RetypeDestination {
 pub struct RetypeResult {
     pub descriptors: Vec<CapabilityDescriptor>,
     pub objects: Vec<ObjectId>,
+    pub retyped_objects: Vec<RetypedObject>,
+}
+
+impl RetypeResult {
+    pub fn retyped_objects(&self) -> impl Iterator<Item = RetypedObject> + '_ {
+        self.retyped_objects.iter().copied()
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RetypedObject {
+    pub object: ObjectId,
+    pub kind: RetypedObjectKind,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RetypedObjectKind {
+    Endpoint,
+    Frame,
+    CNode { radix: u8, window_start: SlotId },
+    Untyped,
+    Tcb,
+    Notification,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -275,6 +299,7 @@ pub struct RetypeCommitPlan {
     source: CapabilityDescriptor,
     allocation: UntypedAllocationPlan,
     entries: Vec<RetypeCommitEntry>,
+    next_slot: u64,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -282,11 +307,19 @@ struct RetypeCommitEntry {
     slot: SlotId,
     object: ObjectId,
     capability: Capability,
+    kind: RetypedObjectKind,
 }
 
 impl RetypeCommitPlan {
     pub fn objects(&self) -> impl Iterator<Item = ObjectId> + '_ {
         self.entries.iter().map(|entry| entry.object)
+    }
+
+    pub fn retyped_objects(&self) -> impl Iterator<Item = RetypedObject> + '_ {
+        self.entries.iter().map(|entry| RetypedObject {
+            object: entry.object,
+            kind: entry.kind,
+        })
     }
 }
 
@@ -301,6 +334,16 @@ pub enum RetypeTarget {
 }
 
 impl RetypeTarget {
+    pub(crate) fn validate_retype_bounds(&self) -> Result<(), CapError> {
+        if let Self::CNode { radix } = self {
+            if *radix == 0 || *radix > MAX_MODEL_CNODE_RADIX {
+                return Err(CapError::InvalidCNodeDepth { depth: *radix });
+            }
+        }
+
+        Ok(())
+    }
+
     pub(crate) const fn minimum_size_bits(&self) -> u8 {
         match self {
             Self::Endpoint => MODEL_ENDPOINT_SIZE_BITS,
@@ -675,11 +718,18 @@ impl CapabilitySpace {
         destination: RetypeDestination,
     ) -> Result<RetypeCommitPlan, CapError> {
         let allocation = self.validate_retype_untyped_into(source, &target, destination)?;
+        let mut next_slot = self.next_slot_after_retype_destinations(destination);
         let entries = (0..destination.count)
-            .map(|offset| RetypeCommitEntry {
-                slot: SlotId(destination.start.raw() + offset as u64),
-                object: ObjectId(self.next_object + offset as u64),
-                capability: target.clone().into_capability(),
+            .map(|offset| {
+                let window_start =
+                    matches!(target, RetypeTarget::CNode { .. }).then_some(SlotId(next_slot));
+                let capability = self.planned_retype_capability(&target, &mut next_slot);
+                RetypeCommitEntry {
+                    slot: SlotId(destination.start.raw() + offset as u64),
+                    object: ObjectId(self.next_object + offset as u64),
+                    capability,
+                    kind: self.planned_retype_kind(&target, window_start),
+                }
             })
             .collect();
 
@@ -687,6 +737,7 @@ impl CapabilitySpace {
             source,
             allocation,
             entries,
+            next_slot,
         })
     }
 
@@ -1167,6 +1218,13 @@ impl CapabilitySpace {
         self.validate_descriptor(plan.source)?;
         for entry in &plan.entries {
             self.validate_empty_slot(entry.slot)?;
+            if let RetypedObjectKind::CNode {
+                radix,
+                window_start,
+            } = entry.kind
+            {
+                self.validate_empty_slot_window(window_start, cnode_slot_count(radix))?;
+            }
         }
 
         let parent_capability = self
@@ -1187,13 +1245,14 @@ impl CapabilitySpace {
 
         let mut descriptors = Vec::new();
         let mut objects = Vec::new();
+        let mut retyped_objects = Vec::new();
         self.untyped_allocations
             .get_mut(plan.allocation.parent_object)
             .expect("validated parent untyped allocation must remain in CSpace")
             .watermark = plan.allocation.next_watermark;
         for entry in plan.entries {
             let object_generation =
-                self.alloc_planned_object(entry.object, capability_kind(&entry.capability));
+                self.alloc_planned_object(entry.object, entry.kind.object_kind());
             if let Capability::Untyped(capability) = &entry.capability {
                 self.untyped_allocations.insert(
                     entry.object,
@@ -1238,12 +1297,56 @@ impl CapabilitySpace {
                 slot_generation,
             });
             objects.push(entry.object);
+            retyped_objects.push(RetypedObject {
+                object: entry.object,
+                kind: entry.kind,
+            });
+        }
+        if plan.next_slot > self.next_slot {
+            self.next_slot = plan.next_slot;
         }
 
         Ok(RetypeResult {
             descriptors,
             objects,
+            retyped_objects,
         })
+    }
+
+    fn planned_retype_capability(&self, target: &RetypeTarget, next_slot: &mut u64) -> Capability {
+        match target {
+            RetypeTarget::CNode { radix } => {
+                let window_start = SlotId(*next_slot);
+                *next_slot += cnode_slot_count(*radix) as u64;
+                Capability::CNode(CNodeCap::with_window(*radix, 0, 0, window_start))
+            }
+            target => target.clone().into_capability(),
+        }
+    }
+
+    fn planned_retype_kind(
+        &self,
+        target: &RetypeTarget,
+        window_start: Option<SlotId>,
+    ) -> RetypedObjectKind {
+        match target {
+            RetypeTarget::Endpoint => RetypedObjectKind::Endpoint,
+            RetypeTarget::Frame { .. } => RetypedObjectKind::Frame,
+            RetypeTarget::CNode { radix } => RetypedObjectKind::CNode {
+                radix: *radix,
+                window_start: window_start.expect("planned CNode retype must reserve a window"),
+            },
+            RetypeTarget::Untyped { .. } => RetypedObjectKind::Untyped,
+            RetypeTarget::Tcb { .. } => RetypedObjectKind::Tcb,
+            RetypeTarget::Notification => RetypedObjectKind::Notification,
+        }
+    }
+
+    fn validate_empty_slot_window(&self, start: SlotId, count: usize) -> Result<(), CapError> {
+        for offset in 0..count {
+            self.validate_empty_slot(SlotId(start.raw() + offset as u64))?;
+        }
+        Ok(())
     }
 
     fn validate_retype_untyped_capacity(
@@ -1252,6 +1355,8 @@ impl CapabilitySpace {
         target: &RetypeTarget,
         count: usize,
     ) -> Result<UntypedAllocationPlan, CapError> {
+        target.validate_retype_bounds()?;
+
         let (source_size, source_object) = {
             let (parent_slot, _) = self.validated_slot(source)?;
             let Capability::Untyped(parent_cap) = &parent_slot.capability else {
@@ -1454,6 +1559,11 @@ impl CapabilitySpace {
         }
     }
 
+    fn next_slot_after_retype_destinations(&self, destination: RetypeDestination) -> u64 {
+        let after_destination = destination.start.raw() + destination.count as u64;
+        self.next_slot.max(after_destination)
+    }
+
     fn slot_generation_for_insert(&self, slot: SlotId) -> u64 {
         self.slots
             .get(slot)
@@ -1605,6 +1715,19 @@ impl CapabilitySpace {
 
         if let Some(allocation) = self.untyped_allocations.get_mut(slot_ref.object) {
             allocation.watermark = 0;
+        }
+    }
+}
+
+impl RetypedObjectKind {
+    const fn object_kind(self) -> ObjectKind {
+        match self {
+            Self::Endpoint => ObjectKind::Endpoint,
+            Self::Frame => ObjectKind::Frame,
+            Self::CNode { .. } => ObjectKind::CNode,
+            Self::Untyped => ObjectKind::Untyped,
+            Self::Tcb => ObjectKind::Tcb,
+            Self::Notification => ObjectKind::Notification,
         }
     }
 }
@@ -2035,6 +2158,14 @@ fn slots_remaining_in_level(radix: u8, offset: u64) -> usize {
     }
 
     (1usize << radix).saturating_sub(offset as usize)
+}
+
+fn cnode_slot_count(radix: u8) -> usize {
+    if radix >= usize::BITS as u8 {
+        return usize::MAX;
+    }
+
+    1usize << radix
 }
 
 #[cfg(test)]
@@ -2552,7 +2683,10 @@ mod tests {
             .retype_untyped(root, RetypeTarget::Notification)
             .unwrap();
 
-        assert_eq!(cspace.lookup(cnode).unwrap().capability, cnode_cap());
+        assert_eq!(
+            cspace.lookup(cnode).unwrap().capability,
+            Capability::CNode(CNodeCap::with_window(4, 0, 0, SlotId(cnode.slot.raw() + 1)))
+        );
         assert_eq!(
             cspace.lookup(tcb_slot).unwrap().capability,
             tcb(Rights::MANAGE)
@@ -3018,9 +3152,9 @@ mod tests {
         );
 
         let mut cspace = CapabilitySpace::new();
-        let root = cspace.insert_initial_capability(untyped(6)).unwrap();
+        let root = cspace.insert_initial_capability(untyped(7)).unwrap();
         cspace
-            .retype_untyped(root, RetypeTarget::CNode { radix: 0 })
+            .retype_untyped(root, RetypeTarget::CNode { radix: 1 })
             .unwrap();
 
         assert_eq!(
@@ -3028,8 +3162,55 @@ mod tests {
             Err(CapError::UntypedCapacityExhausted {
                 parent: root.slot,
                 requested: 5,
-                source: 6,
+                source: 7,
             })
+        );
+    }
+
+    #[test]
+    fn invalid_cnode_radix_fails_before_retype_mutation() {
+        // Goal: invalid CNode radix is rejected at the retype boundary.
+        // Scope: cap-layer Untyped retype before CNode window planning.
+        // Semantics: no object, slot, or Untyped watermark state changes on failure.
+        let mut cspace = CapabilitySpace::new();
+        let root = cspace.insert_initial_capability(untyped(16)).unwrap();
+        let root_object = cspace.object_of(root).unwrap();
+        let next_object = cspace.next_object;
+        let next_slot = cspace.next_slot;
+        let watermark = cspace
+            .untyped_allocations
+            .get(root_object)
+            .unwrap()
+            .watermark;
+
+        assert_eq!(
+            cspace.retype_untyped(
+                root,
+                RetypeTarget::CNode {
+                    radix: MAX_MODEL_CNODE_RADIX + 1,
+                },
+            ),
+            Err(CapError::InvalidCNodeDepth {
+                depth: MAX_MODEL_CNODE_RADIX + 1,
+            })
+        );
+
+        assert_eq!(cspace.next_object, next_object);
+        assert_eq!(cspace.next_slot, next_slot);
+        assert_eq!(
+            cspace
+                .untyped_allocations
+                .get(root_object)
+                .unwrap()
+                .watermark,
+            watermark
+        );
+
+        let endpoint = cspace.retype_untyped(root, RetypeTarget::Endpoint).unwrap();
+        assert_eq!(endpoint.slot, SlotId(next_slot));
+        assert_eq!(
+            cspace.lookup(endpoint).unwrap().object,
+            ObjectId(next_object)
         );
     }
 

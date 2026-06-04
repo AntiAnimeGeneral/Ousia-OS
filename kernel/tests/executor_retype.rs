@@ -2,7 +2,7 @@ mod support;
 
 use kernel::{
     cap::SlotId,
-    cap::{CNodeCap, CNodePath, CapError, CapabilityDescriptor, RetypeDestination},
+    cap::{CNodeCap, CNodePath, CapError, CapabilityDescriptor, MintParams, RetypeDestination},
     cap::{Capability, EndpointCap, FrameCap, RetypeTarget, Rights, TcbCap},
     invocation::InvocationError,
     invocation::{Invocation, RetypeDestinationPath},
@@ -22,6 +22,14 @@ fn retyped_descriptor(outcome: ExecutionOutcome, context: &str) -> CapabilityDes
         panic!("{context}: expected one retyped descriptor");
     };
     *descriptor
+}
+
+fn capability_descriptor(outcome: ExecutionOutcome, context: &str) -> CapabilityDescriptor {
+    let ExecutionOutcome::Capability { descriptor } = outcome else {
+        panic!("{context}: expected capability outcome");
+    };
+
+    descriptor
 }
 
 fn planned_objects(
@@ -621,6 +629,78 @@ fn untyped_retype_cnode_creates_object_and_capability() {
         Ok(KernelObjectRef::CNode {
             radix: 4,
             slots: 16,
+            window_start: kernel::cap::SlotId::new(descriptor.slot.raw() + 1),
+        })
+    );
+}
+
+#[test]
+fn untyped_retype_cnode_creates_usable_slot_window() {
+    // Goal: CNode retype creates a CNode cap and runtime object that agree on the owned slot window.
+    // Scope: host integration across CSpace retype, ObjectTable metadata, and CNode path copy.
+    // Semantics: the retyped CNode resolves path operations into its own reserved CTE window.
+    let (mut state, untyped) = state_with_untyped(13);
+
+    let cnode = retyped_descriptor(
+        state
+            .execute_invocation(
+                InvocationContext::new(thread(1), cpu(0)),
+                untyped,
+                Invocation::UntypedRetype {
+                    target: RetypeTarget::CNode { radix: 2 },
+                },
+            )
+            .unwrap(),
+        "CNode retype",
+    );
+    let cnode_view = state.cspace().lookup(cnode).unwrap();
+    let Capability::CNode(cnode_cap) = cnode_view.capability else {
+        panic!("retype must install a CNode cap");
+    };
+    assert_eq!(
+        state.objects().get(cnode_view.object),
+        Ok(KernelObjectRef::CNode {
+            radix: 2,
+            slots: 4,
+            window_start: cnode_cap.window_start,
+        })
+    );
+
+    let source = state
+        .cspace_mut()
+        .insert_initial_capability(Capability::Endpoint(EndpointCap {
+            badge: 0,
+            rights: Rights::READ | Rights::WRITE,
+        }))
+        .unwrap();
+    let copied = capability_descriptor(
+        state
+            .execute_invocation(
+                InvocationContext::new(thread(1), cpu(0)),
+                cnode,
+                Invocation::CNodeMintPath {
+                    source,
+                    destination: kernel::invocation::CNodePathTarget {
+                        capptr: 0b10,
+                        depth: 2,
+                    },
+                    requested_rights: Rights::READ,
+                    params: MintParams::badge(0x55),
+                },
+            )
+            .unwrap(),
+        "CNode mint path into retyped window",
+    );
+
+    assert_eq!(
+        copied.slot,
+        SlotId::new(cnode_cap.window_start.raw() + 0b10)
+    );
+    assert_eq!(
+        state.cspace().lookup(copied).unwrap().capability,
+        Capability::Endpoint(EndpointCap {
+            badge: 0x55,
+            rights: Rights::READ,
         })
     );
 }
@@ -643,7 +723,10 @@ fn untyped_retype_object_table_conflicts_do_not_commit_cspace() {
             install_conflict: |state, object| {
                 state
                     .objects_mut()
-                    .insert_cnode(object, kernel::object::CNodeObject::new(4))
+                    .insert_cnode(
+                        object,
+                        kernel::object::CNodeObject::new(4, kernel::cap::SlotId::new(99)),
+                    )
                     .unwrap();
             },
         },
