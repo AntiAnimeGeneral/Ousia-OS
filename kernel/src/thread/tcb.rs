@@ -1,4 +1,7 @@
-use crate::{cap::ObjectId, ipc::message::IpcPayload};
+use crate::{
+    cap::{ObjectId, ReplyCapabilitySlot},
+    ipc::message::IpcPayload,
+};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub struct CpuId(u32);
@@ -34,7 +37,7 @@ pub enum ThreadState {
     BlockedOnReceive {
         endpoint: ObjectId,
         can_grant: bool,
-        reply: Option<ObjectId>,
+        reply: Option<ReplyCapabilitySlot>,
     },
     BlockedOnSend {
         endpoint: ObjectId,

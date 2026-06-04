@@ -255,6 +255,29 @@ pub struct ResolvedCapabilitySlot {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ReplyCapabilitySlot {
+    object: ObjectId,
+    destination: ResolvedCte,
+}
+
+impl ReplyCapabilitySlot {
+    pub const fn new(object: ObjectId, destination: ResolvedCte) -> Self {
+        Self {
+            object,
+            destination,
+        }
+    }
+
+    pub const fn object(self) -> ObjectId {
+        self.object
+    }
+
+    pub const fn destination(self) -> ResolvedCte {
+        self.destination
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct CteRef {
     pub handle: SlotId,
     pub storage: CteStorageRef,
@@ -891,17 +914,7 @@ impl CapabilitySpace {
         Ok(())
     }
 
-    pub fn insert_reply_capability(
-        &mut self,
-        reply_object: ObjectId,
-        capability: ReplyCap,
-    ) -> Result<CapabilityDescriptor, CapError> {
-        self.validate_reply_capability(reply_object, &capability)?;
-        let destination = self.alloc_empty_cte();
-        self.insert_reply_capability_resolved(reply_object, capability, destination)
-    }
-
-    pub fn insert_reply_capability_resolved(
+    fn insert_reply_capability_resolved(
         &mut self,
         reply_object: ObjectId,
         capability: ReplyCap,
@@ -937,6 +950,61 @@ impl CapabilitySpace {
             slot: destination.slot,
             slot_generation,
         })
+    }
+
+    pub fn reply_capability_slot(
+        &self,
+        descriptor: CapabilityDescriptor,
+    ) -> Result<ReplyCapabilitySlot, CapError> {
+        self.validate_consumable_reply_cap(descriptor)?;
+        let resolved = self.resolve_descriptor_ref(descriptor)?;
+        let object = self
+            .slot_by_ref(resolved.cte)
+            .expect("validated reply cap slot must remain in CSpace")
+            .object;
+        Ok(ReplyCapabilitySlot {
+            object,
+            destination: ResolvedCte {
+                slot: resolved.descriptor.slot,
+                cte: resolved.cte,
+            },
+        })
+    }
+
+    pub fn validate_reply_capability_slot(
+        &self,
+        slot: ReplyCapabilitySlot,
+    ) -> Result<(), CapError> {
+        self.validate_reply_object(slot.object)?;
+        self.validate_resolved_cte_ref(slot.destination)?;
+        let current = self
+            .slot_by_ref(slot.destination.cte)
+            .filter(|slot_ref| slot_ref.alive)
+            .ok_or(CapError::SlotNotFound(slot.destination.slot))?;
+        if current.object != slot.object || !matches!(current.capability, Capability::Reply(_)) {
+            return Err(CapError::WrongCapability {
+                expected: ObjectKind::Reply,
+                actual: capability_kind(&current.capability),
+            });
+        }
+        Ok(())
+    }
+
+    pub fn replace_reply_capability(
+        &mut self,
+        slot: ReplyCapabilitySlot,
+        capability: ReplyCap,
+    ) -> Result<CapabilityDescriptor, CapError> {
+        self.validate_reply_capability(slot.object, &capability)?;
+        self.validate_reply_capability_slot(slot)?;
+        self.delete_cte(ResolvedCapabilitySlot {
+            descriptor: CapabilityDescriptor {
+                slot: slot.destination.slot,
+                slot_generation: 0,
+            },
+            cte: slot.destination.cte,
+        });
+        self.insert_reply_capability_resolved(slot.object, capability, slot.destination)
     }
 
     pub fn move_capability(
@@ -4703,10 +4771,10 @@ mod tests {
     }
 
     #[test]
-    fn reply_capability_can_target_existing_reply_object() {
-        // Goal: reply capability installation can reuse an existing Reply runtime object.
-        // Scope: insert_reply_capability over a Reply object after seed cap consumption.
-        // Semantics: installed cap targets the supplied Reply object and carries new caller metadata.
+    fn reply_capability_replaces_existing_reply_slot() {
+        // Goal: reply capability installation reuses an explicit Reply CTE destination.
+        // Scope: replace_reply_capability over a live Reply cap slot.
+        // Semantics: installed cap targets the same Reply object and carries new caller metadata.
         let mut cspace = CapabilitySpace::new();
         let initial = cspace
             .insert_reply_capability_for_test(ReplyCap {
@@ -4716,11 +4784,11 @@ mod tests {
             })
             .unwrap();
         let reply_object = cspace.object_of(initial).unwrap();
-        cspace.consume_reply_cap(initial).unwrap();
+        let reply_slot = cspace.reply_capability_slot(initial).unwrap();
 
         let installed = cspace
-            .insert_reply_capability(
-                reply_object,
+            .replace_reply_capability(
+                reply_slot,
                 ReplyCap {
                     caller: ObjectId::new(101),
                     target: ObjectId::new(201),
@@ -4730,6 +4798,7 @@ mod tests {
             .unwrap();
 
         let view = cspace.lookup(installed).unwrap();
+        assert_eq!(installed.slot, initial.slot);
         assert_eq!(view.object, reply_object);
         assert_eq!(view.object_kind, ObjectKind::Reply);
         assert_eq!(
@@ -4739,9 +4808,46 @@ mod tests {
     }
 
     #[test]
-    fn reply_capability_install_rejects_non_reply_object_without_slot() {
-        // Goal: reply cap installation validates target object kind before allocating a slot.
-        // Scope: insert_reply_capability failure against a non-Reply object.
+    fn reply_capability_replace_does_not_leave_destination_free() {
+        // Goal: explicit Reply cap replacement must not leak its destination into auto allocation.
+        // Scope: replace_reply_capability followed by implicit slot allocation.
+        // Semantics: the reply slot remains occupied and the next auto allocation chooses another CTE.
+        let mut cspace = CapabilitySpace::new();
+        let initial = cspace
+            .insert_reply_capability_for_test(ReplyCap {
+                caller: ObjectId::new(100),
+                target: ObjectId::new(200),
+                can_grant: true,
+            })
+            .unwrap();
+        let reply_slot = cspace.reply_capability_slot(initial).unwrap();
+
+        let replaced = cspace
+            .replace_reply_capability(
+                reply_slot,
+                ReplyCap {
+                    caller: ObjectId::new(101),
+                    target: ObjectId::new(201),
+                    can_grant: false,
+                },
+            )
+            .unwrap();
+        let endpoint = cspace
+            .insert_initial_capability(endpoint(Rights::READ))
+            .unwrap();
+
+        assert_eq!(replaced.slot, initial.slot);
+        assert_ne!(endpoint.slot, replaced.slot);
+        assert_eq!(
+            cspace.lookup(replaced).unwrap().capability,
+            reply(ObjectId::new(101), ObjectId::new(201), false)
+        );
+    }
+
+    #[test]
+    fn reply_capability_replace_rejects_non_reply_slot_without_mutation() {
+        // Goal: reply cap installation validates destination slot kind before replacement.
+        // Scope: replace_reply_capability failure against a non-Reply slot.
         // Semantics: wrong-kind target leaves existing endpoint cap and slot state unchanged.
         let mut cspace = CapabilitySpace::new();
         let endpoint = cspace
@@ -4750,8 +4856,14 @@ mod tests {
         let endpoint_object = cspace.object_of(endpoint).unwrap();
 
         assert_eq!(
-            cspace.insert_reply_capability(
-                endpoint_object,
+            cspace.replace_reply_capability(
+                ReplyCapabilitySlot::new(
+                    endpoint_object,
+                    ResolvedCte {
+                        slot: endpoint.slot,
+                        cte: CteRef::root(endpoint.slot),
+                    },
+                ),
                 ReplyCap {
                     caller: ObjectId::new(100),
                     target: ObjectId::new(200),
@@ -4767,9 +4879,9 @@ mod tests {
     }
 
     #[test]
-    fn reply_capability_resolved_install_requires_coherent_destination() {
-        // Goal: reply cap installation uses the same resolved CTE invariant as other commits.
-        // Scope: explicit resolved Reply cap install boundary.
+    fn reply_capability_replace_requires_coherent_destination() {
+        // Goal: reply cap replacement uses the same resolved CTE invariant as other commits.
+        // Scope: explicit ReplyCapabilitySlot replacement boundary.
         // Semantics: mismatched destination fails before writing the referenced CTE.
         let mut cspace = CapabilitySpace::new();
         let initial = cspace
@@ -4783,16 +4895,18 @@ mod tests {
         cspace.consume_reply_cap(initial).unwrap();
 
         assert_eq!(
-            cspace.insert_reply_capability_resolved(
-                reply_object,
+            cspace.replace_reply_capability(
+                ReplyCapabilitySlot::new(
+                    reply_object,
+                    ResolvedCte {
+                        slot: SlotId(70),
+                        cte: CteRef::root(SlotId(71)),
+                    },
+                ),
                 ReplyCap {
                     caller: ObjectId::new(101),
                     target: ObjectId::new(201),
                     can_grant: false,
-                },
-                ResolvedCte {
-                    slot: SlotId(70),
-                    cte: CteRef::root(SlotId(71)),
                 },
             ),
             Err(CapError::InvalidCteReference { slot: SlotId(70) })

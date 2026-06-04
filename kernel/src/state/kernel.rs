@@ -3,8 +3,8 @@ use alloc::vec::Vec;
 use crate::{
     cap::{
         CNodePath, CapabilityDescriptor, CapabilitySpace, MintParams, ObjectId, ReplyCap,
-        ResolvedCapabilitySlot, ResolvedCte, RetypeDestination, RetypeTarget, RetypedObjectKind,
-        Rights,
+        ReplyCapabilitySlot, ResolvedCapabilitySlot, ResolvedCte, RetypeDestination, RetypeTarget,
+        RetypedObjectKind, Rights,
     },
     invocation::{EndpointSendOp, Invocation, InvocationError, InvocationOutcome, invoke},
     ipc::{Endpoint, IpcPayload, IpcReceiveOptions, IpcSendOptions},
@@ -29,7 +29,7 @@ pub struct InvocationContext {
     current: ThreadId,
     cpu: CpuId,
     payload: IpcPayload,
-    reply: Option<ObjectId>,
+    reply: Option<ReplyCapabilitySlot>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -96,7 +96,7 @@ impl InvocationContext {
         self.payload
     }
 
-    pub const fn reply(self) -> Option<ObjectId> {
+    pub const fn reply(self) -> Option<ReplyCapabilitySlot> {
         self.reply
     }
 
@@ -105,7 +105,7 @@ impl InvocationContext {
         self
     }
 
-    pub const fn with_reply(mut self, reply: ObjectId) -> Self {
+    pub const fn with_reply(mut self, reply: ReplyCapabilitySlot) -> Self {
         self.reply = Some(reply);
         self
     }
@@ -554,7 +554,7 @@ impl KernelState {
         let waiting_receiver = self.objects.endpoint(endpoint)?.next_receiver();
         let call_creates_reply =
             options.is_call() && (options.can_grant || options.can_grant_reply);
-        let reply = if call_creates_reply {
+        let reply_slot = if call_creates_reply {
             match waiting_receiver {
                 Some(receiver) => self.reply_from_receiver_state(endpoint, receiver.thread())?,
                 None => None,
@@ -562,6 +562,7 @@ impl KernelState {
         } else {
             None
         };
+        let reply = reply_slot.map(ReplyCapabilitySlot::object);
         let caller_object = if reply.is_some() {
             Some(self.objects.tcb_object_for_thread(context.current())?)
         } else {
@@ -632,11 +633,11 @@ impl KernelState {
             }
         };
 
-        match (reply, reply_cap) {
-            (Some(reply), Some(reply_cap)) => {
+        match (reply_slot, reply_cap) {
+            (Some(reply_slot), Some(reply_cap)) => {
                 let descriptor = self
                     .cspace
-                    .insert_reply_capability(reply, reply_cap)
+                    .replace_reply_capability(reply_slot, reply_cap)
                     .expect("prevalidated reply cap installation must succeed");
                 Ok(ExecutionOutcome::ThreadWithReplyCap {
                     thread: action,
@@ -673,8 +674,9 @@ impl KernelState {
                 } if blocked_endpoint == endpoint && (can_grant || can_grant_reply)
             )
         });
-        let reply =
+        let reply_slot =
             self.reply_for_endpoint(endpoint, context.reply(), queued_call_creates_reply)?;
+        let reply = reply_slot.map(ReplyCapabilitySlot::object);
         let caller_object = if queued_call_creates_reply {
             let sender = queued_sender.expect("queued call precheck requires a queued sender");
             Some(self.objects.tcb_object_for_thread(sender.thread())?)
@@ -705,7 +707,7 @@ impl KernelState {
                             .with_receiver_reply(
                                 context
                                     .reply()
-                                    .expect("reply path must provide receiver reply object"),
+                                    .expect("reply path must provide receiver reply slot"),
                             );
                     if let Some(caller_object) = caller_object {
                         request = request.with_caller(caller_object);
@@ -738,11 +740,11 @@ impl KernelState {
             }
         };
 
-        match (reply, reply_cap) {
-            (Some(reply), Some(reply_cap)) => {
+        match (reply_slot, reply_cap) {
+            (Some(reply_slot), Some(reply_cap)) => {
                 let descriptor = self
                     .cspace
-                    .insert_reply_capability(reply, reply_cap)
+                    .replace_reply_capability(reply_slot, reply_cap)
                     .expect("prevalidated reply cap installation must succeed");
                 Ok(ExecutionOutcome::ThreadWithReplyCap {
                     thread: action,
@@ -888,17 +890,21 @@ impl KernelState {
     fn reply_for_endpoint(
         &self,
         endpoint: ObjectId,
-        reply: Option<ObjectId>,
+        reply: Option<ReplyCapabilitySlot>,
         required: bool,
-    ) -> Result<Option<ObjectId>, KernelExecutionError> {
+    ) -> Result<Option<ReplyCapabilitySlot>, KernelExecutionError> {
         match (reply, required) {
-            (Some(reply), _) if reply == endpoint => {
-                Err(KernelExecutionError::ReplyObjectMustBeDistinct { endpoint, reply })
+            (Some(reply), _) if reply.object() == endpoint => {
+                Err(KernelExecutionError::ReplyObjectMustBeDistinct {
+                    endpoint,
+                    reply: reply.object(),
+                })
             }
             (Some(reply), _) => {
-                self.objects.expect_kind(reply, KernelObjectKind::Reply)?;
+                self.objects
+                    .expect_kind(reply.object(), KernelObjectKind::Reply)?;
                 self.cspace
-                    .validate_reply_object(reply)
+                    .validate_reply_capability_slot(reply)
                     .map_err(InvocationError::Cap)?;
                 Ok(Some(reply))
             }
@@ -911,7 +917,7 @@ impl KernelState {
         &self,
         endpoint: ObjectId,
         receiver: ThreadId,
-    ) -> Result<Option<ObjectId>, KernelExecutionError> {
+    ) -> Result<Option<ReplyCapabilitySlot>, KernelExecutionError> {
         match self.threads.state(receiver) {
             Some(ThreadState::BlockedOnReceive {
                 endpoint: blocked_endpoint,
@@ -951,7 +957,9 @@ impl From<SchedulerError> for KernelExecutionError {
 mod tests {
     use super::*;
     use crate::{
-        cap::{Capability, EndpointCap, NotificationCap, ReplyCap, Rights},
+        cap::{
+            Capability, CteRef, EndpointCap, NotificationCap, ReplyCap, ResolvedCte, Rights, SlotId,
+        },
         invocation::{CNodePathTarget, EndpointSendOp},
         ipc::Endpoint,
         notification::{Notification, NotificationState},
@@ -1485,7 +1493,7 @@ mod tests {
             })
             .unwrap();
         let reply_object = cspace.object_of(reply_descriptor).unwrap();
-        cspace.consume_reply_cap(reply_descriptor).unwrap();
+        let reply_slot = cspace.reply_capability_slot(reply_descriptor).unwrap();
         let caller_tcb_object = object(900);
         let receiver_tcb_object = object(901);
         let mut objects = ObjectTable::new();
@@ -1516,7 +1524,7 @@ mod tests {
             .unwrap();
         state
             .execute_invocation(
-                InvocationContext::new(thread(2), cpu(1)).with_reply(reply_object),
+                InvocationContext::new(thread(2), cpu(1)).with_reply(reply_slot),
                 endpoint_descriptor,
                 Invocation::EndpointRecv { blocking: true },
             )
@@ -1601,7 +1609,7 @@ mod tests {
             })
             .unwrap();
         let reply_object = cspace.object_of(reply_seed).unwrap();
-        cspace.consume_reply_cap(reply_seed).unwrap();
+        let reply_slot = cspace.reply_capability_slot(reply_seed).unwrap();
         let caller_tcb_object = object(900);
         let receiver_tcb_object = object(901);
         let mut objects = ObjectTable::new();
@@ -1632,7 +1640,7 @@ mod tests {
             .unwrap();
         state
             .execute_invocation(
-                InvocationContext::new(thread(2), cpu(1)).with_reply(reply_object),
+                InvocationContext::new(thread(2), cpu(1)).with_reply(reply_slot),
                 receiver_descriptor,
                 Invocation::EndpointRecv { blocking: true },
             )
@@ -1699,7 +1707,7 @@ mod tests {
             })
             .unwrap();
         let reply_object = cspace.object_of(reply_seed).unwrap();
-        cspace.consume_reply_cap(reply_seed).unwrap();
+        let reply_slot = cspace.reply_capability_slot(reply_seed).unwrap();
         let mut objects = ObjectTable::new();
         objects
             .insert_endpoint(endpoint_object, Endpoint::new())
@@ -1718,7 +1726,7 @@ mod tests {
         let mut state = KernelState::from_parts(cspace, objects, threads, scheduler);
         state
             .execute_invocation(
-                InvocationContext::new(thread(2), cpu(1)).with_reply(reply_object),
+                InvocationContext::new(thread(2), cpu(1)).with_reply(reply_slot),
                 endpoint_descriptor,
                 Invocation::EndpointRecv { blocking: true },
             )
@@ -1797,6 +1805,13 @@ mod tests {
             .unwrap();
         let endpoint_object = cspace.object_of(endpoint_descriptor).unwrap();
         let reply_object = object(300);
+        let reply_slot = ReplyCapabilitySlot::new(
+            reply_object,
+            ResolvedCte {
+                slot: SlotId::new(300),
+                cte: CteRef::root(SlotId::new(300)),
+            },
+        );
         let mut objects = ObjectTable::new();
         objects
             .insert_endpoint(endpoint_object, Endpoint::new())
@@ -1812,7 +1827,7 @@ mod tests {
 
         assert_eq!(
             state.execute_invocation(
-                InvocationContext::new(thread(2), cpu(1)).with_reply(reply_object),
+                InvocationContext::new(thread(2), cpu(1)).with_reply(reply_slot),
                 endpoint_descriptor,
                 Invocation::EndpointRecv { blocking: true },
             ),
@@ -1856,7 +1871,7 @@ mod tests {
             })
             .unwrap();
         let reply_object = cspace.object_of(reply_seed).unwrap();
-        cspace.consume_reply_cap(reply_seed).unwrap();
+        let reply_slot = cspace.reply_capability_slot(reply_seed).unwrap();
         let caller_tcb_object = object(900);
         let receiver_tcb_object = object(901);
         let mut objects = ObjectTable::new();
@@ -1903,7 +1918,7 @@ mod tests {
 
         let outcome = state
             .execute_invocation(
-                InvocationContext::new(thread(2), cpu(1)).with_reply(reply_object),
+                InvocationContext::new(thread(2), cpu(1)).with_reply(reply_slot),
                 endpoint_descriptor,
                 Invocation::EndpointRecv { blocking: true },
             )

@@ -1,7 +1,7 @@
 use alloc::vec::Vec;
 
 use crate::{
-    cap::ObjectId,
+    cap::{ObjectId, ReplyCapabilitySlot},
     ipc::{
         Endpoint, IpcAction, IpcMessage, IpcPayload, IpcReceiveOptions, IpcSendOptions,
         QueuedReceiver, QueuedSender, ReplyRequest, ReplySetup,
@@ -114,7 +114,7 @@ struct BlockedReceiverContext {
     thread: ThreadId,
     cpu: CpuId,
     can_grant: bool,
-    reply: Option<ObjectId>,
+    reply: Option<ReplyCapabilitySlot>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -138,7 +138,7 @@ pub struct SendIpcRequest {
 pub struct ReceiveIpcRequest {
     endpoint: ObjectId,
     caller: Option<ObjectId>,
-    receiver_reply: Option<ObjectId>,
+    receiver_reply: Option<ReplyCapabilitySlot>,
     receiver: ThreadId,
     receiver_cpu: CpuId,
     options: IpcReceiveOptions,
@@ -246,7 +246,7 @@ impl ReceiveIpcRequest {
         self
     }
 
-    pub const fn with_receiver_reply(mut self, reply: ObjectId) -> Self {
+    pub const fn with_receiver_reply(mut self, reply: ReplyCapabilitySlot) -> Self {
         self.receiver_reply = Some(reply);
         self
     }
@@ -430,7 +430,7 @@ fn apply_ipc_action(
     threads: &mut ThreadTable,
     scheduler: &mut Scheduler,
     endpoint: ObjectId,
-    receiver_reply: Option<ObjectId>,
+    receiver_reply: Option<ReplyCapabilitySlot>,
     action: IpcAction,
 ) -> Result<ThreadAction, ThreadActionError> {
     match action {
@@ -1215,6 +1215,7 @@ impl From<SchedulerError> for ThreadActionError {
 mod tests {
     use super::*;
     use crate::{
+        cap::{CteRef, ResolvedCte, SlotId},
         ipc::{IpcPayload, IpcReceiveOptions, IpcSendOptions},
         notification::Notification,
         reply::{Reply, ReplyCaller},
@@ -1230,6 +1231,17 @@ mod tests {
 
     fn object(raw: u64) -> ObjectId {
         ObjectId::new(raw)
+    }
+
+    fn reply_slot(raw: u64) -> ReplyCapabilitySlot {
+        let slot = SlotId::new(raw);
+        ReplyCapabilitySlot::new(
+            object(raw),
+            ResolvedCte {
+                slot,
+                cte: CteRef::root(slot),
+            },
+        )
     }
 
     fn runnable_tcb(raw: u64, affinity: CpuId) -> Tcb {
@@ -1897,7 +1909,7 @@ mod tests {
                     IpcReceiveOptions::new(true, true),
                 )
                 .with_caller(object(100))
-                .with_receiver_reply(object(200)),
+                .with_receiver_reply(reply_slot(200)),
             ),
             Ok(ThreadAction::ReplyRecorded {
                 setup: ReplySetup {
@@ -2095,7 +2107,7 @@ mod tests {
                     IpcReceiveOptions::new(true, true),
                 )
                 .with_caller(object(100))
-                .with_receiver_reply(object(200)),
+                .with_receiver_reply(reply_slot(200)),
             ),
             Err(ThreadActionError::ReplyAlreadyPending)
         );
@@ -2157,7 +2169,7 @@ mod tests {
                     cpu(1),
                     IpcReceiveOptions::new(true, true),
                 )
-                .with_receiver_reply(object(200)),
+                .with_receiver_reply(reply_slot(200)),
             ),
             Err(ThreadActionError::Scheduler(SchedulerError::UnknownCpu {
                 cpu: cpu(3),
