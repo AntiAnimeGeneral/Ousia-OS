@@ -271,6 +271,26 @@ pub struct RetypeResult {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RetypeCommitPlan {
+    source: CapabilityDescriptor,
+    allocation: UntypedAllocationPlan,
+    entries: Vec<RetypeCommitEntry>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct RetypeCommitEntry {
+    slot: SlotId,
+    object: ObjectId,
+    capability: Capability,
+}
+
+impl RetypeCommitPlan {
+    pub fn objects(&self) -> impl Iterator<Item = ObjectId> + '_ {
+        self.entries.iter().map(|entry| entry.object)
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum RetypeTarget {
     Endpoint,
     Frame { rights: Rights },
@@ -620,8 +640,8 @@ impl CapabilitySpace {
         source: CapabilityDescriptor,
         target: RetypeTarget,
     ) -> Result<CapabilityDescriptor, CapError> {
-        let destination = RetypeDestination::single(self.alloc_slot_id());
-        let result = self.retype_untyped_into(source, target, destination)?;
+        let plan = self.plan_retype_untyped(source, target)?;
+        let result = self.commit_retype_plan(plan)?;
         Ok(result
             .descriptors
             .into_iter()
@@ -635,42 +655,39 @@ impl CapabilitySpace {
         target: RetypeTarget,
         destination: RetypeDestination,
     ) -> Result<RetypeResult, CapError> {
-        let allocation = self.validate_retype_untyped_into(source, &target, destination)?;
-        let mut descriptors = Vec::new();
-        let mut objects = Vec::new();
-        for offset in 0..destination.count {
-            let capability = target.clone().into_capability();
-            let slot = SlotId(destination.start.raw() + offset as u64);
-            let descriptor =
-                self.insert_retyped_capability(source.slot, slot, capability, allocation)?;
-            objects.push(self.lookup(descriptor)?.object);
-            descriptors.push(descriptor);
-        }
-        Ok(RetypeResult {
-            descriptors,
-            objects,
-        })
+        let plan = self.plan_retype_untyped_into(source, target, destination)?;
+        self.commit_retype_plan(plan)
     }
 
-    pub fn preview_retype_untyped(
+    pub fn plan_retype_untyped(
         &self,
         source: CapabilityDescriptor,
-        target: &RetypeTarget,
-    ) -> Result<ObjectId, CapError> {
-        self.validate_retype_untyped(source, target)?;
-        Ok(ObjectId(self.next_object))
+        target: RetypeTarget,
+    ) -> Result<RetypeCommitPlan, CapError> {
+        let destination = RetypeDestination::single(self.next_auto_slot_id());
+        self.plan_retype_untyped_into(source, target, destination)
     }
 
-    pub fn preview_retype_untyped_into(
+    pub fn plan_retype_untyped_into(
         &self,
         source: CapabilityDescriptor,
-        target: &RetypeTarget,
+        target: RetypeTarget,
         destination: RetypeDestination,
-    ) -> Result<Vec<ObjectId>, CapError> {
-        self.validate_retype_untyped_into(source, target, destination)?;
-        Ok((0..destination.count)
-            .map(|offset| ObjectId(self.next_object + offset as u64))
-            .collect())
+    ) -> Result<RetypeCommitPlan, CapError> {
+        let allocation = self.validate_retype_untyped_into(source, &target, destination)?;
+        let entries = (0..destination.count)
+            .map(|offset| RetypeCommitEntry {
+                slot: SlotId(destination.start.raw() + offset as u64),
+                object: ObjectId(self.next_object + offset as u64),
+                capability: target.clone().into_capability(),
+            })
+            .collect();
+
+        Ok(RetypeCommitPlan {
+            source,
+            allocation,
+            entries,
+        })
     }
 
     pub fn validate_reply_capability(
@@ -1111,76 +1128,6 @@ impl CapabilitySpace {
         })
     }
 
-    fn insert_retyped_capability(
-        &mut self,
-        parent: SlotId,
-        slot: SlotId,
-        capability: Capability,
-        allocation: UntypedAllocationPlan,
-    ) -> Result<CapabilityDescriptor, CapError> {
-        self.reserve_empty_slot_for_insert(slot)?;
-        let kind = capability_kind(&capability);
-        let child_untyped_size = match &capability {
-            Capability::Untyped(capability) => Some(capability.size_bits),
-            _ => None,
-        };
-        let (object, object_generation) = self.alloc_object(kind);
-        self.untyped_allocations
-            .get_mut(allocation.parent_object)
-            .expect("validated parent untyped allocation must remain in CSpace")
-            .watermark = allocation.next_watermark;
-        if let Some(size_bits) = child_untyped_size {
-            self.untyped_allocations.insert(
-                object,
-                UntypedAllocation {
-                    size_bits,
-                    watermark: 0,
-                },
-            );
-        }
-        let slot_generation = self.slot_generation_for_insert(slot);
-        self.detach_reused_slot(slot);
-        let parent_capability = self
-            .slots
-            .get(parent)
-            .expect("validated parent slot must remain in CSpace during retype")
-            .capability
-            .clone();
-        let mdb = self.cte_insert_mdb(parent, slot, &capability, &parent_capability);
-        self.slots.insert(
-            slot,
-            CapabilitySlot {
-                object,
-                rights: capability_rights(&capability),
-                capability,
-                slot_generation,
-                object_generation_snapshot: object_generation,
-                parent: Some(parent),
-                children: ChildSlots::new(),
-                mdb,
-                alive: true,
-            },
-        );
-        self.slots
-            .get_mut(parent)
-            .expect("validated parent slot must remain in CSpace during retype")
-            .children
-            .insert(slot);
-
-        Ok(CapabilityDescriptor {
-            slot,
-            slot_generation,
-        })
-    }
-
-    fn validate_retype_untyped(
-        &self,
-        source: CapabilityDescriptor,
-        target: &RetypeTarget,
-    ) -> Result<UntypedAllocationPlan, CapError> {
-        self.validate_retype_untyped_capacity(source, target, 1)
-    }
-
     fn validate_retype_untyped_into(
         &self,
         source: CapabilityDescriptor,
@@ -1207,7 +1154,96 @@ impl CapabilitySpace {
     fn reserve_empty_slot_for_insert(&mut self, slot: SlotId) -> Result<(), CapError> {
         self.validate_empty_slot(slot)?;
         self.free_slots.retain(|free_slot| *free_slot != slot);
+        if slot.raw() >= self.next_slot {
+            self.next_slot = slot.raw() + 1;
+        }
         Ok(())
+    }
+
+    pub(crate) fn commit_retype_plan(
+        &mut self,
+        plan: RetypeCommitPlan,
+    ) -> Result<RetypeResult, CapError> {
+        self.validate_descriptor(plan.source)?;
+        for entry in &plan.entries {
+            self.validate_empty_slot(entry.slot)?;
+        }
+
+        let parent_capability = self
+            .slots
+            .get(plan.source.slot)
+            .expect("validated parent slot must remain in CSpace during retype")
+            .capability
+            .clone();
+        let mut expected_object = self.next_object;
+        for entry in &plan.entries {
+            assert_eq!(
+                entry.object,
+                ObjectId(expected_object),
+                "retype commit plan object order must match CSpace allocation state"
+            );
+            expected_object += 1;
+        }
+
+        let mut descriptors = Vec::new();
+        let mut objects = Vec::new();
+        self.untyped_allocations
+            .get_mut(plan.allocation.parent_object)
+            .expect("validated parent untyped allocation must remain in CSpace")
+            .watermark = plan.allocation.next_watermark;
+        for entry in plan.entries {
+            let object_generation =
+                self.alloc_planned_object(entry.object, capability_kind(&entry.capability));
+            if let Capability::Untyped(capability) = &entry.capability {
+                self.untyped_allocations.insert(
+                    entry.object,
+                    UntypedAllocation {
+                        size_bits: capability.size_bits,
+                        watermark: 0,
+                    },
+                );
+            }
+
+            self.reserve_empty_slot_for_insert(entry.slot)?;
+            let slot_generation = self.slot_generation_for_insert(entry.slot);
+            self.detach_reused_slot(entry.slot);
+            let mdb = self.cte_insert_mdb(
+                plan.source.slot,
+                entry.slot,
+                &entry.capability,
+                &parent_capability,
+            );
+            self.slots.insert(
+                entry.slot,
+                CapabilitySlot {
+                    object: entry.object,
+                    rights: capability_rights(&entry.capability),
+                    capability: entry.capability,
+                    slot_generation,
+                    object_generation_snapshot: object_generation,
+                    parent: Some(plan.source.slot),
+                    children: ChildSlots::new(),
+                    mdb,
+                    alive: true,
+                },
+            );
+            self.slots
+                .get_mut(plan.source.slot)
+                .expect("validated parent slot must remain in CSpace during retype")
+                .children
+                .insert(entry.slot);
+
+            descriptors.push(CapabilityDescriptor {
+                slot: entry.slot,
+                slot_generation,
+            });
+            objects.push(entry.object);
+        }
+
+        Ok(RetypeResult {
+            descriptors,
+            objects,
+        })
     }
 
     fn validate_retype_untyped_capacity(
@@ -1328,6 +1364,20 @@ impl CapabilitySpace {
         (object, generation)
     }
 
+    fn alloc_planned_object(&mut self, object: ObjectId, kind: ObjectKind) -> u64 {
+        self.next_object += 1;
+        let generation = 1;
+        self.objects.insert(
+            object,
+            KernelObject {
+                kind,
+                generation,
+                destroyed: false,
+            },
+        );
+        generation
+    }
+
     fn insert_root_slot(
         &mut self,
         object: ObjectId,
@@ -1380,9 +1430,28 @@ impl CapabilitySpace {
             return slot;
         }
 
-        let slot = SlotId(self.next_slot);
-        self.next_slot += 1;
-        slot
+        loop {
+            let slot = SlotId(self.next_slot);
+            self.next_slot += 1;
+            if !self.slots.get(slot).is_some_and(|slot| slot.alive) {
+                return slot;
+            }
+        }
+    }
+
+    fn next_auto_slot_id(&self) -> SlotId {
+        if let Some(slot) = self.free_slots.last() {
+            return *slot;
+        }
+
+        let mut raw = self.next_slot;
+        loop {
+            let slot = SlotId(raw);
+            if !self.slots.get(slot).is_some_and(|slot| slot.alive) {
+                return slot;
+            }
+            raw += 1;
+        }
     }
 
     fn slot_generation_for_insert(&self, slot: SlotId) -> u64 {
@@ -2872,6 +2941,53 @@ mod tests {
                 requested: 4,
                 source: 13,
             })
+        );
+    }
+
+    #[test]
+    fn stale_retype_plan_fails_before_untyped_or_slot_mutation() {
+        // Goal: retype commit plans are consumed against the exact preflight state.
+        // Scope: cap-layer plan/commit boundary.
+        // Semantics: if another operation occupies the planned slot first, commit fails without capacity drift.
+        let mut cspace = CapabilitySpace::new();
+        let root = cspace.insert_initial_capability(untyped(13)).unwrap();
+        let endpoint = cspace
+            .insert_initial_capability(endpoint(Rights::READ))
+            .unwrap();
+        let destination = RetypeDestination {
+            start: SlotId(40),
+            count: 1,
+        };
+        let plan = cspace
+            .plan_retype_untyped_into(
+                root,
+                RetypeTarget::Frame {
+                    rights: Rights::READ,
+                },
+                destination,
+            )
+            .unwrap();
+        let planned_object = plan.objects().next().unwrap();
+
+        let occupied = cspace
+            .move_capability_into(endpoint, destination.start)
+            .unwrap();
+        assert_eq!(
+            cspace.commit_retype_plan(plan),
+            Err(CapError::SlotOccupied(occupied.slot))
+        );
+
+        let retry = cspace
+            .retype_untyped(
+                root,
+                RetypeTarget::Frame {
+                    rights: Rights::READ,
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            cspace.lookup(retry).map(|view| view.object),
+            Ok(planned_object)
         );
     }
 

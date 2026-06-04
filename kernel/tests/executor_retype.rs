@@ -24,6 +24,19 @@ fn retyped_descriptor(outcome: ExecutionOutcome, context: &str) -> CapabilityDes
     *descriptor
 }
 
+fn planned_objects(
+    state: &kernel::state::KernelState,
+    source: CapabilityDescriptor,
+    target: RetypeTarget,
+) -> Vec<kernel::cap::ObjectId> {
+    state
+        .cspace()
+        .plan_retype_untyped(source, target)
+        .unwrap()
+        .objects()
+        .collect()
+}
+
 #[test]
 fn untyped_retype_endpoint_creates_object_and_capability() {
     // Goal: endpoint retype creates one authoritative cap and one runtime object.
@@ -203,15 +216,15 @@ fn untyped_retype_into_occupied_destination_fails_without_side_effects() {
             rights: Rights::READ,
         }))
         .unwrap();
-    let predicted_object = state
-        .cspace()
-        .preview_retype_untyped(
-            untyped,
-            &RetypeTarget::Frame {
-                rights: Rights::READ,
-            },
-        )
-        .unwrap();
+    let [predicted_object] = planned_objects(
+        &state,
+        untyped,
+        RetypeTarget::Frame {
+            rights: Rights::READ,
+        },
+    )[..] else {
+        panic!("single frame retype plan must contain one object");
+    };
 
     assert_eq!(
         state.execute_invocation(
@@ -411,7 +424,10 @@ fn untyped_retype_path_failures_do_not_consume_capacity_or_target_slots() {
         };
         let predicted_object = state
             .cspace()
-            .preview_retype_untyped(untyped, &frame_target)
+            .plan_retype_untyped(untyped, frame_target.clone())
+            .unwrap()
+            .objects()
+            .next()
             .unwrap();
 
         assert_eq!(
@@ -521,7 +537,7 @@ fn untyped_retype_into_runtime_conflict_fails_before_cspace_commit() {
 #[test]
 fn untyped_capacity_failure_does_not_consume_next_object_or_watermark() {
     // Goal: capacity failures do not advance the CSpace allocation transaction.
-    // Scope: host integration through executor preview, failure, and later commit.
+    // Scope: host integration through executor planning, failure, and later commit.
     // Semantics: a failed aligned large retype leaves the next object available.
     let (mut state, untyped) = state_with_untyped(13);
 
@@ -540,10 +556,9 @@ fn untyped_capacity_failure_does_not_consume_next_object_or_watermark() {
         "initial frame retype",
     );
     let endpoint_target = RetypeTarget::Endpoint;
-    let predicted_object = state
-        .cspace()
-        .preview_retype_untyped(untyped, &endpoint_target)
-        .unwrap();
+    let [predicted_object] = planned_objects(&state, untyped, endpoint_target.clone())[..] else {
+        panic!("single endpoint retype plan must contain one object");
+    };
 
     assert_eq!(
         state.execute_invocation(
@@ -650,7 +665,10 @@ fn untyped_retype_object_table_conflicts_do_not_commit_cspace() {
         let (mut state, untyped) = state_with_untyped(13);
         let predicted_object = state
             .cspace()
-            .preview_retype_untyped(untyped, &case.target)
+            .plan_retype_untyped(untyped, case.target.clone())
+            .unwrap()
+            .objects()
+            .next()
             .unwrap();
         (case.install_conflict)(&mut state, predicted_object);
 
@@ -693,16 +711,15 @@ fn untyped_retype_object_table_conflicts_do_not_commit_cspace() {
 #[test]
 fn untyped_retype_object_table_conflict_does_not_consume_capacity() {
     // Goal: runtime object conflicts fail before Untyped watermark advances.
-    // Scope: host integration across CSpace preview and ObjectTable precheck.
+    // Scope: host integration across CSpace planning and ObjectTable precheck.
     // Semantics: after the conflict, the same Untyped can still commit through CSpace.
     let (mut state, untyped) = state_with_untyped(12);
     let target = RetypeTarget::Frame {
         rights: Rights::READ,
     };
-    let predicted_object = state
-        .cspace()
-        .preview_retype_untyped(untyped, &target)
-        .unwrap();
+    let [predicted_object] = planned_objects(&state, untyped, target.clone())[..] else {
+        panic!("single frame retype plan must contain one object");
+    };
     state
         .objects_mut()
         .insert_frame(predicted_object, FrameObject::new(12))
@@ -875,10 +892,9 @@ fn oversized_nested_untyped_retype_does_not_commit_cspace() {
     // Semantics: a failed retype does not consume the next child object or reusable slot.
     let (mut state, untyped) = state_with_untyped(12);
     let endpoint_target = RetypeTarget::Endpoint;
-    let predicted_object = state
-        .cspace()
-        .preview_retype_untyped(untyped, &endpoint_target)
-        .unwrap();
+    let [predicted_object] = planned_objects(&state, untyped, endpoint_target.clone())[..] else {
+        panic!("single endpoint retype plan must contain one object");
+    };
 
     assert_eq!(
         state.execute_invocation(

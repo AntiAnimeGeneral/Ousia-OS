@@ -3,7 +3,7 @@ use alloc::vec::Vec;
 use crate::{
     cap::{
         CNodePath, CapabilityDescriptor, CapabilitySpace, MintParams, ObjectId, ReplyCap,
-        RetypeDestination, RetypeResult, RetypeTarget, Rights, SlotId,
+        RetypeDestination, RetypeTarget, Rights, SlotId,
     },
     invocation::{EndpointSendOp, Invocation, InvocationError, InvocationOutcome, invoke},
     ipc::{Endpoint, IpcPayload, IpcReceiveOptions, IpcSendOptions},
@@ -312,46 +312,24 @@ impl KernelState {
         target: RetypeTarget,
         destination: Option<RetypeDestination>,
     ) -> Result<ExecutionOutcome, KernelExecutionError> {
-        let objects = match destination {
+        let plan = match destination {
             Some(destination) => self
                 .cspace
-                .preview_retype_untyped_into(source, &target, destination)
+                .plan_retype_untyped_into(source, target.clone(), destination)
                 .map_err(InvocationError::Cap)?,
-            None => alloc::vec![
-                self.cspace
-                    .preview_retype_untyped(source, &target)
-                    .map_err(InvocationError::Cap)?
-            ],
-        };
-
-        self.validate_retype_runtime_destinations(&target, &objects)?;
-
-        let retype_result = match destination {
-            Some(destination) => self
+            None => self
                 .cspace
-                .retype_untyped_into(source, target.clone(), destination)
+                .plan_retype_untyped(source, target.clone())
                 .map_err(InvocationError::Cap)?,
-            None => {
-                let descriptor = self
-                    .cspace
-                    .retype_untyped(source, target.clone())
-                    .expect("prevalidated untyped retype must succeed");
-                let object = self
-                    .cspace
-                    .lookup(descriptor)
-                    .map_err(InvocationError::Cap)?
-                    .object;
-                RetypeResult {
-                    descriptors: alloc::vec![descriptor],
-                    objects: alloc::vec![object],
-                }
-            }
         };
 
-        assert_eq!(
-            objects, retype_result.objects,
-            "retype preview must match committed CSpace objects"
-        );
+        self.validate_retype_runtime_destinations(&target, plan.objects())?;
+
+        let retype_result = self
+            .cspace
+            .commit_retype_plan(plan)
+            .expect("prevalidated untyped retype plan must commit");
+
         match target {
             RetypeTarget::Endpoint => {
                 for object in &retype_result.objects {
@@ -399,7 +377,7 @@ impl KernelState {
     fn validate_retype_runtime_destinations(
         &self,
         target: &RetypeTarget,
-        objects: &[ObjectId],
+        objects: impl IntoIterator<Item = ObjectId>,
     ) -> Result<(), KernelExecutionError> {
         match target {
             RetypeTarget::Endpoint
@@ -408,7 +386,7 @@ impl KernelState {
             | RetypeTarget::Notification
             | RetypeTarget::Tcb { .. } => {
                 for object in objects {
-                    self.objects.validate_unbound(*object)?;
+                    self.objects.validate_unbound(object)?;
                 }
             }
             RetypeTarget::Untyped { .. } => {}
