@@ -16,7 +16,7 @@ use kernel::{
 use support::{cpu, thread};
 
 fn root_cnode_cap() -> Capability {
-    Capability::CNode(CNodeCap::with_window(6, 0, 0, kernel::cap::SlotId::new(0)))
+    Capability::CNode(CNodeCap::new(6))
 }
 
 fn target_slot(slot: kernel::cap::SlotId) -> CNodePathTarget {
@@ -38,13 +38,8 @@ fn guarded_cnode(radix: u8, guard: u64, guard_size: u8) -> Capability {
     Capability::CNode(CNodeCap::with_guard(radix, guard, guard_size))
 }
 
-fn windowed_cnode(radix: u8, guard: u64, guard_size: u8, window_start: u64) -> Capability {
-    Capability::CNode(CNodeCap::with_window(
-        radix,
-        guard,
-        guard_size,
-        kernel::cap::SlotId::new(window_start),
-    ))
+fn windowed_cnode(radix: u8, guard: u64, guard_size: u8) -> CNodeCap {
+    CNodeCap::with_guard(radix, guard, guard_size)
 }
 
 fn endpoint(rights: Rights, badge: u64) -> Capability {
@@ -257,7 +252,10 @@ fn cnode_path_copy_mint_and_move_resolve_destination_window() {
         let mut state = kernel::state::KernelState::new(&[cpu(0), cpu(1)]).unwrap();
         let cnode = state
             .cspace
-            .insert_initial_capability(windowed_cnode(4, 0b10, 2, case.window_start))
+            .insert_initial_cnode_capability(
+                windowed_cnode(4, 0b10, 2),
+                kernel::cap::SlotId::new(case.window_start),
+            )
             .unwrap();
         let source_root = state
             .cspace
@@ -310,7 +308,7 @@ fn cnode_copy_path_resolves_source_under_explicit_source_root() {
     let mut state = kernel::state::KernelState::new(&[cpu(0), cpu(1)]).unwrap();
     let destination_root = state
         .cspace
-        .insert_initial_capability(windowed_cnode(4, 0, 0, 80))
+        .insert_initial_cnode_capability(windowed_cnode(4, 0, 0), kernel::cap::SlotId::new(80))
         .unwrap();
     let source_root = state
         .cspace
@@ -444,7 +442,7 @@ fn cnode_delete_path_invalidates_resolved_target() {
     let mut state = kernel::state::KernelState::new(&[cpu(0), cpu(1)]).unwrap();
     let cnode = state
         .cspace
-        .insert_initial_capability(windowed_cnode(4, 0b10, 2, 80))
+        .insert_initial_cnode_capability(windowed_cnode(4, 0b10, 2), kernel::cap::SlotId::new(80))
         .unwrap();
     let source = state
         .cspace
@@ -493,7 +491,7 @@ fn cnode_revoke_path_removes_descendants_but_keeps_resolved_target() {
     // this window starts at the next initial slot so the path resolves to root.
     let cnode = state
         .cspace
-        .insert_initial_capability(windowed_cnode(4, 0b10, 2, 2))
+        .insert_initial_cnode_capability(windowed_cnode(4, 0b10, 2), kernel::cap::SlotId::new(2))
         .unwrap();
     let root = state
         .cspace

@@ -151,7 +151,6 @@ pub struct CNodeCap {
     pub radix: u8,
     pub guard: u64,
     pub guard_size: u8,
-    pub window_start: SlotId,
 }
 
 impl CNodeCap {
@@ -160,7 +159,6 @@ impl CNodeCap {
             radix,
             guard: 0,
             guard_size: 0,
-            window_start: SlotId::new(0),
         }
     }
 
@@ -169,16 +167,6 @@ impl CNodeCap {
             radix,
             guard,
             guard_size,
-            window_start: SlotId::new(0),
-        }
-    }
-
-    pub const fn with_window(radix: u8, guard: u64, guard_size: u8, window_start: SlotId) -> Self {
-        Self {
-            radix,
-            guard,
-            guard_size,
-            window_start,
         }
     }
 }
@@ -513,6 +501,7 @@ struct KernelObject {
     kind: ObjectKind,
     generation: u64,
     destroyed: bool,
+    cnode_window_start: Option<SlotId>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -602,6 +591,16 @@ impl CapabilitySpace {
         Ok(self.insert_validated_initial_capability(capability))
     }
 
+    pub fn insert_initial_cnode_capability(
+        &mut self,
+        capability: CNodeCap,
+        window_start: SlotId,
+    ) -> Result<CapabilityDescriptor, CapError> {
+        let capability = Capability::CNode(capability);
+        validate_capability_rights(&capability)?;
+        Ok(self.insert_validated_initial_capability_with_cnode_window(capability, window_start))
+    }
+
     #[cfg(test)]
     pub(crate) fn insert_reply_capability_for_test(
         &mut self,
@@ -624,8 +623,24 @@ impl CapabilitySpace {
         &mut self,
         capability: Capability,
     ) -> CapabilityDescriptor {
+        if matches!(capability, Capability::CNode(_)) {
+            return self
+                .insert_validated_initial_capability_with_cnode_window(capability, SlotId::new(0));
+        }
+
         let kind = capability_kind(&capability);
         let (object, generation) = self.alloc_object(kind);
+        self.insert_root_slot(object, capability, generation)
+    }
+
+    fn insert_validated_initial_capability_with_cnode_window(
+        &mut self,
+        capability: Capability,
+        window_start: SlotId,
+    ) -> CapabilityDescriptor {
+        let kind = capability_kind(&capability);
+        debug_assert_eq!(kind, ObjectKind::CNode);
+        let (object, generation) = self.alloc_object_with_cnode_window(kind, Some(window_start));
         self.insert_root_slot(object, capability, generation)
     }
 
@@ -890,7 +905,7 @@ impl CapabilitySpace {
             return Err(CapError::InvalidCNodeDepth { depth: path.depth });
         }
 
-        self.resolve_address_bits(root, path.capptr, path.depth)
+        self.resolve_address_bits(root_slot.object, root, path.capptr, path.depth)
     }
 
     pub fn lookup_cnode_slot(&self, path: CNodePath) -> Result<SlotId, CapError> {
@@ -1265,8 +1280,7 @@ impl CapabilitySpace {
             .expect("validated parent untyped allocation must remain in CSpace")
             .watermark = plan.allocation.next_watermark;
         for entry in plan.entries {
-            let object_generation =
-                self.alloc_planned_object(entry.object, entry.kind.object_kind());
+            let object_generation = self.alloc_planned_retyped_object(entry.object, entry.kind);
             if let Capability::Untyped(capability) = &entry.capability {
                 self.untyped_allocations.insert(
                     entry.object,
@@ -1330,9 +1344,8 @@ impl CapabilitySpace {
     fn planned_retype_capability(&self, target: &RetypeTarget, next_slot: &mut u64) -> Capability {
         match target {
             RetypeTarget::CNode { radix } => {
-                let window_start = SlotId(*next_slot);
                 *next_slot += cnode_slot_count(*radix) as u64;
-                Capability::CNode(CNodeCap::with_window(*radix, 0, 0, window_start))
+                Capability::CNode(CNodeCap::new(*radix))
             }
             target => target.clone().into_capability(),
         }
@@ -1406,10 +1419,12 @@ impl CapabilitySpace {
 
     fn resolve_address_bits(
         &self,
+        root_object: ObjectId,
         root: &CNodeCap,
         capptr: u64,
         depth: u8,
     ) -> Result<CNodeLookup, CapError> {
+        let mut node_object = root_object;
         let mut node = root.clone();
         let mut bits_remaining = depth;
 
@@ -1439,7 +1454,8 @@ impl CapabilitySpace {
             }
 
             let offset = extract_cptr_bits(capptr, bits_remaining - node.guard_size, node.radix);
-            let slot = SlotId(node.window_start.raw() + offset);
+            let window_start = self.cnode_window_start(node_object)?;
+            let slot = SlotId(window_start.raw() + offset);
             let slots_remaining = slots_remaining_in_level(node.radix, offset);
             if bits_remaining == level_bits {
                 return Ok(CNodeLookup {
@@ -1464,11 +1480,34 @@ impl CapabilitySpace {
                     slots_remaining,
                 });
             };
+            node_object = slot_ref.object;
             node = next_node.clone();
         }
     }
 
+    fn cnode_window_start(&self, object: ObjectId) -> Result<SlotId, CapError> {
+        let object_ref = self.object(object)?;
+        if object_ref.kind != ObjectKind::CNode {
+            return Err(CapError::WrongCapability {
+                expected: ObjectKind::CNode,
+                actual: object_ref.kind.clone(),
+            });
+        }
+
+        Ok(object_ref
+            .cnode_window_start
+            .expect("CNode object must own CTE window metadata"))
+    }
+
     fn alloc_object(&mut self, kind: ObjectKind) -> (ObjectId, u64) {
+        self.alloc_object_with_cnode_window(kind, None)
+    }
+
+    fn alloc_object_with_cnode_window(
+        &mut self,
+        kind: ObjectKind,
+        cnode_window_start: Option<SlotId>,
+    ) -> (ObjectId, u64) {
         let object = ObjectId(self.next_object);
         self.next_object += 1;
         let generation = 1;
@@ -1478,20 +1517,22 @@ impl CapabilitySpace {
                 kind,
                 generation,
                 destroyed: false,
+                cnode_window_start,
             },
         );
         (object, generation)
     }
 
-    fn alloc_planned_object(&mut self, object: ObjectId, kind: ObjectKind) -> u64 {
+    fn alloc_planned_retyped_object(&mut self, object: ObjectId, kind: RetypedObjectKind) -> u64 {
         self.next_object += 1;
         let generation = 1;
         self.objects.insert(
             object,
             KernelObject {
-                kind,
+                kind: kind.object_kind(),
                 generation,
                 destroyed: false,
+                cnode_window_start: kind.cnode_window_start(),
             },
         );
         generation
@@ -1742,6 +1783,13 @@ impl RetypedObjectKind {
             Self::Untyped => ObjectKind::Untyped,
             Self::Tcb => ObjectKind::Tcb,
             Self::Notification => ObjectKind::Notification,
+        }
+    }
+
+    const fn cnode_window_start(self) -> Option<SlotId> {
+        match self {
+            Self::CNode { window_start, .. } => Some(window_start),
+            Self::Endpoint | Self::Frame | Self::Untyped | Self::Tcb | Self::Notification => None,
         }
     }
 }
@@ -2233,12 +2281,7 @@ mod tests {
         // Semantics: with depth equal to guard+radix, lookup returns the selected CTE slot.
         let mut cspace = CapabilitySpace::new();
         let root = cspace
-            .insert_initial_capability(Capability::CNode(CNodeCap::with_window(
-                4,
-                0b10,
-                2,
-                SlotId::new(32),
-            )))
+            .insert_initial_cnode_capability(CNodeCap::with_guard(4, 0b10, 2), SlotId::new(32))
             .unwrap();
 
         assert_eq!(
@@ -2360,12 +2403,7 @@ mod tests {
         // Semantics: source lookup returns the live descriptor, while destination preflight rejects occupied slots.
         let mut cspace = CapabilitySpace::new();
         let root = cspace
-            .insert_initial_capability(Capability::CNode(CNodeCap::with_window(
-                4,
-                0,
-                0,
-                SlotId::new(32),
-            )))
+            .insert_initial_cnode_capability(CNodeCap::new(4), SlotId::new(32))
             .unwrap();
         let source = cspace
             .insert_initial_capability(endpoint(Rights::READ))
@@ -2397,6 +2435,28 @@ mod tests {
                 depth: 4,
             }),
             Err(CapError::SlotOccupied(SlotId::new(33)))
+        );
+    }
+
+    #[test]
+    fn copied_cnode_cap_uses_object_window_metadata() {
+        // Goal: CNode storage location belongs to the object, not the copied cap payload.
+        // Scope: capability-space CNode copy and path lookup.
+        // Semantics: a copied CNode cap resolves paths through the source object's CTE window metadata.
+        let mut cspace = CapabilitySpace::new();
+        let root = cspace
+            .insert_initial_cnode_capability(CNodeCap::with_guard(4, 0b10, 2), SlotId::new(48))
+            .unwrap();
+
+        let copied_root = cspace.copy(root, Rights::NONE).unwrap();
+
+        assert_eq!(
+            cspace.lookup_cnode_slot(CNodePath {
+                root: copied_root,
+                capptr: 0b10_0101,
+                depth: 6,
+            }),
+            Ok(SlotId::new(48 + 0b0101))
         );
     }
 
@@ -2746,7 +2806,7 @@ mod tests {
 
         assert_eq!(
             cspace.lookup(cnode).unwrap().capability,
-            Capability::CNode(CNodeCap::with_window(4, 0, 0, SlotId(cnode.slot.raw() + 1)))
+            Capability::CNode(CNodeCap::new(4))
         );
         assert_eq!(
             cspace.lookup(tcb_slot).unwrap().capability,

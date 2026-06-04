@@ -335,12 +335,7 @@ fn untyped_retype_path_creates_all_runtime_objects_in_resolved_window() {
     let (mut state, untyped) = state_with_untyped(13);
     let target_root = state
         .cspace
-        .insert_initial_capability(Capability::CNode(CNodeCap::with_window(
-            4,
-            0b10,
-            2,
-            kernel::cap::SlotId::new(120),
-        )))
+        .insert_initial_cnode_capability(CNodeCap::with_guard(4, 0b10, 2), SlotId::new(120))
         .unwrap();
 
     let outcome = state
@@ -392,6 +387,7 @@ fn untyped_retype_path_failures_do_not_consume_capacity_or_target_slots() {
     struct Case {
         label: &'static str,
         cnode: CNodeCap,
+        window_start: SlotId,
         path_capptr: u64,
         path_depth: u8,
         count: usize,
@@ -402,7 +398,8 @@ fn untyped_retype_path_failures_do_not_consume_capacity_or_target_slots() {
     let cases = [
         Case {
             label: "guard mismatch fails before creating the resolved slot",
-            cnode: CNodeCap::with_window(4, 0b10, 2, SlotId::new(140)),
+            cnode: CNodeCap::with_guard(4, 0b10, 2),
+            window_start: SlotId::new(140),
             path_capptr: 0b11_0010,
             path_depth: 6,
             count: 1,
@@ -416,7 +413,8 @@ fn untyped_retype_path_failures_do_not_consume_capacity_or_target_slots() {
         },
         Case {
             label: "window overflow fails before consuming untyped capacity",
-            cnode: CNodeCap::with_window(2, 0b10, 2, SlotId::new(160)),
+            cnode: CNodeCap::with_guard(2, 0b10, 2),
+            window_start: SlotId::new(160),
             path_capptr: 0b10_11,
             path_depth: 4,
             count: 2,
@@ -433,7 +431,7 @@ fn untyped_retype_path_failures_do_not_consume_capacity_or_target_slots() {
         let (mut state, untyped) = state_with_untyped(13);
         let target_root = state
             .cspace
-            .insert_initial_capability(Capability::CNode(case.cnode))
+            .insert_initial_cnode_capability(case.cnode, case.window_start)
             .unwrap();
         let frame_target = RetypeTarget::Frame {
             rights: Rights::READ,
@@ -665,23 +663,20 @@ fn untyped_retype_cnode_creates_usable_slot_window() {
     let Capability::CNode(cnode_cap) = cnode_view.capability else {
         panic!("retype must install a CNode cap");
     };
-    assert_eq!(
-        state.objects.get(cnode_view.object),
-        Ok(KernelObjectRef::CNode {
-            radix: 2,
-            slots: 4,
-            window_start: cnode_cap.window_start,
-        })
-    );
+    assert_eq!(cnode_cap, CNodeCap::new(2));
+    let Ok(KernelObjectRef::CNode {
+        radix: 2,
+        slots: 4,
+        window_start,
+    }) = state.objects.get(cnode_view.object)
+    else {
+        panic!("retype must install CNode runtime metadata");
+    };
+    assert_eq!(window_start, SlotId::new(cnode.slot.raw() + 1),);
 
     let source_root = state
         .cspace
-        .insert_initial_capability(Capability::CNode(CNodeCap::with_window(
-            6,
-            0,
-            0,
-            SlotId::new(0),
-        )))
+        .insert_initial_capability(Capability::CNode(CNodeCap::new(6)))
         .unwrap();
     let source = state
         .cspace
@@ -709,10 +704,7 @@ fn untyped_retype_cnode_creates_usable_slot_window() {
         "CNode mint path into retyped window",
     );
 
-    assert_eq!(
-        copied.slot,
-        SlotId::new(cnode_cap.window_start.raw() + 0b10)
-    );
+    assert_eq!(copied.slot, SlotId::new(window_start.raw() + 0b10));
     assert_eq!(
         state.cspace.lookup(copied).unwrap().capability,
         Capability::Endpoint(EndpointCap {
