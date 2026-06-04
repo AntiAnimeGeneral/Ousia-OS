@@ -244,11 +244,6 @@ impl KernelState {
                 destination,
                 ..
             } => self.execute_untyped_retype(descriptor, target, destination),
-            InvocationOutcome::CNodeCopyAuthorized {
-                source,
-                destination,
-                requested_rights,
-            } => self.execute_cnode_copy(source, destination, requested_rights),
             InvocationOutcome::CNodeCopyPathAuthorized {
                 source,
                 destination,
@@ -257,12 +252,6 @@ impl KernelState {
                 let destination = self.resolve_cnode_slot(destination)?;
                 self.execute_cnode_copy(source, destination, requested_rights)
             }
-            InvocationOutcome::CNodeMintAuthorized {
-                source,
-                destination,
-                requested_rights,
-                params,
-            } => self.execute_cnode_mint(source, destination, requested_rights, params),
             InvocationOutcome::CNodeMintPathAuthorized {
                 source,
                 destination,
@@ -272,10 +261,6 @@ impl KernelState {
                 let destination = self.resolve_cnode_slot(destination)?;
                 self.execute_cnode_mint(source, destination, requested_rights, params)
             }
-            InvocationOutcome::CNodeMoveAuthorized {
-                source,
-                destination,
-            } => self.execute_cnode_move(source, destination),
             InvocationOutcome::CNodeMovePathAuthorized {
                 source,
                 destination,
@@ -283,15 +268,9 @@ impl KernelState {
                 let destination = self.resolve_cnode_slot(destination)?;
                 self.execute_cnode_move(source, destination)
             }
-            InvocationOutcome::CNodeDeleteAuthorized { target } => {
-                self.execute_cnode_delete(target)
-            }
             InvocationOutcome::CNodeDeletePathAuthorized { target } => {
                 let target = self.resolve_cnode_descriptor(target)?;
                 self.execute_cnode_delete(target)
-            }
-            InvocationOutcome::CNodeRevokeAuthorized { target } => {
-                self.execute_cnode_revoke(target)
             }
             InvocationOutcome::CNodeRevokePathAuthorized { target } => {
                 let target = self.resolve_cnode_descriptor(target)?;
@@ -996,7 +975,7 @@ mod tests {
     use super::*;
     use crate::{
         cap::{Capability, EndpointCap, NotificationCap, ReplyCap, Rights},
-        invocation::EndpointSendOp,
+        invocation::{CNodePathTarget, EndpointSendOp},
         ipc::Endpoint,
         notification::{Notification, NotificationState},
         reply::{Reply, ReplyCaller, ReplyCallerParams},
@@ -2035,8 +2014,11 @@ mod tests {
             state.execute_invocation(
                 InvocationContext::new(thread(1), cpu(0)),
                 cnode_descriptor,
-                Invocation::CNodeDelete {
-                    target: reply_descriptor,
+                Invocation::CNodeDeletePath {
+                    target: CNodePathTarget {
+                        capptr: reply_descriptor.slot.raw(),
+                        depth: 4,
+                    },
                 },
             ),
             Ok(ExecutionOutcome::CapabilityMutation)
