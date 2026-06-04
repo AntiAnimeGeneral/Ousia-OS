@@ -28,6 +28,8 @@ description: "Ousia OS 内核边界：kernel/OSTD/tooling 职责归属、seL4 ba
 - 实现 OS、kernel、boot、QEMU、driver、MMIO、IPC、scheduler、FPU/SIMD 或 loader 能力前，先查看项目已有 reference、成熟 crate、工业级实现和硬件手册。
 - 本仓库存在本地 reference 时必须优先读取本地源码，例如 `third_party/sel4`、`third_party/asterinas`、`third_party/rust-sel4`。不要在未检查本地 reference 的情况下只凭记忆、网络搜索或概括性知识做内核设计判断。
 - 优先参考 seL4、rust-sel4、Microkit、sDDF、Asterinas OSTD/OSDK、Linux/rust-osdev 生态和相关硬件手册。只有检查过边界、license、维护成本和语义适配后，才写自定义实现。
+- Phase 1 kernel 语义实现必须先读取对应本地 seL4 baseline 源码，再设计 Rust 表达。常见入口包括 `third_party/sel4/src/object/cnode.c`、`untyped.c`、`endpoint.c`、`notification.c`、`tcb.c` 以及对应 `include/object/**` 结构定义；不要先按 Ousia 当前代码补洞，再事后用 seL4 找局部依据。
+- 读取 seL4 后先抽取语义表，再编码：decode 顺序、authority root、source/target/destination lookup、guard/depth/error ordering、提交前检查、状态副作用点、失败后必须保持不变的 owner state、CTE/MDB/object/scheduler 改动顺序。Rust API 可以更清晰，但实现和测试必须能映射回这张表。
 - 如果实现过程中发现自己对项目 reference、边界或现有代码了解不足，先补读本地源码和 owning docs；若这个不足来自 instruction/skill 没有约束到位，应同步更新对应 instruction 或 skill，避免下次复发。
 - 遇到 QEMU、boot、serial、exception level、CPU feature、loader 和 device tree 问题时，不要把偶然跑通的路径当成最佳实践。先对比 seL4、Asterinas 和 rust-sel4 的 machine 参数、boot 约束、exception-level 假设、device model 和测试方式，再选择 Ousia 的最小路径。
 
@@ -45,6 +47,7 @@ description: "Ousia OS 内核边界：kernel/OSTD/tooling 职责归属、seL4 ba
 - Rust 语言特性只用于更清楚地表达类型、不变量、错误边界、状态机和测试；不得用“更 Rust”作为改变 seL4 baseline 语义的理由。
 - Rust 风格是实现表达层的要求，不是语义自由度：API 应符合 Rust 人体工程学、类型安全和误用抵抗，优先用 enum、newtype、Result、借用、所有权和清晰 module boundary 表达 seL4 语义，而不是机械复刻 C API 的指针式、参数堆叠式或易误用形状。
 - 当 seL4 C API 难用或怪异时，先抽取其真实算法和抽象，再设计 Rust API；Rust API 可以更优雅、更安全、更符合调用者直觉，但必须能明确映射回本地 seL4 reference 的对应算法、状态和错误边界。
+- 测试应围绕 seL4 baseline 使用语义和失败不变量编写，而不是围绕 Ousia 当前 helper 或过渡 descriptor 形状补 fixture。旧测试与 baseline 冲突时，优先修正 authority shape、owner 边界和测试语义，不要添加兼容 facade 让旧测试继续通过。
 - Ousia-specific interface、Portal/Operation/Continuation、Package Cell、Service Graph、lease、session、Device Service 和浏览器/用户授权语义都属于 baseline 闭环后的扩展层，不得提前混入 Phase 1 kernel baseline。
 - slot/object generation 可以作为 Rust model 中的 stale descriptor 检测、测试和诊断辅助；不得替代 seL4 authority、revoke、capability freshness 或授权语义。
 - seL4 core 不使用通用 map 表达核心对象关系，也没有运行时 map 插入后动态扩容的主路径。CSpace/CNode 是连续 CTE slot 数组，MDB 是 slot 内嵌链，scheduler 是固定 ready queue 数组加 bitmap，endpoint/notification 等待队列是 TCB 内嵌链。Ousia 早期模型中出现 `HashMap`、`BTreeMap`、`VecDeque` 或类似通用容器时，只能视为过渡脚手架；长期必须收敛到对应 seL4 领域容器。
