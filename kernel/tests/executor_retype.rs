@@ -1,8 +1,8 @@
 mod support;
 
 use kernel::{
-    cap::SlotId,
-    cap::{CNodeCap, CNodePath, CapError, CapabilityDescriptor, MintParams, RetypeDestination},
+    cap::{CNodeCap, CapError, CapabilityDescriptor, MintParams, RetypeDestination},
+    cap::{CNodePath, SlotId},
     cap::{Capability, EndpointCap, FrameCap, RetypeTarget, Rights, TcbCap},
     invocation::InvocationError,
     invocation::{Invocation, RetypeDestinationPath},
@@ -77,6 +77,14 @@ fn untyped_retype_endpoint_creates_object_and_capability() {
         state.objects().get(view.object),
         Ok(KernelObjectRef::Endpoint)
     );
+}
+
+fn source_path(root: CapabilityDescriptor, slot: SlotId, depth: u8) -> CNodePath {
+    CNodePath {
+        root,
+        capptr: slot.raw(),
+        depth,
+    }
 }
 
 #[test]
@@ -666,6 +674,15 @@ fn untyped_retype_cnode_creates_usable_slot_window() {
         })
     );
 
+    let source_root = state
+        .cspace_mut()
+        .insert_initial_capability(Capability::CNode(CNodeCap::with_window(
+            6,
+            0,
+            0,
+            SlotId::new(0),
+        )))
+        .unwrap();
     let source = state
         .cspace_mut()
         .insert_initial_capability(Capability::Endpoint(EndpointCap {
@@ -679,7 +696,7 @@ fn untyped_retype_cnode_creates_usable_slot_window() {
                 InvocationContext::new(thread(1), cpu(0)),
                 cnode,
                 Invocation::CNodeMintPath {
-                    source,
+                    source: source_path(source_root, source.slot, 6),
                     destination: kernel::invocation::CNodePathTarget {
                         capptr: 0b10,
                         depth: 2,

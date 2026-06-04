@@ -1195,7 +1195,7 @@ impl CapabilitySpace {
         self.validate_retype_untyped_capacity(source, target, destination.count)
     }
 
-    fn validate_empty_slot(&self, slot: SlotId) -> Result<(), CapError> {
+    pub(crate) fn validate_empty_slot(&self, slot: SlotId) -> Result<(), CapError> {
         if self.slots.get(slot).is_some_and(|slot| slot.alive) {
             return Err(CapError::SlotOccupied(slot));
         }

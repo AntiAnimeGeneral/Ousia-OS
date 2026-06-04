@@ -51,18 +51,18 @@ pub enum Invocation {
         destination: RetypeDestinationPath,
     },
     CNodeCopyPath {
-        source: CapabilityDescriptor,
+        source: CNodePath,
         destination: CNodePathTarget,
         requested_rights: Rights,
     },
     CNodeMintPath {
-        source: CapabilityDescriptor,
+        source: CNodePath,
         destination: CNodePathTarget,
         requested_rights: Rights,
         params: MintParams,
     },
     CNodeMovePath {
-        source: CapabilityDescriptor,
+        source: CNodePath,
         destination: CNodePathTarget,
     },
     CNodeDeletePath {
@@ -111,18 +111,18 @@ pub enum InvocationOutcome {
         destination: Option<RetypeDestination>,
     },
     CNodeCopyPathAuthorized {
-        source: CapabilityDescriptor,
+        source: CNodePath,
         destination: CNodePath,
         requested_rights: Rights,
     },
     CNodeMintPathAuthorized {
-        source: CapabilityDescriptor,
+        source: CNodePath,
         destination: CNodePath,
         requested_rights: Rights,
         params: MintParams,
     },
     CNodeMovePathAuthorized {
-        source: CapabilityDescriptor,
+        source: CNodePath,
         destination: CNodePath,
     },
     CNodeDeletePathAuthorized {
@@ -854,13 +854,21 @@ mod tests {
                 &cspace,
                 cnode_cap,
                 Invocation::CNodeCopyPath {
-                    source,
+                    source: CNodePath {
+                        root: cnode_cap,
+                        capptr: source.slot.raw(),
+                        depth: 4,
+                    },
                     destination,
                     requested_rights: Rights::READ,
                 },
             ),
             Ok(InvocationOutcome::CNodeCopyPathAuthorized {
-                source,
+                source: CNodePath {
+                    root: cnode_cap,
+                    capptr: source.slot.raw(),
+                    depth: 4,
+                },
                 destination: CNodePath {
                     root: cnode_cap,
                     capptr: 0b0011,
@@ -887,7 +895,11 @@ mod tests {
                 &cspace,
                 cnode_cap,
                 Invocation::CNodeCopyPath {
-                    source,
+                    source: CNodePath {
+                        root: cnode_cap,
+                        capptr: source.slot.raw(),
+                        depth: 4,
+                    },
                     destination: CNodePathTarget {
                         capptr: 0b10_0110,
                         depth: 6,
@@ -896,7 +908,11 @@ mod tests {
                 },
             ),
             Ok(InvocationOutcome::CNodeCopyPathAuthorized {
-                source,
+                source: CNodePath {
+                    root: cnode_cap,
+                    capptr: source.slot.raw(),
+                    depth: 4,
+                },
                 destination: CNodePath {
                     root: cnode_cap,
                     capptr: 0b10_0110,

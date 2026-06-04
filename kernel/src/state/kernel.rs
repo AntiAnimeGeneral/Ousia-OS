@@ -250,6 +250,8 @@ impl KernelState {
                 requested_rights,
             } => {
                 let destination = self.resolve_cnode_slot(destination)?;
+                self.validate_cnode_empty_destination(destination)?;
+                let source = self.resolve_cnode_descriptor(source)?;
                 self.execute_cnode_copy(source, destination, requested_rights)
             }
             InvocationOutcome::CNodeMintPathAuthorized {
@@ -259,6 +261,8 @@ impl KernelState {
                 params,
             } => {
                 let destination = self.resolve_cnode_slot(destination)?;
+                self.validate_cnode_empty_destination(destination)?;
+                let source = self.resolve_cnode_descriptor(source)?;
                 self.execute_cnode_mint(source, destination, requested_rights, params)
             }
             InvocationOutcome::CNodeMovePathAuthorized {
@@ -266,6 +270,8 @@ impl KernelState {
                 destination,
             } => {
                 let destination = self.resolve_cnode_slot(destination)?;
+                self.validate_cnode_empty_destination(destination)?;
+                let source = self.resolve_cnode_descriptor(source)?;
                 self.execute_cnode_move(source, destination)
             }
             InvocationOutcome::CNodeDeletePathAuthorized { target } => {
@@ -458,6 +464,13 @@ impl KernelState {
         let slot = self.resolve_cnode_slot(path)?;
         self.cspace
             .descriptor_for_live_slot(slot)
+            .map_err(InvocationError::Cap)
+            .map_err(KernelExecutionError::Invocation)
+    }
+
+    fn validate_cnode_empty_destination(&self, slot: SlotId) -> Result<(), KernelExecutionError> {
+        self.cspace
+            .validate_empty_slot(slot)
             .map_err(InvocationError::Cap)
             .map_err(KernelExecutionError::Invocation)
     }
