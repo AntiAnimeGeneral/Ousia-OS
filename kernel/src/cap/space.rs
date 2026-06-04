@@ -261,6 +261,7 @@ pub struct ReplyCapabilitySlot {
 }
 
 impl ReplyCapabilitySlot {
+    #[cfg(test)]
     pub const fn new(object: ObjectId, destination: ResolvedCte) -> Self {
         Self {
             object,
