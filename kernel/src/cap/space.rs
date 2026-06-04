@@ -99,6 +99,7 @@ const NOTIFICATION_ALLOWED_RIGHTS: Rights = Rights::READ.union(Rights::WRITE);
 const REPLY_ALLOWED_RIGHTS: Rights = Rights::NONE;
 const MIN_RETYPE_BYTES: u128 = 1;
 const CSPACE_WORD_BITS: u8 = u64::BITS as u8;
+const TCB_REPLY_SLOT_OFFSET: usize = 0;
 
 impl Rights {
     pub const fn is_subset_of(self, allowed: Self) -> bool {
@@ -288,6 +289,7 @@ pub struct CteRef {
 pub enum CteStorageRef {
     Root,
     CNode(CteLocation),
+    Tcb(CteLocation),
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -314,6 +316,13 @@ impl CteRef {
         Self {
             handle,
             storage: CteStorageRef::CNode(location),
+        }
+    }
+
+    pub const fn tcb(handle: SlotId, location: CteLocation) -> Self {
+        Self {
+            handle,
+            storage: CteStorageRef::Tcb(location),
         }
     }
 }
@@ -579,7 +588,7 @@ enum KernelObjectPayload {
     Frame,
     CNode { slots: CNodeSlots },
     Untyped,
-    Tcb,
+    Tcb { slots: TcbSlots },
     Notification,
     Reply,
 }
@@ -591,6 +600,17 @@ struct CNodeSlots {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct CNodeSlotEntry {
+    handle: SlotId,
+    slot: Option<CapabilitySlot>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct TcbSlots {
+    reply: TcbSlotEntry,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct TcbSlotEntry {
     handle: SlotId,
     slot: Option<CapabilitySlot>,
 }
@@ -631,6 +651,7 @@ struct ChildSlots {
 struct CteSlots {
     root_slots: Vec<Option<CapabilitySlot>>,
     cnode_locations: Vec<Option<CteLocation>>,
+    tcb_locations: Vec<Option<CteLocation>>,
 }
 
 #[derive(Debug, Default)]
@@ -1008,6 +1029,46 @@ impl CapabilitySpace {
         self.insert_reply_capability_resolved(slot.object, capability, slot.destination)
     }
 
+    pub fn tcb_reply_slot(
+        &self,
+        tcb_object: ObjectId,
+        reply_object: ObjectId,
+    ) -> Result<ReplyCapabilitySlot, CapError> {
+        self.validate_reply_object(reply_object)?;
+        let object = self.object(tcb_object)?;
+        let KernelObjectPayload::Tcb { slots } = &object.payload else {
+            return Err(CapError::WrongCapability {
+                expected: ObjectKind::Tcb,
+                actual: object.kind(),
+            });
+        };
+        let destination = ResolvedCte {
+            slot: slots.reply.handle,
+            cte: CteRef::tcb(
+                slots.reply.handle,
+                CteLocation {
+                    object: tcb_object,
+                    offset: TCB_REPLY_SLOT_OFFSET,
+                },
+            ),
+        };
+        self.validate_empty_cte(destination)?;
+        Ok(ReplyCapabilitySlot {
+            object: reply_object,
+            destination,
+        })
+    }
+
+    pub fn install_reply_capability(
+        &mut self,
+        slot: ReplyCapabilitySlot,
+        capability: ReplyCap,
+    ) -> Result<CapabilityDescriptor, CapError> {
+        self.validate_reply_capability(slot.object, &capability)?;
+        self.validate_empty_cte(slot.destination)?;
+        self.insert_reply_capability_resolved(slot.object, capability, slot.destination)
+    }
+
     pub fn move_capability(
         &mut self,
         source: CapabilityDescriptor,
@@ -1313,7 +1374,7 @@ impl CapabilitySpace {
         self.root_live_slots()
             .any(|(_, slot)| slot.alive && slot.object == object)
             || self
-                .cnode_live_slots()
+                .object_owned_live_slots()
                 .any(|(_, slot)| slot.alive && slot.object == object)
     }
 
@@ -1420,6 +1481,9 @@ impl CapabilitySpace {
         if let Some(location) = self.slots.cnode_location(slot) {
             return Some(CteRef::cnode(slot, location));
         }
+        if let Some(location) = self.slots.tcb_location(slot) {
+            return Some(CteRef::tcb(slot, location));
+        }
 
         None
     }
@@ -1428,6 +1492,7 @@ impl CapabilitySpace {
         match cte.storage {
             CteStorageRef::Root => self.slots.get(cte.handle),
             CteStorageRef::CNode(location) => self.cnode_slot(location),
+            CteStorageRef::Tcb(location) => self.tcb_slot(location),
         }
     }
 
@@ -1435,6 +1500,7 @@ impl CapabilitySpace {
         match cte.storage {
             CteStorageRef::Root => self.slots.get_mut(cte.handle),
             CteStorageRef::CNode(location) => self.cnode_slot_mut(location),
+            CteStorageRef::Tcb(location) => self.tcb_slot_mut(location),
         }
     }
 
@@ -1442,6 +1508,7 @@ impl CapabilitySpace {
         match cte.storage {
             CteStorageRef::Root => self.slots.insert(cte.handle, value),
             CteStorageRef::CNode(location) => self.cnode_slot_insert(location, value),
+            CteStorageRef::Tcb(location) => self.tcb_slot_insert(location, value),
         }
     }
 
@@ -1451,16 +1518,24 @@ impl CapabilitySpace {
 
     #[cfg(test)]
     fn live_slot_entries(&self) -> impl Iterator<Item = (SlotId, &CapabilitySlot)> {
-        self.root_live_slots().chain(self.cnode_live_slots())
+        self.root_live_slots().chain(self.object_owned_live_slots())
     }
 
-    fn cnode_live_slots(&self) -> impl Iterator<Item = (SlotId, &CapabilitySlot)> {
+    fn object_owned_live_slots(&self) -> impl Iterator<Item = (SlotId, &CapabilitySlot)> {
         let mut live = Vec::new();
-        for object in self.objects.objects.iter().filter_map(Option::as_ref) {
-            let KernelObjectPayload::CNode { slots } = &object.payload else {
+        for object in self.objects.objects.iter() {
+            let Some(object) = object.as_ref() else {
                 continue;
             };
-            live.extend(slots.live_entries());
+            match &object.payload {
+                KernelObjectPayload::CNode { slots } => live.extend(slots.live_entries()),
+                KernelObjectPayload::Tcb { slots } => live.extend(slots.live_entries()),
+                KernelObjectPayload::Endpoint
+                | KernelObjectPayload::Frame
+                | KernelObjectPayload::Untyped
+                | KernelObjectPayload::Notification
+                | KernelObjectPayload::Reply => {}
+            }
         }
         live.into_iter()
     }
@@ -1488,6 +1563,33 @@ impl CapabilitySpace {
             .expect("validated CNode location must reference an existing object");
         let KernelObjectPayload::CNode { slots } = &mut object.payload else {
             panic!("validated CNode location must reference CNode payload")
+        };
+        slots.insert(location.offset, slot);
+    }
+
+    fn tcb_slot(&self, location: CteLocation) -> Option<&CapabilitySlot> {
+        let object = self.objects.get(location.object)?;
+        let KernelObjectPayload::Tcb { slots } = &object.payload else {
+            return None;
+        };
+        slots.get(location.offset)
+    }
+
+    fn tcb_slot_mut(&mut self, location: CteLocation) -> Option<&mut CapabilitySlot> {
+        let object = self.objects.get_mut(location.object)?;
+        let KernelObjectPayload::Tcb { slots } = &mut object.payload else {
+            return None;
+        };
+        slots.get_mut(location.offset)
+    }
+
+    fn tcb_slot_insert(&mut self, location: CteLocation, slot: CapabilitySlot) {
+        let object = self
+            .objects
+            .get_mut(location.object)
+            .expect("validated TCB location must reference an existing object");
+        let KernelObjectPayload::Tcb { slots } = &mut object.payload else {
+            panic!("validated TCB location must reference TCB payload")
         };
         slots.insert(location.offset, slot);
     }
@@ -1593,6 +1695,9 @@ impl CapabilitySpace {
         let cte = self
             .cte_ref_for_slot(slot)
             .unwrap_or_else(|| CteRef::root(slot));
+        if matches!(cte.storage, CteStorageRef::Tcb(_)) {
+            return Err(CapError::InvalidCteReference { slot });
+        }
         let resolved = ResolvedCte { slot, cte };
         self.validate_empty_cte(resolved)?;
         Ok(resolved)
@@ -1662,6 +1767,7 @@ impl CapabilitySpace {
             );
             expected_object += 1;
         }
+        self.next_slot = self.next_slot.max(plan.next_slot);
 
         let mut descriptors = Vec::new();
         let mut objects = Vec::new();
@@ -1909,7 +2015,8 @@ impl CapabilitySpace {
     }
 
     fn alloc_object(&mut self, kind: ObjectKind) -> (ObjectId, u64) {
-        self.alloc_object_with_payload(KernelObjectPayload::from_initial_kind(kind))
+        let payload = self.payload_for_initial_kind(kind);
+        self.alloc_object_with_payload(payload)
     }
 
     fn alloc_object_with_payload(&mut self, payload: KernelObjectPayload) -> (ObjectId, u64) {
@@ -1925,22 +2032,43 @@ impl CapabilitySpace {
             },
         );
         self.register_cnode_locations(object);
+        self.register_tcb_locations(object);
         (object, generation)
     }
 
     fn alloc_planned_retyped_object(&mut self, object: ObjectId, kind: RetypedObjectKind) -> u64 {
         self.next_object += 1;
         let generation = 1;
+        let payload = self.payload_for_retyped_kind(kind);
         self.objects.insert(
             object,
             KernelObject {
-                payload: KernelObjectPayload::from_retyped_kind(kind),
+                payload,
                 generation,
                 destroyed: false,
             },
         );
         self.register_cnode_locations(object);
+        self.register_tcb_locations(object);
         generation
+    }
+
+    fn payload_for_initial_kind(&mut self, kind: ObjectKind) -> KernelObjectPayload {
+        match kind {
+            ObjectKind::Tcb => KernelObjectPayload::Tcb {
+                slots: TcbSlots::new(self.alloc_internal_slot_id()),
+            },
+            _ => KernelObjectPayload::from_initial_kind(kind),
+        }
+    }
+
+    fn payload_for_retyped_kind(&mut self, kind: RetypedObjectKind) -> KernelObjectPayload {
+        match kind {
+            RetypedObjectKind::Tcb => KernelObjectPayload::Tcb {
+                slots: TcbSlots::new(self.alloc_internal_slot_id()),
+            },
+            _ => KernelObjectPayload::from_retyped_kind(kind),
+        }
     }
 
     fn register_cnode_locations(&mut self, object: ObjectId) {
@@ -1956,6 +2084,23 @@ impl CapabilitySpace {
             self.slots
                 .insert_cnode_location(handle, CteLocation { object, offset });
         }
+    }
+
+    fn register_tcb_locations(&mut self, object: ObjectId) {
+        let Some(KernelObject {
+            payload: KernelObjectPayload::Tcb { slots },
+            ..
+        }) = self.objects.get(object)
+        else {
+            return;
+        };
+        self.slots.insert_tcb_location(
+            slots.reply.handle,
+            CteLocation {
+                object,
+                offset: TCB_REPLY_SLOT_OFFSET,
+            },
+        );
     }
 
     fn insert_root_slot(
@@ -2098,7 +2243,10 @@ impl CapabilitySpace {
         validate_slot_window_bounds(start, count)?;
         for offset in 0..count {
             let slot = slot_in_window(start, offset);
-            if self.slots.has_root_entry(slot) || self.slots.cnode_location(slot).is_some() {
+            if self.slots.has_root_entry(slot)
+                || self.slots.cnode_location(slot).is_some()
+                || self.slots.tcb_location(slot).is_some()
+            {
                 return Ok(false);
             }
         }
@@ -2116,7 +2264,10 @@ impl CapabilitySpace {
         })?;
         loop {
             let slot = SlotId(raw);
-            if self.slot(slot).is_none() && self.slots.cnode_location(slot).is_none() {
+            if self.slot(slot).is_none()
+                && self.slots.cnode_location(slot).is_none()
+                && self.slots.tcb_location(slot).is_none()
+            {
                 return Ok(slot);
             }
             raw = raw.checked_add(1).ok_or(CapError::SlotWindowOverflow {
@@ -2134,7 +2285,22 @@ impl CapabilitySpace {
         loop {
             let slot = SlotId(self.next_slot);
             self.next_slot += 1;
-            if !self.slot(slot).is_some_and(|slot| slot.alive) {
+            if !self.slot(slot).is_some_and(|slot| slot.alive)
+                && self.slots.tcb_location(slot).is_none()
+            {
+                return slot;
+            }
+        }
+    }
+
+    fn alloc_internal_slot_id(&mut self) -> SlotId {
+        loop {
+            let slot = SlotId(self.next_slot);
+            self.next_slot += 1;
+            if !self.slots.has_root_entry(slot)
+                && self.slots.cnode_location(slot).is_none()
+                && self.slots.tcb_location(slot).is_none()
+            {
                 return slot;
             }
         }
@@ -2148,7 +2314,9 @@ impl CapabilitySpace {
         let mut raw = self.next_slot;
         loop {
             let slot = SlotId(raw);
-            if !self.slot(slot).is_some_and(|slot| slot.alive) {
+            if !self.slot(slot).is_some_and(|slot| slot.alive)
+                && self.slots.tcb_location(slot).is_none()
+            {
                 return slot;
             }
             raw += 1;
@@ -2221,7 +2389,9 @@ impl CapabilitySpace {
 
         match resolved.cte.storage {
             CteStorageRef::Root => {
-                if self.slots.cnode_location(resolved.slot).is_some() {
+                if self.slots.cnode_location(resolved.slot).is_some()
+                    || self.slots.tcb_location(resolved.slot).is_some()
+                {
                     return Err(CapError::InvalidCteReference {
                         slot: resolved.slot,
                     });
@@ -2229,6 +2399,13 @@ impl CapabilitySpace {
             }
             CteStorageRef::CNode(location) => {
                 if self.slots.cnode_location(resolved.slot) != Some(location) {
+                    return Err(CapError::InvalidCteReference {
+                        slot: resolved.slot,
+                    });
+                }
+            }
+            CteStorageRef::Tcb(location) => {
+                if self.slots.tcb_location(resolved.slot) != Some(location) {
                     return Err(CapError::InvalidCteReference {
                         slot: resolved.slot,
                     });
@@ -2299,7 +2476,8 @@ impl CapabilitySpace {
 
         let parent = removed.parent;
         removed.alive = false;
-        let reusable = removed.children.is_empty();
+        let reusable =
+            removed.children.is_empty() && !matches!(resolved.cte.storage, CteStorageRef::Tcb(_));
         let _ = removed;
         self.empty_mdb_slot(resolved.cte);
         if reusable {
@@ -2414,7 +2592,9 @@ impl KernelObjectPayload {
                 unreachable!("initial CNode objects require explicit CTE window metadata")
             }
             ObjectKind::Untyped => Self::Untyped,
-            ObjectKind::Tcb => Self::Tcb,
+            ObjectKind::Tcb => {
+                unreachable!("TCB objects require explicit CTE slot metadata")
+            }
             ObjectKind::Notification => Self::Notification,
             ObjectKind::Reply => Self::Reply,
         }
@@ -2431,7 +2611,9 @@ impl KernelObjectPayload {
                 slots: CNodeSlots::from_window(window_start, cnode_slot_count(radix)),
             },
             RetypedObjectKind::Untyped => Self::Untyped,
-            RetypedObjectKind::Tcb => Self::Tcb,
+            RetypedObjectKind::Tcb => {
+                unreachable!("TCB objects require explicit CTE slot metadata")
+            }
             RetypedObjectKind::Notification => Self::Notification,
         }
     }
@@ -2442,7 +2624,7 @@ impl KernelObjectPayload {
             Self::Frame => ObjectKind::Frame,
             Self::CNode { .. } => ObjectKind::CNode,
             Self::Untyped => ObjectKind::Untyped,
-            Self::Tcb => ObjectKind::Tcb,
+            Self::Tcb { .. } => ObjectKind::Tcb,
             Self::Notification => ObjectKind::Notification,
             Self::Reply => ObjectKind::Reply,
         }
@@ -2501,6 +2683,46 @@ impl CNodeSlots {
         self.slots
             .iter()
             .filter_map(|entry| entry.slot.as_ref().map(|slot| (entry.handle, slot)))
+    }
+}
+
+impl TcbSlots {
+    const fn new(reply_handle: SlotId) -> Self {
+        Self {
+            reply: TcbSlotEntry {
+                handle: reply_handle,
+                slot: None,
+            },
+        }
+    }
+
+    fn get(&self, offset: usize) -> Option<&CapabilitySlot> {
+        match offset {
+            TCB_REPLY_SLOT_OFFSET => self.reply.slot.as_ref(),
+            _ => None,
+        }
+    }
+
+    fn get_mut(&mut self, offset: usize) -> Option<&mut CapabilitySlot> {
+        match offset {
+            TCB_REPLY_SLOT_OFFSET => self.reply.slot.as_mut(),
+            _ => None,
+        }
+    }
+
+    fn insert(&mut self, offset: usize, slot: CapabilitySlot) {
+        match offset {
+            TCB_REPLY_SLOT_OFFSET => self.reply.slot = Some(slot),
+            _ => panic!("validated TCB slot offset must reference an owned slot"),
+        }
+    }
+
+    fn live_entries(&self) -> impl Iterator<Item = (SlotId, &CapabilitySlot)> {
+        self.reply
+            .slot
+            .as_ref()
+            .into_iter()
+            .map(|slot| (self.reply.handle, slot))
     }
 }
 
@@ -2578,6 +2800,20 @@ impl CteSlots {
             self.cnode_locations.resize_with(index + 1, || None);
         }
         self.cnode_locations[index] = Some(location);
+    }
+
+    fn tcb_location(&self, slot: SlotId) -> Option<CteLocation> {
+        self.tcb_locations
+            .get(slot_index(slot))
+            .and_then(|location| *location)
+    }
+
+    fn insert_tcb_location(&mut self, slot: SlotId, location: CteLocation) {
+        let index = slot_index(slot);
+        if self.tcb_locations.len() <= index {
+            self.tcb_locations.resize_with(index + 1, || None);
+        }
+        self.tcb_locations[index] = Some(location);
     }
 
     fn ensure_slot(&mut self, slot: SlotId) {
@@ -4843,6 +5079,69 @@ mod tests {
             cspace.lookup(replaced).unwrap().capability,
             reply(ObjectId::new(101), ObjectId::new(201), false)
         );
+    }
+
+    #[test]
+    fn tcb_reply_slot_is_object_owned_and_not_publicly_recycled() {
+        // Goal: TCB reply caps install into the receiver TCB's dedicated CTE, not root/CNode storage.
+        // Scope: tcb_reply_slot, install_reply_capability, consume_reply_cap, and implicit allocation.
+        // Semantics: the TCB reply CTE is internally reusable for reply install but never enters the public slot free-list.
+        let mut cspace = CapabilitySpace::new();
+        let tcb_descriptor = cspace
+            .insert_initial_capability(tcb(TCB_ALLOWED_RIGHTS))
+            .unwrap();
+        let tcb_object = cspace.object_of(tcb_descriptor).unwrap();
+        let reply_seed = cspace
+            .insert_reply_capability_for_test(ReplyCap {
+                caller: ObjectId::new(1000),
+                target: ObjectId::new(1001),
+                can_grant: true,
+            })
+            .unwrap();
+        let reply_object = cspace.object_of(reply_seed).unwrap();
+
+        let reply_slot = cspace.tcb_reply_slot(tcb_object, reply_object).unwrap();
+        assert_eq!(
+            reply_slot.destination.cte.storage,
+            CteStorageRef::Tcb(CteLocation {
+                object: tcb_object,
+                offset: TCB_REPLY_SLOT_OFFSET,
+            })
+        );
+        assert!(!cspace.slots.has_root_entry(reply_slot.destination.slot));
+        assert_eq!(
+            cspace.slots.tcb_location(reply_slot.destination.slot),
+            Some(CteLocation {
+                object: tcb_object,
+                offset: TCB_REPLY_SLOT_OFFSET,
+            })
+        );
+        assert_eq!(
+            cspace.empty_cte_for_slot(reply_slot.destination.slot),
+            Err(CapError::InvalidCteReference {
+                slot: reply_slot.destination.slot,
+            })
+        );
+
+        let installed = cspace
+            .install_reply_capability(
+                reply_slot,
+                ReplyCap {
+                    caller: tcb_object,
+                    target: ObjectId::new(42),
+                    can_grant: false,
+                },
+            )
+            .unwrap();
+        assert_eq!(installed.slot, reply_slot.destination.slot);
+
+        cspace.consume_reply_cap(installed).unwrap();
+        assert!(!cspace.free_slots.contains(&reply_slot.destination.slot));
+        let copy = cspace.copy(tcb_descriptor, TCB_ALLOWED_RIGHTS).unwrap();
+        assert_ne!(copy.slot, reply_slot.destination.slot);
+
+        let reused = cspace.tcb_reply_slot(tcb_object, reply_object).unwrap();
+        assert_eq!(reused.destination, reply_slot.destination);
     }
 
     #[test]

@@ -1,7 +1,7 @@
 use alloc::vec::Vec;
 
 use crate::{
-    cap::{ObjectId, ReplyCapabilitySlot},
+    cap::ObjectId,
     ipc::{
         Endpoint, IpcAction, IpcMessage, IpcPayload, IpcReceiveOptions, IpcSendOptions,
         QueuedReceiver, QueuedSender, ReplyRequest, ReplySetup,
@@ -114,7 +114,7 @@ struct BlockedReceiverContext {
     thread: ThreadId,
     cpu: CpuId,
     can_grant: bool,
-    reply: Option<ReplyCapabilitySlot>,
+    reply: Option<ObjectId>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -138,7 +138,7 @@ pub struct SendIpcRequest {
 pub struct ReceiveIpcRequest {
     endpoint: ObjectId,
     caller: Option<ObjectId>,
-    receiver_reply: Option<ReplyCapabilitySlot>,
+    receiver_reply: Option<ObjectId>,
     receiver: ThreadId,
     receiver_cpu: CpuId,
     options: IpcReceiveOptions,
@@ -246,7 +246,7 @@ impl ReceiveIpcRequest {
         self
     }
 
-    pub const fn with_receiver_reply(mut self, reply: ReplyCapabilitySlot) -> Self {
+    pub const fn with_receiver_reply(mut self, reply: ObjectId) -> Self {
         self.receiver_reply = Some(reply);
         self
     }
@@ -430,7 +430,7 @@ fn apply_ipc_action(
     threads: &mut ThreadTable,
     scheduler: &mut Scheduler,
     endpoint: ObjectId,
-    receiver_reply: Option<ReplyCapabilitySlot>,
+    receiver_reply: Option<ObjectId>,
     action: IpcAction,
 ) -> Result<ThreadAction, ThreadActionError> {
     match action {
@@ -1215,7 +1215,6 @@ impl From<SchedulerError> for ThreadActionError {
 mod tests {
     use super::*;
     use crate::{
-        cap::{CteRef, ResolvedCte, SlotId},
         ipc::{IpcPayload, IpcReceiveOptions, IpcSendOptions},
         notification::Notification,
         reply::{Reply, ReplyCaller},
@@ -1233,15 +1232,8 @@ mod tests {
         ObjectId::new(raw)
     }
 
-    fn reply_slot(raw: u64) -> ReplyCapabilitySlot {
-        let slot = SlotId::new(raw);
-        ReplyCapabilitySlot::new(
-            object(raw),
-            ResolvedCte {
-                slot,
-                cte: CteRef::root(slot),
-            },
-        )
+    fn reply_slot(raw: u64) -> ObjectId {
+        object(raw)
     }
 
     fn runnable_tcb(raw: u64, affinity: CpuId) -> Tcb {
