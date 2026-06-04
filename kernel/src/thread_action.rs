@@ -118,6 +118,12 @@ struct BlockedReceiverContext {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct BlockedNotificationContext {
+    thread: ThreadId,
+    cpu: CpuId,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct SendIpcRequest {
     endpoint: ObjectId,
     caller: Option<ObjectId>,
@@ -389,6 +395,34 @@ fn blocked_receive_grant(
             actual,
         }),
         None => Err(ThreadActionError::UnknownThread { thread: receiver }),
+    }
+}
+
+fn blocked_notification_context(
+    threads: &ThreadTable,
+    notification: ObjectId,
+    receiver: ThreadId,
+) -> Result<BlockedNotificationContext, ThreadActionError> {
+    let Some(tcb) = threads.get(receiver) else {
+        return Err(ThreadActionError::UnknownThread { thread: receiver });
+    };
+
+    match tcb.state() {
+        ThreadState::BlockedOnNotification {
+            notification: blocked_notification,
+            receiver_cpu,
+        } if blocked_notification == notification => Ok(BlockedNotificationContext {
+            thread: receiver,
+            cpu: receiver_cpu,
+        }),
+        actual => Err(ThreadActionError::UnexpectedThreadState {
+            thread: receiver,
+            expected: ThreadState::BlockedOnNotification {
+                notification,
+                receiver_cpu: tcb.affinity(),
+            },
+            actual,
+        }),
     }
 }
 
@@ -716,19 +750,24 @@ fn apply_notification_action(
             scheduler,
             thread,
             cpu,
-            ThreadState::BlockedOnNotification { notification },
+            ThreadState::BlockedOnNotification {
+                notification,
+                receiver_cpu: cpu,
+            },
         ),
-        NotificationAction::Delivered {
-            receiver,
-            receiver_cpu,
-            ..
-        } => wake_thread(
-            threads,
-            scheduler,
-            receiver,
-            receiver_cpu,
-            WakeExpectation::State(ThreadState::BlockedOnNotification { notification }),
-        ),
+        NotificationAction::Delivered { receiver, .. } => {
+            let context = blocked_notification_context(threads, notification, receiver)?;
+            wake_thread(
+                threads,
+                scheduler,
+                context.thread,
+                context.cpu,
+                WakeExpectation::State(ThreadState::BlockedOnNotification {
+                    notification,
+                    receiver_cpu: context.cpu,
+                }),
+            )
+        }
         NotificationAction::BoundReceiveCompleted {
             receiver,
             receiver_cpu,
@@ -802,16 +841,19 @@ pub fn signal_notification(
     badge: u64,
     bound_tcb: BoundTcbSignal,
 ) -> Result<ThreadAction, ThreadActionError> {
-    if let Some(waiter) = notification.next_waiter() {
+    let waiting_context = if let Some(waiter) = notification.next_waiter() {
+        let context = blocked_notification_context(threads, notification_object, waiter.thread())?;
         validate_wake(
             threads,
             scheduler,
-            waiter.thread(),
-            waiter.cpu(),
+            context.thread,
+            context.cpu,
             WakeExpectation::State(ThreadState::BlockedOnNotification {
                 notification: notification_object,
+                receiver_cpu: context.cpu,
             }),
         )?;
+        Some(context)
     } else if notification.state() == NotificationState::Idle && bound_tcb.is_ready() {
         if let Some(bound) = notification.bound_tcb() {
             validate_wake(
@@ -824,10 +866,26 @@ pub fn signal_notification(
                 },
             )?;
         }
-    }
+        None
+    } else {
+        None
+    };
 
     let action = notification.signal(badge, bound_tcb);
-    apply_notification_action(threads, scheduler, notification_object, action)
+    match action {
+        NotificationAction::Delivered { receiver, .. } => {
+            let context =
+                waiting_context.expect("prechecked notification delivery must have waiter context");
+            assert_eq!(receiver, context.thread);
+            Ok(wake_thread_validated(
+                threads,
+                scheduler,
+                context.thread,
+                context.cpu,
+            ))
+        }
+        action => apply_notification_action(threads, scheduler, notification_object, action),
+    }
 }
 
 fn apply_reply_action(
@@ -1382,6 +1440,7 @@ mod tests {
             .unwrap()
             .set_state(ThreadState::BlockedOnNotification {
                 notification: object(20),
+                receiver_cpu: cpu(1),
             });
         let mut scheduler = scheduler_with_current(Some(1), None);
 
@@ -1402,6 +1461,7 @@ mod tests {
                 },
                 actual: ThreadState::BlockedOnNotification {
                     notification: object(20),
+                    receiver_cpu: cpu(1),
                 },
             })
         );
@@ -1706,6 +1766,7 @@ mod tests {
             .unwrap()
             .set_state(ThreadState::BlockedOnNotification {
                 notification: object(20),
+                receiver_cpu: cpu(1),
             });
         let mut scheduler = Scheduler::new(&[cpu(0), cpu(1)]).unwrap();
 
@@ -1720,6 +1781,7 @@ mod tests {
                 },
                 actual: ThreadState::BlockedOnNotification {
                     notification: object(20),
+                    receiver_cpu: cpu(1),
                 },
             })
         );
@@ -1727,6 +1789,7 @@ mod tests {
             threads.state(thread(2)),
             Some(ThreadState::BlockedOnNotification {
                 notification: object(20),
+                receiver_cpu: cpu(1),
             })
         );
         assert_eq!(scheduler.run_queue(cpu(1)).unwrap().ready_len(), 0);
@@ -2199,6 +2262,45 @@ mod tests {
     }
 
     #[test]
+    fn notification_delivery_uses_tcb_blocked_cpu_owner_state() {
+        // Goal: notification queues carry waiter identity while TCB state owns blocked CPU metadata.
+        // Scope: signal_notification delivery across Notification and ThreadTable owner boundary.
+        // Semantics: a queued waiter wakes on the CPU recorded by its BlockedOnNotification state.
+        let mut notification = Notification::new();
+        notification.wait(thread(1), cpu(0));
+        let mut threads = table_with_threads(&[(1, cpu(1))]);
+        threads
+            .get_mut(thread(1))
+            .unwrap()
+            .set_state(ThreadState::BlockedOnNotification {
+                notification: object(20),
+                receiver_cpu: cpu(1),
+            });
+        let mut scheduler = Scheduler::new(&[cpu(0), cpu(1)]).unwrap();
+
+        assert_eq!(
+            signal_notification(
+                &mut threads,
+                &mut scheduler,
+                &mut notification,
+                object(20),
+                0b100,
+                BoundTcbSignal::NotReady,
+            ),
+            Ok(ThreadAction::Woken {
+                thread: thread(1),
+                cpu: cpu(1),
+                scheduler: SchedulerAction::Enqueued {
+                    thread: thread(1),
+                    cpu: cpu(1),
+                },
+            })
+        );
+        assert_eq!(notification.queued_waiters(), 0);
+        assert_eq!(threads.state(thread(1)), Some(ThreadState::Running));
+    }
+
+    #[test]
     fn signal_notification_precheck_failure_does_not_consume_waiter() {
         // Goal: notification waiter state is validated before queue consumption.
         // Scope: signal_notification failure path for stale Notification waiters.
@@ -2229,6 +2331,7 @@ mod tests {
                 thread: thread(1),
                 expected: ThreadState::BlockedOnNotification {
                     notification: object(20),
+                    receiver_cpu: cpu(0),
                 },
                 actual: ThreadState::BlockedOnReceive {
                     endpoint: object(10),

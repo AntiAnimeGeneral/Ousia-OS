@@ -48,6 +48,7 @@ pub enum ThreadState {
     BlockedOnReply,
     BlockedOnNotification {
         notification: ObjectId,
+        receiver_cpu: CpuId,
     },
     IdleThreadState,
 }
@@ -175,7 +176,7 @@ mod tests {
     )]
     #[case::blocked_reply_is_blocked_and_stopped(ThreadState::BlockedOnReply, true, false, true)]
     #[case::blocked_notification_is_blocked_and_stopped(
-        ThreadState::BlockedOnNotification { notification: object(2) },
+        ThreadState::BlockedOnNotification { notification: object(2), receiver_cpu: CpuId::new(1) },
         true,
         false,
         true
@@ -221,6 +222,7 @@ mod tests {
 
         tcb.set_state(ThreadState::BlockedOnNotification {
             notification: object(10),
+            receiver_cpu: CpuId::new(0),
         });
 
         assert!(!tcb.waits_on_bound_notification_receive(object(10)));

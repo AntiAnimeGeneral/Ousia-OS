@@ -536,7 +536,17 @@ impl KernelState {
             .expect("notification finalisation must target a notification object")
             .cancel_all();
         for waiter in cancellation.waiters {
-            self.restart_thread(waiter.thread(), waiter.cpu());
+            let receiver_cpu = match self.threads.state(waiter.thread()) {
+                Some(ThreadState::BlockedOnNotification {
+                    notification,
+                    receiver_cpu,
+                }) if notification == object => receiver_cpu,
+                state => panic!(
+                    "notification finalisation waiter must match blocked TCB state: {:?}",
+                    state
+                ),
+            };
+            self.restart_thread(waiter.thread(), receiver_cpu);
         }
         if let Some(bound) = cancellation.bound_tcb {
             self.threads.unbind_notification(bound.thread());
@@ -562,7 +572,7 @@ impl KernelState {
                     endpoint.cancel_thread(tcb.id());
                 }
             }
-            ThreadState::BlockedOnNotification { notification } => {
+            ThreadState::BlockedOnNotification { notification, .. } => {
                 if let Ok(notification) = self.objects.notification_mut(notification) {
                     notification.cancel_waiter(tcb.id());
                 }
@@ -1776,6 +1786,7 @@ mod tests {
         state.threads_mut().get_mut(thread(2)).unwrap().set_state(
             ThreadState::BlockedOnNotification {
                 notification: object(20),
+                receiver_cpu: cpu(1),
             },
         );
 
@@ -1798,6 +1809,7 @@ mod tests {
                     },
                     actual: ThreadState::BlockedOnNotification {
                         notification: object(20),
+                        receiver_cpu: cpu(1),
                     },
                 }
             ))
@@ -1815,6 +1827,7 @@ mod tests {
             state.threads().state(thread(2)),
             Some(ThreadState::BlockedOnNotification {
                 notification: object(20),
+                receiver_cpu: cpu(1),
             })
         );
         assert_eq!(

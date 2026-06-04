@@ -15,7 +15,6 @@ pub enum NotificationState {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct NotificationWaiter {
     thread: ThreadId,
-    cpu: CpuId,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -35,7 +34,6 @@ pub enum BoundTcbSignal {
 pub enum NotificationAction {
     Delivered {
         receiver: ThreadId,
-        receiver_cpu: CpuId,
         badge: u64,
     },
     BoundReceiveCompleted {
@@ -84,10 +82,6 @@ pub struct NotificationCancellation {
 impl NotificationWaiter {
     pub const fn thread(self) -> ThreadId {
         self.thread
-    }
-
-    pub const fn cpu(self) -> CpuId {
-        self.cpu
     }
 }
 
@@ -169,7 +163,6 @@ impl Notification {
                 }
                 NotificationAction::Delivered {
                     receiver: waiter.thread,
-                    receiver_cpu: waiter.cpu,
                     badge,
                 }
             }
@@ -179,10 +172,8 @@ impl Notification {
     pub fn wait(&mut self, receiver: ThreadId, receiver_cpu: CpuId) -> NotificationAction {
         match self.state {
             NotificationState::Idle | NotificationState::Waiting => {
-                self.waiters.push_back(NotificationWaiter {
-                    thread: receiver,
-                    cpu: receiver_cpu,
-                });
+                self.waiters
+                    .push_back(NotificationWaiter { thread: receiver });
                 self.state = NotificationState::Waiting;
                 NotificationAction::ReceiverBlocked {
                     thread: receiver,
@@ -369,7 +360,6 @@ mod tests {
         BoundTcbSignal::NotReady,
         NotificationAction::Delivered {
             receiver: thread(1),
-            receiver_cpu: cpu(0),
             badge: 0b1000,
         },
         NotificationState::Waiting,

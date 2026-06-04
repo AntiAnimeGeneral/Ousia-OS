@@ -70,6 +70,14 @@ fn retyped_descriptor(outcome: ExecutionOutcome, context: &str) -> CapabilityDes
 }
 
 fn configure_thread(state: &mut kernel::state::KernelState, id: u64) -> CapabilityDescriptor {
+    configure_thread_on_cpu(state, id, cpu(0))
+}
+
+fn configure_thread_on_cpu(
+    state: &mut kernel::state::KernelState,
+    id: u64,
+    affinity: kernel::tcb::CpuId,
+) -> CapabilityDescriptor {
     let descriptor = state
         .cspace_mut()
         .insert_initial_capability(Capability::Tcb(TcbCap {
@@ -79,7 +87,7 @@ fn configure_thread(state: &mut kernel::state::KernelState, id: u64) -> Capabili
     let object = state.cspace().lookup(descriptor).unwrap().object;
     state.objects_mut().insert_tcb(object).unwrap();
     state
-        .insert_thread_object(object, Tcb::new(thread(id), cpu(0)))
+        .insert_thread_object(object, Tcb::new(thread(id), affinity))
         .unwrap();
     descriptor
 }
@@ -946,6 +954,96 @@ fn cnode_revoke_endpoint_restarts_blocked_sender_before_removing_object() {
         state.objects().get(endpoint_object),
         Err(ObjectTableError::ObjectNotFound {
             object: endpoint_object,
+        })
+    );
+}
+
+#[test]
+fn cnode_revoke_notification_restarts_waiter_from_tcb_blocked_cpu() {
+    // Goal: Notification finalisation consumes waiter CPU metadata from TCB state.
+    // Scope: host integration across Notification wait blocking, ThreadTable state, and CNode revoke.
+    // Semantics: a waiter blocked on a final Notification cap is restarted on its recorded receiver CPU.
+    let (mut state, cnode) = cnode_state();
+    let root = state
+        .cspace_mut()
+        .insert_initial_capability(untyped(12))
+        .unwrap();
+    let notification = retyped_descriptor(
+        state
+            .execute_invocation(
+                InvocationContext::new(thread(1), cpu(0)),
+                root,
+                Invocation::UntypedRetype {
+                    target: RetypeTarget::Notification,
+                },
+            )
+            .unwrap(),
+        "Notification retype",
+    );
+    let notification_object = state.cspace().lookup(notification).unwrap().object;
+    let waiter_tcb = configure_thread_on_cpu(&mut state, 11, cpu(1));
+
+    assert_eq!(
+        state.execute_invocation(
+            InvocationContext::new(thread(11), cpu(1)),
+            waiter_tcb,
+            Invocation::TcbResume,
+        ),
+        Ok(ExecutionOutcome::Thread(
+            kernel::thread_action::ThreadAction::Resumed {
+                thread: thread(11),
+                cpu: cpu(1),
+                scheduler: kernel::scheduler::SchedulerAction::Enqueued {
+                    thread: thread(11),
+                    cpu: cpu(1),
+                },
+            }
+        ))
+    );
+    state.scheduler_mut().schedule_next(cpu(1)).unwrap();
+
+    assert_eq!(
+        state.execute_invocation(
+            InvocationContext::new(thread(11), cpu(1)),
+            notification,
+            Invocation::NotificationWait { blocking: true },
+        ),
+        Ok(ExecutionOutcome::Thread(
+            kernel::thread_action::ThreadAction::Blocked {
+                thread: thread(11),
+                cpu: cpu(1),
+            }
+        ))
+    );
+    assert_eq!(
+        state.threads().state(thread(11)),
+        Some(ThreadState::BlockedOnNotification {
+            notification: notification_object,
+            receiver_cpu: cpu(1),
+        })
+    );
+
+    assert_eq!(
+        state.execute_invocation(
+            InvocationContext::new(thread(1), cpu(0)),
+            cnode,
+            Invocation::CNodeRevoke { target: root },
+        ),
+        Ok(ExecutionOutcome::CapabilityMutation)
+    );
+
+    assert_eq!(
+        state.threads().state(thread(11)),
+        Some(ThreadState::Restart)
+    );
+    assert_eq!(
+        state.scheduler().placement(thread(11)),
+        Some(kernel::scheduler::ThreadPlacement::Ready { cpu: cpu(1) })
+    );
+    assert_eq!(
+        state.objects().get(notification_object),
+        Err(ObjectTableError::ObjectNotFound {
+            object: notification_object,
         })
     );
 }
