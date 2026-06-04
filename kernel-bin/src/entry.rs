@@ -75,7 +75,7 @@ fn run_multicore_kernel_state_smoke() {
         Err(_) => panic!("kernel state creation failed during multicore smoke"),
     };
 
-    if state.objects_mut().insert_tcb(tcb_object).is_err() {
+    if state.objects.insert_tcb(tcb_object).is_err() {
         panic!("TCB object insertion failed during multicore smoke");
     }
     if state
@@ -84,13 +84,13 @@ fn run_multicore_kernel_state_smoke() {
     {
         panic!("thread insertion failed during multicore smoke");
     }
-    if state.objects().tcb_thread(tcb_object) != Ok(thread) {
+    if state.objects.tcb_thread(tcb_object) != Ok(thread) {
         panic!("TCB object binding failed during multicore smoke");
     }
-    if state.threads().affinity(thread) != Some(cpu1) {
+    if state.threads.affinity(thread) != Some(cpu1) {
         panic!("thread affinity mismatch during multicore smoke");
     }
-    if state.scheduler().placement(thread).is_some() {
+    if state.scheduler.placement(thread).is_some() {
         panic!("inactive thread was scheduled during multicore smoke");
     }
 }

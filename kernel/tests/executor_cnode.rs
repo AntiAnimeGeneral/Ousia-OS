@@ -13,6 +13,7 @@ use kernel::{
         tcb::{CpuId, Tcb, ThreadState},
     },
 };
+use rstest::rstest;
 use support::{cpu, thread};
 
 fn root_cnode_cap() -> CNodeCap {
@@ -32,14 +33,6 @@ fn source_path(root: CapabilityDescriptor, slot: kernel::cap::SlotId) -> CNodePa
         capptr: slot.raw(),
         depth: 6,
     }
-}
-
-fn guarded_cnode(radix: u8, guard: u64, guard_size: u8) -> CNodeCap {
-    CNodeCap::with_guard(radix, guard, guard_size)
-}
-
-fn windowed_cnode(radix: u8, guard: u64, guard_size: u8) -> CNodeCap {
-    CNodeCap::with_guard(radix, guard, guard_size)
 }
 
 fn endpoint(rights: Rights, badge: u64) -> Capability {
@@ -105,198 +98,187 @@ fn configure_thread_on_cpu(
     descriptor
 }
 
-#[test]
-fn cnode_copy_mint_and_move_path_commit_to_selected_slot() {
+#[rstest]
+#[case::copy_reduces_rights_and_keeps_source_live(
+    "copy reduces rights and keeps source live",
+    endpoint(Rights::READ | Rights::WRITE, 0x42),
+    40,
+    |source, destination| Invocation::CNodeCopyPath {
+        source,
+        destination,
+        requested_rights: Rights::READ,
+    },
+    endpoint(Rights::READ, 0x42),
+    false,
+)]
+#[case::mint_badges_without_escalating_rights(
+    "mint badges without escalating rights",
+    endpoint(Rights::READ | Rights::WRITE, 0),
+    41,
+    |source, destination| Invocation::CNodeMintPath {
+        source,
+        destination,
+        requested_rights: Rights::READ,
+        params: MintParams::badge(0x99),
+    },
+    endpoint(Rights::READ, 0x99),
+    false,
+)]
+#[case::move_transfers_object_authority_and_invalidates_source(
+    "move transfers object authority and invalidates source",
+    endpoint(Rights::READ, 0x22),
+    42,
+    |source, destination| Invocation::CNodeMovePath {
+        source,
+        destination,
+    },
+    endpoint(Rights::READ, 0x22),
+    true,
+)]
+fn cnode_copy_mint_and_move_path_commit_to_selected_slot(
+    #[case] label: &str,
+    #[case] source_capability: Capability,
+    #[case] destination: u64,
+    #[case] invocation: fn(CNodePath, CNodePathTarget) -> Invocation,
+    #[case] expected_capability: Capability,
+    #[case] invalidates_source: bool,
+) {
     // Goal: CNode mutations commit through the executor into the path-selected slot.
     // Scope: host integration through CNodeCopyPath, CNodeMintPath, and CNodeMovePath.
     // Semantics: each case preserves its authority semantics while resolving under the invoked CNode.
-    struct Case {
-        label: &'static str,
-        source: Capability,
-        destination: u64,
-        invocation: fn(CNodePath, CNodePathTarget) -> Invocation,
-        expected_capability: Capability,
-        invalidates_source: bool,
-    }
+    let (mut state, cnode) = cnode_state();
+    let source = state
+        .cspace
+        .insert_initial_capability(source_capability)
+        .unwrap();
+    let source_object = state.cspace.lookup(source).unwrap().object;
+    let destination = kernel::cap::SlotId::new(destination);
 
-    let cases = [
-        Case {
-            label: "copy reduces rights and keeps source live",
-            source: endpoint(Rights::READ | Rights::WRITE, 0x42),
-            destination: 40,
-            invocation: |source, destination| Invocation::CNodeCopyPath {
-                source,
-                destination,
-                requested_rights: Rights::READ,
-            },
-            expected_capability: endpoint(Rights::READ, 0x42),
-            invalidates_source: false,
-        },
-        Case {
-            label: "mint badges without escalating rights",
-            source: endpoint(Rights::READ | Rights::WRITE, 0),
-            destination: 41,
-            invocation: |source, destination| Invocation::CNodeMintPath {
-                source,
-                destination,
-                requested_rights: Rights::READ,
-                params: MintParams::badge(0x99),
-            },
-            expected_capability: endpoint(Rights::READ, 0x99),
-            invalidates_source: false,
-        },
-        Case {
-            label: "move transfers object authority and invalidates source",
-            source: endpoint(Rights::READ, 0x22),
-            destination: 42,
-            invocation: |source, destination| Invocation::CNodeMovePath {
-                source,
-                destination,
-            },
-            expected_capability: endpoint(Rights::READ, 0x22),
-            invalidates_source: true,
-        },
-    ];
+    let descriptor = capability_descriptor(
+        state
+            .execute_invocation(
+                InvocationContext::new(thread(1), cpu(0)),
+                cnode,
+                invocation(source_path(cnode, source.slot), target_slot(destination)),
+            )
+            .unwrap(),
+        label,
+    );
 
-    for case in cases {
-        let (mut state, cnode) = cnode_state();
-        let source = state.cspace.insert_initial_capability(case.source).unwrap();
-        let source_object = state.cspace.lookup(source).unwrap().object;
-        let destination = kernel::cap::SlotId::new(case.destination);
-
-        let descriptor = capability_descriptor(
-            state
-                .execute_invocation(
-                    InvocationContext::new(thread(1), cpu(0)),
-                    cnode,
-                    (case.invocation)(source_path(cnode, source.slot), target_slot(destination)),
-                )
-                .unwrap(),
-            case.label,
+    assert_eq!(descriptor.slot, destination, "{}", label);
+    let view = state.cspace.lookup(descriptor).unwrap();
+    assert_eq!(view.capability, expected_capability, "{}", label);
+    assert_eq!(view.object, source_object, "{}", label);
+    if invalidates_source {
+        assert!(
+            matches!(state.cspace.lookup(source), Err(CapError::SlotNotFound(_))),
+            "{}",
+            label
         );
-
-        assert_eq!(descriptor.slot, destination, "{}", case.label);
-        let view = state.cspace.lookup(descriptor).unwrap();
-        assert_eq!(view.capability, case.expected_capability, "{}", case.label);
-        assert_eq!(view.object, source_object, "{}", case.label);
-        if case.invalidates_source {
-            assert!(
-                matches!(state.cspace.lookup(source), Err(CapError::SlotNotFound(_))),
-                "{}",
-                case.label
-            );
-        } else {
-            assert!(state.cspace.lookup(source).is_ok(), "{}", case.label);
-        }
+    } else {
+        assert!(state.cspace.lookup(source).is_ok(), "{}", label);
     }
 }
 
-#[test]
-fn cnode_path_copy_mint_and_move_resolve_destination_window() {
+#[rstest]
+#[case::copy_path_reduces_rights_and_keeps_source_live(
+    "copy path reduces rights and keeps source live",
+    endpoint(Rights::READ | Rights::WRITE, 0x42),
+    32,
+    0b10_0110,
+    |source, destination| Invocation::CNodeCopyPath {
+        source,
+        destination,
+        requested_rights: Rights::READ,
+    },
+    endpoint(Rights::READ, 0x42),
+    false,
+)]
+#[case::mint_path_applies_badge_after_path_resolution(
+    "mint path applies badge after path resolution",
+    endpoint(Rights::READ | Rights::WRITE, 0),
+    48,
+    0b10_0011,
+    |source, destination| Invocation::CNodeMintPath {
+        source,
+        destination,
+        requested_rights: Rights::READ,
+        params: MintParams::badge(0x77),
+    },
+    endpoint(Rights::READ, 0x77),
+    false,
+)]
+#[case::move_path_transfers_authority_after_path_resolution(
+    "move path transfers authority after path resolution",
+    endpoint(Rights::READ, 0x22),
+    64,
+    0b10_0010,
+    |source, destination| Invocation::CNodeMovePath {
+        source,
+        destination,
+    },
+    endpoint(Rights::READ, 0x22),
+    true,
+)]
+fn cnode_path_copy_mint_and_move_resolve_destination_window(
+    #[case] label: &str,
+    #[case] source_capability: Capability,
+    #[case] window_start: u64,
+    #[case] capptr: u64,
+    #[case] invocation: fn(CNodePath, CNodePathTarget) -> Invocation,
+    #[case] expected_capability: Capability,
+    #[case] invalidates_source: bool,
+) {
     // Goal: path-based CNode mutations resolve guard/radix under the invoked CNode before commit.
     // Scope: host integration through CNodeCopyPath, CNodeMintPath, and CNodeMovePath.
     // Semantics: each case lands in the slot selected by the CNode path, not a raw slot argument.
-    struct Case {
-        label: &'static str,
-        source: Capability,
-        window_start: u64,
-        capptr: u64,
-        invocation: fn(CNodePath, CNodePathTarget) -> Invocation,
-        expected_capability: Capability,
-        invalidates_source: bool,
-    }
+    let mut state = kernel::state::KernelState::new(&[cpu(0), cpu(1)]).unwrap();
+    let cnode = state
+        .cspace
+        .insert_initial_cnode_capability(
+            CNodeCap::with_guard(4, 0b10, 2),
+            kernel::cap::SlotId::new(window_start),
+        )
+        .unwrap();
+    let source_root = state
+        .cspace
+        .insert_initial_cnode_capability(root_cnode_cap(), kernel::cap::SlotId::new(0))
+        .unwrap();
+    let source = state
+        .cspace
+        .insert_initial_capability(source_capability)
+        .unwrap();
+    let source_object = state.cspace.lookup(source).unwrap().object;
+    let target = CNodePathTarget { capptr, depth: 6 };
 
-    let cases = [
-        Case {
-            label: "copy path reduces rights and keeps source live",
-            source: endpoint(Rights::READ | Rights::WRITE, 0x42),
-            window_start: 32,
-            capptr: 0b10_0110,
-            invocation: |source, destination| Invocation::CNodeCopyPath {
-                source,
-                destination,
-                requested_rights: Rights::READ,
-            },
-            expected_capability: endpoint(Rights::READ, 0x42),
-            invalidates_source: false,
-        },
-        Case {
-            label: "mint path applies badge after path resolution",
-            source: endpoint(Rights::READ | Rights::WRITE, 0),
-            window_start: 48,
-            capptr: 0b10_0011,
-            invocation: |source, destination| Invocation::CNodeMintPath {
-                source,
-                destination,
-                requested_rights: Rights::READ,
-                params: MintParams::badge(0x77),
-            },
-            expected_capability: endpoint(Rights::READ, 0x77),
-            invalidates_source: false,
-        },
-        Case {
-            label: "move path transfers authority after path resolution",
-            source: endpoint(Rights::READ, 0x22),
-            window_start: 64,
-            capptr: 0b10_0010,
-            invocation: |source, destination| Invocation::CNodeMovePath {
-                source,
-                destination,
-            },
-            expected_capability: endpoint(Rights::READ, 0x22),
-            invalidates_source: true,
-        },
-    ];
-
-    for case in cases {
-        let mut state = kernel::state::KernelState::new(&[cpu(0), cpu(1)]).unwrap();
-        let cnode = state
-            .cspace
-            .insert_initial_cnode_capability(
-                windowed_cnode(4, 0b10, 2),
-                kernel::cap::SlotId::new(case.window_start),
+    let descriptor = capability_descriptor(
+        state
+            .execute_invocation(
+                InvocationContext::new(thread(1), cpu(0)),
+                cnode,
+                invocation(source_path(source_root, source.slot), target),
             )
-            .unwrap();
-        let source_root = state
-            .cspace
-            .insert_initial_cnode_capability(root_cnode_cap(), kernel::cap::SlotId::new(0))
-            .unwrap();
-        let source = state.cspace.insert_initial_capability(case.source).unwrap();
-        let source_object = state.cspace.lookup(source).unwrap().object;
-        let target = CNodePathTarget {
-            capptr: case.capptr,
-            depth: 6,
-        };
+            .unwrap(),
+        label,
+    );
 
-        let descriptor = capability_descriptor(
-            state
-                .execute_invocation(
-                    InvocationContext::new(thread(1), cpu(0)),
-                    cnode,
-                    (case.invocation)(source_path(source_root, source.slot), target),
-                )
-                .unwrap(),
-            case.label,
-        );
-
-        assert_eq!(
-            descriptor.slot,
-            kernel::cap::SlotId::new(case.window_start + (case.capptr & 0b1111)),
+    assert_eq!(
+        descriptor.slot,
+        kernel::cap::SlotId::new(window_start + (capptr & 0b1111)),
+        "{}",
+        label
+    );
+    let view = state.cspace.lookup(descriptor).unwrap();
+    assert_eq!(view.capability, expected_capability, "{}", label);
+    assert_eq!(view.object, source_object, "{}", label);
+    if invalidates_source {
+        assert!(
+            matches!(state.cspace.lookup(source), Err(CapError::SlotNotFound(_))),
             "{}",
-            case.label
+            label
         );
-        let view = state.cspace.lookup(descriptor).unwrap();
-        assert_eq!(view.capability, case.expected_capability, "{}", case.label);
-        assert_eq!(view.object, source_object, "{}", case.label);
-        if case.invalidates_source {
-            assert!(
-                matches!(state.cspace.lookup(source), Err(CapError::SlotNotFound(_))),
-                "{}",
-                case.label
-            );
-        } else {
-            assert!(state.cspace.lookup(source).is_ok(), "{}", case.label);
-        }
+    } else {
+        assert!(state.cspace.lookup(source).is_ok(), "{}", label);
     }
 }
 
@@ -308,7 +290,10 @@ fn cnode_copy_path_resolves_source_under_explicit_source_root() {
     let mut state = kernel::state::KernelState::new(&[cpu(0), cpu(1)]).unwrap();
     let destination_root = state
         .cspace
-        .insert_initial_cnode_capability(windowed_cnode(4, 0, 0), kernel::cap::SlotId::new(80))
+        .insert_initial_cnode_capability(
+            CNodeCap::with_guard(4, 0, 0),
+            kernel::cap::SlotId::new(80),
+        )
         .unwrap();
     let source_root = state
         .cspace
@@ -388,7 +373,10 @@ fn cnode_copy_path_guard_mismatch_fails_without_source_mutation() {
     let mut state = kernel::state::KernelState::new(&[cpu(0), cpu(1)]).unwrap();
     let cnode = state
         .cspace
-        .insert_initial_cnode_capability(guarded_cnode(4, 0b10, 2), kernel::cap::SlotId::new(0))
+        .insert_initial_cnode_capability(
+            CNodeCap::with_guard(4, 0b10, 2),
+            kernel::cap::SlotId::new(0),
+        )
         .unwrap();
     let source_root = state
         .cspace
@@ -442,7 +430,10 @@ fn cnode_delete_path_invalidates_resolved_target() {
     let mut state = kernel::state::KernelState::new(&[cpu(0), cpu(1)]).unwrap();
     let cnode = state
         .cspace
-        .insert_initial_cnode_capability(windowed_cnode(4, 0b10, 2), kernel::cap::SlotId::new(80))
+        .insert_initial_cnode_capability(
+            CNodeCap::with_guard(4, 0b10, 2),
+            kernel::cap::SlotId::new(80),
+        )
         .unwrap();
     let source = state
         .cspace
@@ -491,7 +482,10 @@ fn cnode_revoke_path_removes_descendants_but_keeps_resolved_target() {
     // this window starts at the next initial slot so the path resolves to root.
     let cnode = state
         .cspace
-        .insert_initial_cnode_capability(windowed_cnode(4, 0b10, 2), kernel::cap::SlotId::new(2))
+        .insert_initial_cnode_capability(
+            CNodeCap::with_guard(4, 0b10, 2),
+            kernel::cap::SlotId::new(2),
+        )
         .unwrap();
     let root = state
         .cspace
@@ -520,75 +514,68 @@ fn cnode_revoke_path_removes_descendants_but_keeps_resolved_target() {
     ));
 }
 
-#[test]
-fn cnode_copy_and_mint_path_to_occupied_destination_preserve_source() {
+#[rstest]
+#[case::copy_does_not_derive_into_occupied_slot(
+    "copy does not derive into an occupied slot",
+    endpoint(Rights::READ, 0x33),
+    |source, destination| Invocation::CNodeCopyPath {
+        source,
+        destination,
+        requested_rights: Rights::READ,
+    },
+)]
+#[case::mint_does_not_badge_into_occupied_slot(
+    "mint does not badge into an occupied slot",
+    endpoint(Rights::READ | Rights::WRITE, 0),
+    |source, destination| Invocation::CNodeMintPath {
+        source,
+        destination,
+        requested_rights: Rights::READ,
+        params: MintParams::badge(0x99),
+    },
+)]
+fn cnode_copy_and_mint_path_to_occupied_destination_preserve_source(
+    #[case] label: &str,
+    #[case] source_capability: Capability,
+    #[case] invocation: fn(CNodePath, CNodePathTarget) -> Invocation,
+) {
     // Goal: derivation-style CNode operations validate destination emptiness before source mutation.
     // Scope: host integration of CNodeCopyPath and CNodeMintPath failure paths.
     // Semantics: occupied destination fails, source authority remains unchanged, and occupied cap survives.
-    struct Case {
-        label: &'static str,
-        source: Capability,
-        invocation: fn(CNodePath, CNodePathTarget) -> Invocation,
-    }
+    let (mut state, cnode) = cnode_state();
+    let source = state
+        .cspace
+        .insert_initial_capability(source_capability.clone())
+        .unwrap();
+    let occupied = state
+        .cspace
+        .insert_initial_capability(endpoint(Rights::READ, 0x44))
+        .unwrap();
 
-    let cases = [
-        Case {
-            label: "copy does not derive into an occupied slot",
-            source: endpoint(Rights::READ, 0x33),
-            invocation: |source, destination| Invocation::CNodeCopyPath {
-                source,
-                destination,
-                requested_rights: Rights::READ,
-            },
-        },
-        Case {
-            label: "mint does not badge into an occupied slot",
-            source: endpoint(Rights::READ | Rights::WRITE, 0),
-            invocation: |source, destination| Invocation::CNodeMintPath {
-                source,
-                destination,
-                requested_rights: Rights::READ,
-                params: MintParams::badge(0x99),
-            },
-        },
-    ];
-
-    for case in cases {
-        let (mut state, cnode) = cnode_state();
-        let source = state
-            .cspace
-            .insert_initial_capability(case.source.clone())
-            .unwrap();
-        let occupied = state
-            .cspace
-            .insert_initial_capability(endpoint(Rights::READ, 0x44))
-            .unwrap();
-
-        assert_eq!(
-            state.execute_invocation(
-                InvocationContext::new(thread(1), cpu(0)),
-                cnode,
-                (case.invocation)(source_path(cnode, source.slot), target_slot(occupied.slot)),
-            ),
-            Err(KernelExecutionError::Invocation(
-                kernel::invocation::InvocationError::Cap(CapError::SlotOccupied(occupied.slot))
-            )),
-            "{}",
-            case.label
-        );
-        assert_eq!(
-            state.cspace.lookup(source).unwrap().capability,
-            case.source,
-            "{}",
-            case.label
-        );
-        assert_eq!(
-            state.cspace.lookup(occupied).unwrap().capability,
-            endpoint(Rights::READ, 0x44),
-            "{}",
-            case.label
-        );
-    }
+    assert_eq!(
+        state.execute_invocation(
+            InvocationContext::new(thread(1), cpu(0)),
+            cnode,
+            invocation(source_path(cnode, source.slot), target_slot(occupied.slot)),
+        ),
+        Err(KernelExecutionError::Invocation(
+            kernel::invocation::InvocationError::Cap(CapError::SlotOccupied(occupied.slot))
+        )),
+        "{}",
+        label
+    );
+    assert_eq!(
+        state.cspace.lookup(source).unwrap().capability,
+        source_capability,
+        "{}",
+        label
+    );
+    assert_eq!(
+        state.cspace.lookup(occupied).unwrap().capability,
+        endpoint(Rights::READ, 0x44),
+        "{}",
+        label
+    );
 }
 
 #[test]
@@ -1348,8 +1335,31 @@ fn cnode_copy_rights_failure_does_not_consume_new_slot() {
     assert!(state.cspace.lookup(source).is_ok());
 }
 
-#[test]
-fn cnode_operation_requires_cnode_capability_without_mutating_source() {
+#[rstest]
+#[case::copy_path(|invoking_endpoint, target| Invocation::CNodeCopyPath {
+    source: source_path(invoking_endpoint, target),
+    destination: target_slot(kernel::cap::SlotId::new(49)),
+    requested_rights: Rights::READ,
+})]
+#[case::mint_path(|invoking_endpoint, target| Invocation::CNodeMintPath {
+    source: source_path(invoking_endpoint, target),
+    destination: target_slot(kernel::cap::SlotId::new(50)),
+    requested_rights: Rights::READ,
+    params: MintParams::badge(0x45),
+})]
+#[case::move_path(|invoking_endpoint, target| Invocation::CNodeMovePath {
+    source: source_path(invoking_endpoint, target),
+    destination: target_slot(kernel::cap::SlotId::new(51)),
+})]
+#[case::delete_path(|_, target| Invocation::CNodeDeletePath {
+    target: target_slot(target),
+})]
+#[case::revoke_path(|_, target| Invocation::CNodeRevokePath {
+    target: target_slot(target),
+})]
+fn cnode_operation_requires_cnode_capability_without_mutating_source(
+    #[case] build_invocation: fn(CapabilityDescriptor, kernel::cap::SlotId) -> Invocation,
+) {
     // Goal: invoking CNode authority is checked before the source slot is touched.
     // Scope: host integration of authorization failure before CSpace mutation.
     // Semantics: a non-CNode cap cannot mutate source or target slots.
@@ -1362,47 +1372,22 @@ fn cnode_operation_requires_cnode_capability_without_mutating_source() {
         .cspace
         .insert_initial_capability(endpoint(Rights::READ, 0x44))
         .unwrap();
-    let cases = [
-        Invocation::CNodeCopyPath {
-            source: source_path(invoking_endpoint, target.slot),
-            destination: target_slot(kernel::cap::SlotId::new(49)),
-            requested_rights: Rights::READ,
-        },
-        Invocation::CNodeMintPath {
-            source: source_path(invoking_endpoint, target.slot),
-            destination: target_slot(kernel::cap::SlotId::new(50)),
-            requested_rights: Rights::READ,
-            params: MintParams::badge(0x45),
-        },
-        Invocation::CNodeMovePath {
-            source: source_path(invoking_endpoint, target.slot),
-            destination: target_slot(kernel::cap::SlotId::new(51)),
-        },
-        Invocation::CNodeDeletePath {
-            target: target_slot(target.slot),
-        },
-        Invocation::CNodeRevokePath {
-            target: target_slot(target.slot),
-        },
-    ];
 
-    for invocation in cases {
-        assert_eq!(
-            state.execute_invocation(
-                InvocationContext::new(thread(1), cpu(0)),
-                invoking_endpoint,
-                invocation,
-            ),
-            Err(KernelExecutionError::Invocation(
-                kernel::invocation::InvocationError::WrongCapability {
-                    expected: kernel::invocation::InvocationTarget::CNode,
-                    actual: endpoint(Rights::READ, 0x43),
-                }
-            ))
-        );
-        assert_eq!(
-            state.cspace.lookup(target).unwrap().capability,
-            endpoint(Rights::READ, 0x44)
-        );
-    }
+    assert_eq!(
+        state.execute_invocation(
+            InvocationContext::new(thread(1), cpu(0)),
+            invoking_endpoint,
+            build_invocation(invoking_endpoint, target.slot),
+        ),
+        Err(KernelExecutionError::Invocation(
+            kernel::invocation::InvocationError::WrongCapability {
+                expected: kernel::invocation::InvocationTarget::CNode,
+                actual: endpoint(Rights::READ, 0x43),
+            }
+        ))
+    );
+    assert_eq!(
+        state.cspace.lookup(target).unwrap().capability,
+        endpoint(Rights::READ, 0x44)
+    );
 }
