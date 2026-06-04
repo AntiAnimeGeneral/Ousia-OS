@@ -676,7 +676,7 @@ fn untyped_retype_cnode_creates_usable_slot_window() {
 
     let source_root = state
         .cspace
-        .insert_initial_capability(Capability::CNode(CNodeCap::new(6)))
+        .insert_initial_cnode_capability(CNodeCap::new(6), SlotId::new(0))
         .unwrap();
     let source = state
         .cspace

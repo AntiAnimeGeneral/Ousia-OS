@@ -498,10 +498,20 @@ pub enum CapError {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct KernelObject {
-    kind: ObjectKind,
+    payload: KernelObjectPayload,
     generation: u64,
     destroyed: bool,
-    cnode_window_start: Option<SlotId>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum KernelObjectPayload {
+    Endpoint,
+    Frame,
+    CNode { window_start: SlotId },
+    Untyped,
+    Tcb,
+    Notification,
+    Reply,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -583,7 +593,7 @@ impl CapabilitySpace {
         &mut self,
         capability: Capability,
     ) -> Result<CapabilityDescriptor, CapError> {
-        if matches!(capability, Capability::Reply(_)) {
+        if matches!(capability, Capability::Reply(_) | Capability::CNode(_)) {
             return Err(CapError::InvalidInitialCapability { capability });
         }
 
@@ -623,11 +633,6 @@ impl CapabilitySpace {
         &mut self,
         capability: Capability,
     ) -> CapabilityDescriptor {
-        if matches!(capability, Capability::CNode(_)) {
-            return self
-                .insert_validated_initial_capability_with_cnode_window(capability, SlotId::new(0));
-        }
-
         let kind = capability_kind(&capability);
         let (object, generation) = self.alloc_object(kind);
         self.insert_root_slot(object, capability, generation)
@@ -640,7 +645,8 @@ impl CapabilitySpace {
     ) -> CapabilityDescriptor {
         let kind = capability_kind(&capability);
         debug_assert_eq!(kind, ObjectKind::CNode);
-        let (object, generation) = self.alloc_object_with_cnode_window(kind, Some(window_start));
+        let (object, generation) =
+            self.alloc_object_with_payload(KernelObjectPayload::CNode { window_start });
         self.insert_root_slot(object, capability, generation)
     }
 
@@ -770,10 +776,11 @@ impl CapabilitySpace {
         if object.destroyed {
             return Err(CapError::ObjectDestroyed(reply_object));
         }
-        if object.kind != ObjectKind::Reply {
+        let actual = object.kind();
+        if actual != ObjectKind::Reply {
             return Err(CapError::WrongCapability {
                 expected: ObjectKind::Reply,
-                actual: object.kind.clone(),
+                actual,
             });
         }
 
@@ -884,7 +891,7 @@ impl CapabilitySpace {
 
         Ok(CapabilityView {
             object: slot.object,
-            object_kind: object.kind.clone(),
+            object_kind: object.kind(),
             capability: slot.capability.clone(),
             rights: slot.rights,
             descriptor,
@@ -1487,37 +1494,33 @@ impl CapabilitySpace {
 
     fn cnode_window_start(&self, object: ObjectId) -> Result<SlotId, CapError> {
         let object_ref = self.object(object)?;
-        if object_ref.kind != ObjectKind::CNode {
+        let actual = object_ref.kind();
+        if actual != ObjectKind::CNode {
             return Err(CapError::WrongCapability {
                 expected: ObjectKind::CNode,
-                actual: object_ref.kind.clone(),
+                actual,
             });
         }
 
         Ok(object_ref
-            .cnode_window_start
+            .cnode_window_start()
             .expect("CNode object must own CTE window metadata"))
     }
 
     fn alloc_object(&mut self, kind: ObjectKind) -> (ObjectId, u64) {
-        self.alloc_object_with_cnode_window(kind, None)
+        self.alloc_object_with_payload(KernelObjectPayload::from_initial_kind(kind))
     }
 
-    fn alloc_object_with_cnode_window(
-        &mut self,
-        kind: ObjectKind,
-        cnode_window_start: Option<SlotId>,
-    ) -> (ObjectId, u64) {
+    fn alloc_object_with_payload(&mut self, payload: KernelObjectPayload) -> (ObjectId, u64) {
         let object = ObjectId(self.next_object);
         self.next_object += 1;
         let generation = 1;
         self.objects.insert(
             object,
             KernelObject {
-                kind,
+                payload,
                 generation,
                 destroyed: false,
-                cnode_window_start,
             },
         );
         (object, generation)
@@ -1529,10 +1532,9 @@ impl CapabilitySpace {
         self.objects.insert(
             object,
             KernelObject {
-                kind: kind.object_kind(),
+                payload: KernelObjectPayload::from_retyped_kind(kind),
                 generation,
                 destroyed: false,
-                cnode_window_start: kind.cnode_window_start(),
             },
         );
         generation
@@ -1774,8 +1776,33 @@ impl CapabilitySpace {
     }
 }
 
-impl RetypedObjectKind {
-    const fn object_kind(self) -> ObjectKind {
+impl KernelObjectPayload {
+    fn from_initial_kind(kind: ObjectKind) -> Self {
+        match kind {
+            ObjectKind::Endpoint => Self::Endpoint,
+            ObjectKind::Frame => Self::Frame,
+            ObjectKind::CNode => {
+                unreachable!("initial CNode objects require explicit CTE window metadata")
+            }
+            ObjectKind::Untyped => Self::Untyped,
+            ObjectKind::Tcb => Self::Tcb,
+            ObjectKind::Notification => Self::Notification,
+            ObjectKind::Reply => Self::Reply,
+        }
+    }
+
+    const fn from_retyped_kind(kind: RetypedObjectKind) -> Self {
+        match kind {
+            RetypedObjectKind::Endpoint => Self::Endpoint,
+            RetypedObjectKind::Frame => Self::Frame,
+            RetypedObjectKind::CNode { window_start, .. } => Self::CNode { window_start },
+            RetypedObjectKind::Untyped => Self::Untyped,
+            RetypedObjectKind::Tcb => Self::Tcb,
+            RetypedObjectKind::Notification => Self::Notification,
+        }
+    }
+
+    const fn kind(&self) -> ObjectKind {
         match self {
             Self::Endpoint => ObjectKind::Endpoint,
             Self::Frame => ObjectKind::Frame,
@@ -1783,14 +1810,30 @@ impl RetypedObjectKind {
             Self::Untyped => ObjectKind::Untyped,
             Self::Tcb => ObjectKind::Tcb,
             Self::Notification => ObjectKind::Notification,
+            Self::Reply => ObjectKind::Reply,
         }
     }
 
-    const fn cnode_window_start(self) -> Option<SlotId> {
+    const fn cnode_window_start(&self) -> Option<SlotId> {
         match self {
-            Self::CNode { window_start, .. } => Some(window_start),
-            Self::Endpoint | Self::Frame | Self::Untyped | Self::Tcb | Self::Notification => None,
+            Self::CNode { window_start } => Some(*window_start),
+            Self::Endpoint
+            | Self::Frame
+            | Self::Untyped
+            | Self::Tcb
+            | Self::Notification
+            | Self::Reply => None,
         }
+    }
+}
+
+impl KernelObject {
+    fn kind(&self) -> ObjectKind {
+        self.payload.kind()
+    }
+
+    fn cnode_window_start(&self) -> Option<SlotId> {
+        self.payload.cnode_window_start()
     }
 }
 
@@ -2301,7 +2344,7 @@ mod tests {
         // Semantics: the error reports expected and actual guard at the current depth.
         let mut cspace = CapabilitySpace::new();
         let root = cspace
-            .insert_initial_capability(Capability::CNode(CNodeCap::with_guard(4, 0b10, 2)))
+            .insert_initial_cnode_capability(CNodeCap::with_guard(4, 0b10, 2), SlotId::new(0))
             .unwrap();
 
         assert_eq!(
@@ -2326,7 +2369,7 @@ mod tests {
         // Semantics: the lookup fails before producing a target slot.
         let mut cspace = CapabilitySpace::new();
         let root = cspace
-            .insert_initial_capability(Capability::CNode(CNodeCap::with_guard(4, 0b10, 2)))
+            .insert_initial_cnode_capability(CNodeCap::with_guard(4, 0b10, 2), SlotId::new(0))
             .unwrap();
 
         assert_eq!(
@@ -2349,7 +2392,7 @@ mod tests {
         // Semantics: the lookup fault preserves expected/actual guard diagnostics.
         let mut cspace = CapabilitySpace::new();
         let root = cspace
-            .insert_initial_capability(Capability::CNode(CNodeCap::with_guard(4, 0b10, 3)))
+            .insert_initial_cnode_capability(CNodeCap::with_guard(4, 0b10, 3), SlotId::new(0))
             .unwrap();
 
         assert_eq!(
@@ -2374,7 +2417,7 @@ mod tests {
         // Semantics: full slot lookup requires all bits to resolve through CNode caps.
         let mut cspace = CapabilitySpace::new();
         let root = cspace
-            .insert_initial_capability(Capability::CNode(CNodeCap::new(4)))
+            .insert_initial_cnode_capability(CNodeCap::new(4), SlotId::new(0))
             .unwrap();
         let source = cspace
             .insert_initial_capability(endpoint(Rights::READ))
@@ -3339,10 +3382,6 @@ mod tests {
         Capability::Frame(FrameCap { rights })
     }
 
-    fn cnode_cap() -> Capability {
-        Capability::CNode(CNodeCap::new(4))
-    }
-
     #[test]
     fn derivation_rejects_rights_outside_object_policy_at_boundary() {
         // Goal: derivation rights checks enforce both parent rights and object policy.
@@ -3362,7 +3401,9 @@ mod tests {
             })
         );
 
-        let cnode = cspace.insert_initial_capability(cnode_cap()).unwrap();
+        let cnode = cspace
+            .insert_initial_cnode_capability(CNodeCap::new(4), SlotId::new(0))
+            .unwrap();
         assert_eq!(
             cspace.copy(cnode, Rights::READ),
             Err(CapError::RightsEscalation {
@@ -3655,6 +3696,20 @@ mod tests {
             Err(CapError::InvalidInitialCapability {
                 capability: reply(caller, target, true),
             })
+        );
+    }
+
+    #[test]
+    fn public_initial_capability_insertion_rejects_cnode_without_window_metadata() {
+        // Goal: bootstrap CNode storage metadata is explicit object state, not a CNode cap default.
+        // Scope: root cap creation boundary for initial CNode caps.
+        // Semantics: initial CNodes enter through the CNode-specific bootstrap path with CTE window metadata.
+        let mut cspace = CapabilitySpace::new();
+        let capability = Capability::CNode(CNodeCap::new(4));
+
+        assert_eq!(
+            cspace.insert_initial_capability(capability.clone()),
+            Err(CapError::InvalidInitialCapability { capability })
         );
     }
 

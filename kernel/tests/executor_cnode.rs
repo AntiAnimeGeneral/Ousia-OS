@@ -15,8 +15,8 @@ use kernel::{
 };
 use support::{cpu, thread};
 
-fn root_cnode_cap() -> Capability {
-    Capability::CNode(CNodeCap::new(6))
+fn root_cnode_cap() -> CNodeCap {
+    CNodeCap::new(6)
 }
 
 fn target_slot(slot: kernel::cap::SlotId) -> CNodePathTarget {
@@ -34,8 +34,8 @@ fn source_path(root: CapabilityDescriptor, slot: kernel::cap::SlotId) -> CNodePa
     }
 }
 
-fn guarded_cnode(radix: u8, guard: u64, guard_size: u8) -> Capability {
-    Capability::CNode(CNodeCap::with_guard(radix, guard, guard_size))
+fn guarded_cnode(radix: u8, guard: u64, guard_size: u8) -> CNodeCap {
+    CNodeCap::with_guard(radix, guard, guard_size)
 }
 
 fn windowed_cnode(radix: u8, guard: u64, guard_size: u8) -> CNodeCap {
@@ -58,7 +58,7 @@ fn cnode_state() -> (kernel::state::KernelState, CapabilityDescriptor) {
     let mut state = kernel::state::KernelState::new(&[cpu(0), cpu(1)]).unwrap();
     let cnode = state
         .cspace
-        .insert_initial_capability(root_cnode_cap())
+        .insert_initial_cnode_capability(root_cnode_cap(), kernel::cap::SlotId::new(0))
         .unwrap();
     (state, cnode)
 }
@@ -259,7 +259,7 @@ fn cnode_path_copy_mint_and_move_resolve_destination_window() {
             .unwrap();
         let source_root = state
             .cspace
-            .insert_initial_capability(root_cnode_cap())
+            .insert_initial_cnode_capability(root_cnode_cap(), kernel::cap::SlotId::new(0))
             .unwrap();
         let source = state.cspace.insert_initial_capability(case.source).unwrap();
         let source_object = state.cspace.lookup(source).unwrap().object;
@@ -312,7 +312,7 @@ fn cnode_copy_path_resolves_source_under_explicit_source_root() {
         .unwrap();
     let source_root = state
         .cspace
-        .insert_initial_capability(root_cnode_cap())
+        .insert_initial_cnode_capability(root_cnode_cap(), kernel::cap::SlotId::new(0))
         .unwrap();
     let source = state
         .cspace
@@ -388,11 +388,11 @@ fn cnode_copy_path_guard_mismatch_fails_without_source_mutation() {
     let mut state = kernel::state::KernelState::new(&[cpu(0), cpu(1)]).unwrap();
     let cnode = state
         .cspace
-        .insert_initial_capability(guarded_cnode(4, 0b10, 2))
+        .insert_initial_cnode_capability(guarded_cnode(4, 0b10, 2), kernel::cap::SlotId::new(0))
         .unwrap();
     let source_root = state
         .cspace
-        .insert_initial_capability(root_cnode_cap())
+        .insert_initial_cnode_capability(root_cnode_cap(), kernel::cap::SlotId::new(0))
         .unwrap();
     let source = state
         .cspace

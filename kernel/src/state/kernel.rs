@@ -1959,7 +1959,10 @@ mod tests {
         // Semantics: cap slot disappears and Reply object is no longer addressable.
         let mut cspace = CapabilitySpace::new();
         let cnode_descriptor = cspace
-            .insert_initial_capability(Capability::CNode(crate::cap::CNodeCap::new(4)))
+            .insert_initial_cnode_capability(
+                crate::cap::CNodeCap::new(4),
+                crate::cap::SlotId::new(0),
+            )
             .unwrap();
         let reply_descriptor = cspace
             .insert_reply_capability_for_test(ReplyCap {

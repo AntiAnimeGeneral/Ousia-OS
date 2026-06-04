@@ -501,10 +501,6 @@ mod tests {
         Capability::Notification(NotificationCap { badge, rights })
     }
 
-    fn cnode() -> Capability {
-        Capability::CNode(CNodeCap::new(4))
-    }
-
     fn configure_thread() -> ThreadId {
         ThreadId::new(10)
     }
@@ -840,7 +836,9 @@ mod tests {
         // Scope: unit test for CNode invocation authorization before CSpace mutation.
         // Semantics: source authority and destination path mutation are owned by CapabilitySpace after authorization.
         let mut cspace = CapabilitySpace::new();
-        let cnode_cap = cspace.insert_initial_capability(cnode()).unwrap();
+        let cnode_cap = cspace
+            .insert_initial_cnode_capability(CNodeCap::new(4), crate::cap::SlotId::new(0))
+            .unwrap();
         let source = cspace
             .insert_initial_capability(endpoint(Rights::READ | Rights::WRITE, 0x55))
             .unwrap();
@@ -885,7 +883,9 @@ mod tests {
         // Scope: unit test for CNode invocation authorization before CSpace mutation.
         // Semantics: the authorized path root is always the invoked CNode descriptor.
         let mut cspace = CapabilitySpace::new();
-        let cnode_cap = cspace.insert_initial_capability(cnode()).unwrap();
+        let cnode_cap = cspace
+            .insert_initial_cnode_capability(CNodeCap::new(4), crate::cap::SlotId::new(0))
+            .unwrap();
         let source = cspace
             .insert_initial_capability(endpoint(Rights::READ | Rights::WRITE, 0x55))
             .unwrap();
