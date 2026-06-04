@@ -239,7 +239,31 @@ pub struct CNodeLookup {
     pub slot: SlotId,
     pub bits_remaining: u8,
     pub slots_remaining: usize,
-    location: CteLocation,
+    cte: CteRef,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct ResolvedCte {
+    pub(crate) slot: SlotId,
+    pub(crate) cte: CteRef,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct ResolvedCapabilitySlot {
+    pub(crate) descriptor: CapabilityDescriptor,
+    pub(crate) cte: CteRef,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct CteRef {
+    handle: SlotId,
+    storage: CteStorageRef,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum CteStorageRef {
+    Root,
+    CNode(CteLocation),
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -251,6 +275,22 @@ pub struct RetypeDestination {
 impl RetypeDestination {
     pub const fn single(start: SlotId) -> Self {
         Self { start, count: 1 }
+    }
+}
+
+impl CteRef {
+    const fn root(handle: SlotId) -> Self {
+        Self {
+            handle,
+            storage: CteStorageRef::Root,
+        }
+    }
+
+    const fn cnode(handle: SlotId, location: CteLocation) -> Self {
+        Self {
+            handle,
+            storage: CteStorageRef::CNode(location),
+        }
     }
 }
 
@@ -699,6 +739,7 @@ impl CapabilitySpace {
         source: CapabilityDescriptor,
         requested_rights: Rights,
     ) -> Result<CapabilityDescriptor, CapError> {
+        let source = self.resolve_descriptor_ref(source)?;
         self.insert_derived_capability(source, None, requested_rights, MintParams::None)
     }
 
@@ -706,6 +747,17 @@ impl CapabilitySpace {
         &mut self,
         source: CapabilityDescriptor,
         destination: SlotId,
+        requested_rights: Rights,
+    ) -> Result<CapabilityDescriptor, CapError> {
+        let source = self.resolve_descriptor_ref(source)?;
+        let destination = self.empty_cte_for_slot(destination)?;
+        self.copy_resolved(source, destination, requested_rights)
+    }
+
+    pub(crate) fn copy_resolved(
+        &mut self,
+        source: ResolvedCapabilitySlot,
+        destination: ResolvedCte,
         requested_rights: Rights,
     ) -> Result<CapabilityDescriptor, CapError> {
         self.insert_derived_capability(
@@ -722,6 +774,7 @@ impl CapabilitySpace {
         requested_rights: Rights,
         params: MintParams,
     ) -> Result<CapabilityDescriptor, CapError> {
+        let source = self.resolve_descriptor_ref(source)?;
         self.insert_derived_capability(source, None, requested_rights, params)
     }
 
@@ -729,6 +782,18 @@ impl CapabilitySpace {
         &mut self,
         source: CapabilityDescriptor,
         destination: SlotId,
+        requested_rights: Rights,
+        params: MintParams,
+    ) -> Result<CapabilityDescriptor, CapError> {
+        let source = self.resolve_descriptor_ref(source)?;
+        let destination = self.empty_cte_for_slot(destination)?;
+        self.mint_resolved(source, destination, requested_rights, params)
+    }
+
+    pub(crate) fn mint_resolved(
+        &mut self,
+        source: ResolvedCapabilitySlot,
+        destination: ResolvedCte,
         requested_rights: Rights,
         params: MintParams,
     ) -> Result<CapabilityDescriptor, CapError> {
@@ -838,6 +903,7 @@ impl CapabilitySpace {
         &mut self,
         source: CapabilityDescriptor,
     ) -> Result<CapabilityDescriptor, CapError> {
+        let source = self.resolve_descriptor_ref(source)?;
         self.move_capability_to(source, None)
     }
 
@@ -846,29 +912,39 @@ impl CapabilitySpace {
         source: CapabilityDescriptor,
         destination: SlotId,
     ) -> Result<CapabilityDescriptor, CapError> {
+        let source = self.resolve_descriptor_ref(source)?;
+        let destination = self.empty_cte_for_slot(destination)?;
+        self.move_resolved(source, destination)
+    }
+
+    pub(crate) fn move_resolved(
+        &mut self,
+        source: ResolvedCapabilitySlot,
+        destination: ResolvedCte,
+    ) -> Result<CapabilityDescriptor, CapError> {
         self.move_capability_to(source, Some(destination))
     }
 
     fn move_capability_to(
         &mut self,
-        source: CapabilityDescriptor,
-        destination: Option<SlotId>,
+        source: ResolvedCapabilitySlot,
+        destination: Option<ResolvedCte>,
     ) -> Result<CapabilityDescriptor, CapError> {
         if let Some(destination) = destination {
-            self.validate_empty_slot(destination)?;
+            self.validate_empty_cte(destination)?;
         }
-        self.validate_descriptor(source)?;
+        self.validated_resolved_slot(source)?;
 
         let destination = match destination {
             Some(destination) => destination,
-            None => self.alloc_slot_id(),
+            None => self.alloc_empty_cte(),
         };
-        self.reserve_empty_slot_for_insert(destination)?;
-        let destination_generation = self.slot_generation_for_insert(destination);
-        self.detach_reused_slot(destination);
+        self.reserve_empty_cte_for_insert(destination)?;
+        let destination_generation = self.slot_generation_for_cte(destination);
+        self.detach_reused_cte(destination);
 
         let moved_from = self
-            .slot_mut(source.slot)
+            .slot_mut_by_ref(source.cte)
             .expect("validated source slot must remain in CSpace during move");
         let mut moved = moved_from.clone();
         moved_from.alive = false;
@@ -882,35 +958,35 @@ impl CapabilitySpace {
             let parent_slot = self
                 .slot_mut(parent)
                 .expect("moved capability parent slot must remain in CSpace");
-            parent_slot.children.remove(&source.slot);
-            parent_slot.children.insert(destination);
+            parent_slot.children.remove(&source.descriptor.slot);
+            parent_slot.children.insert(destination.slot);
         }
 
         let children = moved.children.clone();
         for child in children.iter() {
             self.slot_mut(child)
                 .expect("moved capability child slot must remain in CSpace")
-                .parent = Some(destination);
+                .parent = Some(destination.slot);
         }
 
         if let Some(prev) = moved.mdb.prev {
             self.slot_mut(prev)
                 .expect("moved capability previous MDB slot must remain in CSpace")
                 .mdb
-                .next = Some(destination);
+                .next = Some(destination.slot);
         }
         if let Some(next) = moved.mdb.next {
             self.slot_mut(next)
                 .expect("moved capability next MDB slot must remain in CSpace")
                 .mdb
-                .prev = Some(destination);
+                .prev = Some(destination.slot);
         }
 
-        self.insert_slot(destination, moved);
-        self.free_slots.push(source.slot);
+        self.insert_cte(destination.cte, moved);
+        self.push_free_slot_once(source.descriptor.slot);
 
         Ok(CapabilityDescriptor {
-            slot: destination,
+            slot: destination.slot,
             slot_generation: destination_generation,
         })
     }
@@ -957,28 +1033,46 @@ impl CapabilitySpace {
     }
 
     pub fn lookup_cnode_empty_slot(&self, path: CNodePath) -> Result<SlotId, CapError> {
+        Ok(self.resolve_cnode_empty_slot(path)?.slot)
+    }
+
+    pub(crate) fn resolve_cnode_empty_slot(
+        &self,
+        path: CNodePath,
+    ) -> Result<ResolvedCte, CapError> {
         let lookup = self.lookup_cnode_window(path)?;
-        if self
-            .cnode_slot(lookup.location)
-            .is_some_and(|slot| slot.alive)
-        {
+        if self.slot_by_ref(lookup.cte).is_some_and(|slot| slot.alive) {
             return Err(CapError::SlotOccupied(lookup.slot));
         }
-        Ok(lookup.slot)
+        Ok(ResolvedCte {
+            slot: lookup.slot,
+            cte: lookup.cte,
+        })
     }
 
     pub fn lookup_cnode_descriptor(
         &self,
         path: CNodePath,
     ) -> Result<CapabilityDescriptor, CapError> {
+        Ok(self.resolve_cnode_descriptor(path)?.descriptor)
+    }
+
+    pub(crate) fn resolve_cnode_descriptor(
+        &self,
+        path: CNodePath,
+    ) -> Result<ResolvedCapabilitySlot, CapError> {
         let lookup = self.lookup_cnode_window(path)?;
         let slot_ref = self
-            .cnode_slot(lookup.location)
+            .slot_by_ref(lookup.cte)
             .filter(|slot| slot.alive)
             .ok_or(CapError::SlotNotFound(lookup.slot))?;
-        Ok(CapabilityDescriptor {
+        let descriptor = CapabilityDescriptor {
             slot: lookup.slot,
             slot_generation: slot_ref.slot_generation,
+        };
+        Ok(ResolvedCapabilitySlot {
+            descriptor,
+            cte: lookup.cte,
         })
     }
 
@@ -1006,12 +1100,25 @@ impl CapabilitySpace {
         &mut self,
         descriptor: CapabilityDescriptor,
     ) -> Result<CapabilityDeletion, CapError> {
-        self.validate_descriptor(descriptor)?;
+        let resolved = self.resolve_descriptor_ref(descriptor)?;
+        self.delete_resolved(resolved)
+    }
+
+    pub(crate) fn delete_resolved(
+        &mut self,
+        resolved: ResolvedCapabilitySlot,
+    ) -> Result<CapabilityDeletion, CapError> {
+        self.validated_resolved_slot(resolved)?;
         let final_object = self
-            .is_final_capability(descriptor.slot)
-            .then(|| self.live_slot(descriptor.slot).map(|slot| slot.object))
+            .is_final_capability(resolved.descriptor.slot)
+            .then(|| {
+                self.slot_by_ref(resolved.cte)
+                    .filter(|slot| slot.alive)
+                    .map(|slot| slot.object)
+                    .ok_or(CapError::SlotNotFound(resolved.descriptor.slot))
+            })
             .transpose()?;
-        self.delete_slot(descriptor.slot);
+        self.delete_cte(resolved);
         Ok(CapabilityDeletion { final_object })
     }
 
@@ -1042,20 +1149,28 @@ impl CapabilitySpace {
         &mut self,
         descriptor: CapabilityDescriptor,
     ) -> Result<CapabilityRevocation, CapError> {
-        let (target_slot, _) = self.validated_slot(descriptor)?;
+        let resolved = self.resolve_descriptor_ref(descriptor)?;
+        self.revoke_resolved(resolved)
+    }
+
+    pub(crate) fn revoke_resolved(
+        &mut self,
+        resolved: ResolvedCapabilitySlot,
+    ) -> Result<CapabilityRevocation, CapError> {
+        let (target_slot, _) = self.validated_resolved_slot(resolved)?;
         let target_object = target_slot.object;
+        let target = resolved.descriptor.slot;
         let mut revoked_object_ids = Vec::new();
         let mut final_object_ids = Vec::new();
 
         loop {
-            let Some(next_slot_id) = self.slot(descriptor.slot).and_then(|slot| slot.mdb.next)
-            else {
+            let Some(next_slot_id) = self.slot(target).and_then(|slot| slot.mdb.next) else {
                 break;
             };
             let Some(next_slot) = self.slot(next_slot_id).filter(|slot| slot.alive) else {
                 break;
             };
-            if !self.is_mdb_parent_of(descriptor.slot, next_slot_id) {
+            if !self.is_mdb_parent_of(target, next_slot_id) {
                 break;
             }
 
@@ -1071,7 +1186,7 @@ impl CapabilitySpace {
         for object in &revoked_object_ids {
             self.untyped_allocations.remove(object);
         }
-        self.reset_untyped_allocation(descriptor.slot);
+        self.reset_untyped_allocation(target);
 
         let mut revoked_objects = final_object_ids;
         for object in revoked_object_ids {
@@ -1182,25 +1297,45 @@ impl CapabilitySpace {
     }
 
     fn slot(&self, slot: SlotId) -> Option<&CapabilitySlot> {
-        if let Some(root_slot) = self.slots.get(slot) {
-            return Some(root_slot);
+        self.cte_ref_for_slot(slot)
+            .and_then(|cte| self.slot_by_ref(cte))
+    }
+
+    fn slot_mut(&mut self, slot: SlotId) -> Option<&mut CapabilitySlot> {
+        self.cte_ref_for_slot(slot)
+            .and_then(|cte| self.slot_mut_by_ref(cte))
+    }
+
+    fn cte_ref_for_slot(&self, slot: SlotId) -> Option<CteRef> {
+        if self.slots.has_root_entry(slot) {
+            return Some(CteRef::root(slot));
         }
         if let Some(location) = self.slots.cnode_location(slot) {
-            return self.cnode_slot(location);
+            return Some(CteRef::cnode(slot, location));
         }
 
         None
     }
 
-    fn slot_mut(&mut self, slot: SlotId) -> Option<&mut CapabilitySlot> {
-        if self.slots.has_root_entry(slot) {
-            return self.slots.get_mut(slot);
+    fn slot_by_ref(&self, cte: CteRef) -> Option<&CapabilitySlot> {
+        match cte.storage {
+            CteStorageRef::Root => self.slots.get(cte.handle),
+            CteStorageRef::CNode(location) => self.cnode_slot(location),
         }
-        if let Some(location) = self.slots.cnode_location(slot) {
-            return self.cnode_slot_mut(location);
-        }
+    }
 
-        None
+    fn slot_mut_by_ref(&mut self, cte: CteRef) -> Option<&mut CapabilitySlot> {
+        match cte.storage {
+            CteStorageRef::Root => self.slots.get_mut(cte.handle),
+            CteStorageRef::CNode(location) => self.cnode_slot_mut(location),
+        }
+    }
+
+    fn insert_cte(&mut self, cte: CteRef, value: CapabilitySlot) {
+        match cte.storage {
+            CteStorageRef::Root => self.slots.insert(cte.handle, value),
+            CteStorageRef::CNode(location) => self.cnode_slot_insert(location, value),
+        }
     }
 
     fn insert_slot(&mut self, slot: SlotId, value: CapabilitySlot) {
@@ -1263,19 +1398,19 @@ impl CapabilitySpace {
 
     fn insert_derived_capability(
         &mut self,
-        parent: CapabilityDescriptor,
-        destination: Option<SlotId>,
+        parent: ResolvedCapabilitySlot,
+        destination: Option<ResolvedCte>,
         requested_rights: Rights,
         params: MintParams,
     ) -> Result<CapabilityDescriptor, CapError> {
         if let Some(destination) = destination {
-            self.validate_empty_slot(destination)?;
+            self.validate_empty_cte(destination)?;
         }
         let (object, object_generation_snapshot, parent_capability) = {
-            let (parent_slot, _) = self.validated_slot(parent)?;
+            let (parent_slot, _) = self.validated_resolved_slot(parent)?;
             if !requested_rights.is_subset_of(parent_slot.rights) {
                 return Err(CapError::RightsEscalation {
-                    parent: parent.slot,
+                    parent: parent.descriptor.slot,
                     parent_rights: parent_slot.rights,
                     requested_rights,
                 });
@@ -1284,10 +1419,10 @@ impl CapabilitySpace {
                 && parent_slot
                     .mdb
                     .next
-                    .is_some_and(|next| self.is_mdb_parent_of(parent.slot, next))
+                    .is_some_and(|next| self.is_mdb_parent_of(parent.descriptor.slot, next))
             {
                 return Err(CapError::CapabilityNotDerivable {
-                    parent: parent.slot,
+                    parent: parent.descriptor.slot,
                     capability: parent_slot.capability.clone(),
                 });
             }
@@ -1297,19 +1432,24 @@ impl CapabilitySpace {
                 parent_slot.capability.clone(),
             )
         };
-        let parent_slot_id = parent.slot;
+        let parent_slot_id = parent.descriptor.slot;
         let capability =
             mint_capability(parent_slot_id, &parent_capability, requested_rights, params)?;
         let destination = match destination {
             Some(destination) => destination,
-            None => self.alloc_slot_id(),
+            None => self.alloc_empty_cte(),
         };
-        self.reserve_empty_slot_for_insert(destination)?;
-        let slot_generation = self.slot_generation_for_insert(destination);
-        self.detach_reused_slot(destination);
-        let mdb = self.cte_insert_mdb(parent_slot_id, destination, &capability, &parent_capability);
-        self.insert_slot(
-            destination,
+        self.reserve_empty_cte_for_insert(destination)?;
+        let slot_generation = self.slot_generation_for_cte(destination);
+        self.detach_reused_cte(destination);
+        let mdb = self.cte_insert_mdb(
+            parent_slot_id,
+            destination.slot,
+            &capability,
+            &parent_capability,
+        );
+        self.insert_cte(
+            destination.cte,
             CapabilitySlot {
                 object,
                 capability: capability.clone(),
@@ -1325,10 +1465,10 @@ impl CapabilitySpace {
         self.slot_mut(parent_slot_id)
             .expect("validated parent slot must remain in CSpace during derivation")
             .children
-            .insert(destination);
+            .insert(destination.slot);
 
         Ok(CapabilityDescriptor {
-            slot: destination,
+            slot: destination.slot,
             slot_generation,
         })
     }
@@ -1352,19 +1492,54 @@ impl CapabilitySpace {
     }
 
     fn validate_empty_slot(&self, slot: SlotId) -> Result<(), CapError> {
-        if self.slot(slot).is_some_and(|slot| slot.alive) {
-            return Err(CapError::SlotOccupied(slot));
+        self.empty_cte_for_slot(slot).map(|_| ())
+    }
+
+    fn empty_cte_for_slot(&self, slot: SlotId) -> Result<ResolvedCte, CapError> {
+        let cte = self
+            .cte_ref_for_slot(slot)
+            .unwrap_or_else(|| CteRef::root(slot));
+        let resolved = ResolvedCte { slot, cte };
+        self.validate_empty_cte(resolved)?;
+        Ok(resolved)
+    }
+
+    fn validate_empty_cte(&self, cte: ResolvedCte) -> Result<(), CapError> {
+        if self.slot_by_ref(cte.cte).is_some_and(|slot| slot.alive) {
+            return Err(CapError::SlotOccupied(cte.slot));
         }
         Ok(())
     }
 
     fn reserve_empty_slot_for_insert(&mut self, slot: SlotId) -> Result<(), CapError> {
-        self.validate_empty_slot(slot)?;
-        self.free_slots.retain(|free_slot| *free_slot != slot);
-        if slot.raw() >= self.next_slot {
-            self.next_slot = slot.raw() + 1;
+        let cte = self.empty_cte_for_slot(slot)?;
+        self.reserve_empty_cte_for_insert(cte)
+    }
+
+    fn reserve_empty_cte_for_insert(&mut self, cte: ResolvedCte) -> Result<(), CapError> {
+        self.validate_empty_cte(cte)?;
+        self.free_slots.retain(|free_slot| *free_slot != cte.slot);
+        if cte.slot.raw() >= self.next_slot {
+            self.next_slot = cte.slot.raw() + 1;
         }
         Ok(())
+    }
+
+    fn alloc_empty_cte(&mut self) -> ResolvedCte {
+        let slot = self.alloc_slot_id();
+        let cte = self
+            .cte_ref_for_slot(slot)
+            .unwrap_or_else(|| CteRef::root(slot));
+        ResolvedCte { slot, cte }
+    }
+
+    fn slot_generation_for_cte(&self, cte: ResolvedCte) -> u64 {
+        self.slot_by_ref(cte.cte)
+            .map_or(1, |slot| slot.slot_generation + 1)
+    }
+
+    fn detach_reused_cte(&mut self, cte: ResolvedCte) {
+        self.detach_reused_slot(cte.slot)
     }
 
     pub(crate) fn commit_retype_plan(
@@ -1595,23 +1770,24 @@ impl CapabilitySpace {
                 offset: usize::try_from(offset)
                     .expect("validated CNode offset must fit host usize"),
             };
+            let cte = CteRef::cnode(slot, location);
             let slots_remaining = slots_remaining_in_level(node.radix, offset);
             if bits_remaining == level_bits {
                 return Ok(CNodeLookup {
                     slot,
                     bits_remaining: 0,
                     slots_remaining,
-                    location,
+                    cte,
                 });
             }
 
             bits_remaining -= level_bits;
-            let Some(slot_ref) = self.cnode_slot(location).filter(|slot| slot.alive) else {
+            let Some(slot_ref) = self.slot_by_ref(cte).filter(|slot| slot.alive) else {
                 return Ok(CNodeLookup {
                     slot,
                     bits_remaining,
                     slots_remaining,
-                    location,
+                    cte,
                 });
             };
             let Capability::CNode(next_node) = &slot_ref.capability else {
@@ -1619,7 +1795,7 @@ impl CapabilitySpace {
                     slot,
                     bits_remaining,
                     slots_remaining,
-                    location,
+                    cte,
                 });
             };
             node_object = slot_ref.object;
@@ -1905,24 +2081,35 @@ impl CapabilitySpace {
         &self,
         descriptor: CapabilityDescriptor,
     ) -> Result<(&CapabilitySlot, &KernelObject), CapError> {
-        let slot = self.live_slot(descriptor.slot)?;
+        let resolved = self.resolve_descriptor_ref(descriptor)?;
+        self.validated_resolved_slot(resolved)
+    }
+
+    fn validated_resolved_slot(
+        &self,
+        resolved: ResolvedCapabilitySlot,
+    ) -> Result<(&CapabilitySlot, &KernelObject), CapError> {
+        let slot = self
+            .slot_by_ref(resolved.cte)
+            .filter(|slot| slot.alive)
+            .ok_or(CapError::SlotNotFound(resolved.descriptor.slot))?;
         let object = self.object(slot.object)?;
 
         if object.destroyed {
             return Err(CapError::ObjectDestroyed(slot.object));
         }
 
-        if descriptor.slot_generation != slot.slot_generation {
+        if resolved.descriptor.slot_generation != slot.slot_generation {
             return Err(CapError::StaleDescriptor {
-                slot: descriptor.slot,
+                slot: resolved.descriptor.slot,
                 expected_generation: slot.slot_generation,
-                actual_generation: descriptor.slot_generation,
+                actual_generation: resolved.descriptor.slot_generation,
             });
         }
 
         if slot.object_generation_snapshot != object.generation {
             return Err(CapError::StaleDescriptor {
-                slot: descriptor.slot,
+                slot: resolved.descriptor.slot,
                 expected_generation: object.generation,
                 actual_generation: slot.object_generation_snapshot,
             });
@@ -1933,6 +2120,16 @@ impl CapabilitySpace {
 
     fn validate_descriptor(&self, descriptor: CapabilityDescriptor) -> Result<(), CapError> {
         self.validated_slot(descriptor).map(|_| ())
+    }
+
+    fn resolve_descriptor_ref(
+        &self,
+        descriptor: CapabilityDescriptor,
+    ) -> Result<ResolvedCapabilitySlot, CapError> {
+        let cte = self
+            .cte_ref_for_slot(descriptor.slot)
+            .ok_or(CapError::SlotNotFound(descriptor.slot))?;
+        Ok(ResolvedCapabilitySlot { descriptor, cte })
     }
 
     fn live_slot(&self, slot: SlotId) -> Result<&CapabilitySlot, CapError> {
@@ -1958,7 +2155,21 @@ impl CapabilitySpace {
     }
 
     fn delete_slot(&mut self, slot: SlotId) {
-        let Some(removed) = self.slot_mut(slot) else {
+        let Some(cte) = self.cte_ref_for_slot(slot) else {
+            return;
+        };
+        self.delete_cte(ResolvedCapabilitySlot {
+            descriptor: CapabilityDescriptor {
+                slot,
+                slot_generation: 0,
+            },
+            cte,
+        });
+    }
+
+    fn delete_cte(&mut self, resolved: ResolvedCapabilitySlot) {
+        let slot = resolved.descriptor.slot;
+        let Some(removed) = self.slot_mut_by_ref(resolved.cte) else {
             return;
         };
 

@@ -3,7 +3,8 @@ use alloc::vec::Vec;
 use crate::{
     cap::{
         CNodePath, CapabilityDescriptor, CapabilitySpace, MintParams, ObjectId, ReplyCap,
-        RetypeDestination, RetypeTarget, RetypedObjectKind, Rights, SlotId,
+        ResolvedCapabilitySlot, ResolvedCte, RetypeDestination, RetypeTarget, RetypedObjectKind,
+        Rights,
     },
     invocation::{EndpointSendOp, Invocation, InvocationError, InvocationOutcome, invoke},
     ipc::{Endpoint, IpcPayload, IpcReceiveOptions, IpcSendOptions},
@@ -219,7 +220,7 @@ impl KernelState {
             } => {
                 let destination = self.resolve_cnode_empty_slot(destination)?;
                 let source = self.resolve_cnode_descriptor(source)?;
-                self.execute_cnode_copy(source, destination, requested_rights)
+                self.execute_cnode_copy_resolved(source, destination, requested_rights)
             }
             InvocationOutcome::CNodeMintPathAuthorized {
                 source,
@@ -229,7 +230,7 @@ impl KernelState {
             } => {
                 let destination = self.resolve_cnode_empty_slot(destination)?;
                 let source = self.resolve_cnode_descriptor(source)?;
-                self.execute_cnode_mint(source, destination, requested_rights, params)
+                self.execute_cnode_mint_resolved(source, destination, requested_rights, params)
             }
             InvocationOutcome::CNodeMovePathAuthorized {
                 source,
@@ -237,15 +238,15 @@ impl KernelState {
             } => {
                 let destination = self.resolve_cnode_empty_slot(destination)?;
                 let source = self.resolve_cnode_descriptor(source)?;
-                self.execute_cnode_move(source, destination)
+                self.execute_cnode_move_resolved(source, destination)
             }
             InvocationOutcome::CNodeDeletePathAuthorized { target } => {
                 let target = self.resolve_cnode_descriptor(target)?;
-                self.execute_cnode_delete(target)
+                self.execute_cnode_delete_resolved(target)
             }
             InvocationOutcome::CNodeRevokePathAuthorized { target } => {
                 let target = self.resolve_cnode_descriptor(target)?;
-                self.execute_cnode_revoke(target)
+                self.execute_cnode_revoke_resolved(target)
             }
             InvocationOutcome::TcbResumeAuthorized { tcb } => self.execute_tcb_resume(tcb),
             InvocationOutcome::TcbConfigureAuthorized {
@@ -351,63 +352,66 @@ impl KernelState {
         Ok(())
     }
 
-    fn execute_cnode_copy(
+    fn execute_cnode_copy_resolved(
         &mut self,
-        source: CapabilityDescriptor,
-        destination: SlotId,
+        source: ResolvedCapabilitySlot,
+        destination: ResolvedCte,
         requested_rights: Rights,
     ) -> Result<ExecutionOutcome, KernelExecutionError> {
         let descriptor = self
             .cspace
-            .copy_into(source, destination, requested_rights)
+            .copy_resolved(source, destination, requested_rights)
             .map_err(InvocationError::Cap)?;
         Ok(ExecutionOutcome::Capability { descriptor })
     }
 
-    fn execute_cnode_mint(
+    fn execute_cnode_mint_resolved(
         &mut self,
-        source: CapabilityDescriptor,
-        destination: SlotId,
+        source: ResolvedCapabilitySlot,
+        destination: ResolvedCte,
         requested_rights: Rights,
         params: MintParams,
     ) -> Result<ExecutionOutcome, KernelExecutionError> {
         let descriptor = self
             .cspace
-            .mint_into(source, destination, requested_rights, params)
+            .mint_resolved(source, destination, requested_rights, params)
             .map_err(InvocationError::Cap)?;
         Ok(ExecutionOutcome::Capability { descriptor })
     }
 
-    fn execute_cnode_move(
+    fn execute_cnode_move_resolved(
         &mut self,
-        source: CapabilityDescriptor,
-        destination: SlotId,
+        source: ResolvedCapabilitySlot,
+        destination: ResolvedCte,
     ) -> Result<ExecutionOutcome, KernelExecutionError> {
         let descriptor = self
             .cspace
-            .move_capability_into(source, destination)
+            .move_resolved(source, destination)
             .map_err(InvocationError::Cap)?;
         Ok(ExecutionOutcome::Capability { descriptor })
     }
 
-    fn execute_cnode_delete(
+    fn execute_cnode_delete_resolved(
         &mut self,
-        target: CapabilityDescriptor,
+        target: ResolvedCapabilitySlot,
     ) -> Result<ExecutionOutcome, KernelExecutionError> {
-        let deletion = self.cspace.delete(target).map_err(InvocationError::Cap)?;
+        let deletion = self
+            .cspace
+            .delete_resolved(target)
+            .map_err(InvocationError::Cap)?;
         if let Some(object) = deletion.final_object {
             self.finalise_unreferenced_object(object);
         }
         Ok(ExecutionOutcome::CapabilityMutation)
     }
 
-    fn execute_cnode_revoke(
+    fn execute_cnode_revoke_resolved(
         &mut self,
-        target: CapabilityDescriptor,
+        target: ResolvedCapabilitySlot,
     ) -> Result<ExecutionOutcome, KernelExecutionError> {
         let revocation = self
             .cspace
-            .revoke_descendants(target)
+            .revoke_resolved(target)
             .map_err(InvocationError::Cap)?;
         for object in revocation.revoked_objects {
             self.finalise_unreferenced_object(object);
@@ -418,16 +422,19 @@ impl KernelState {
     fn resolve_cnode_descriptor(
         &self,
         path: CNodePath,
-    ) -> Result<CapabilityDescriptor, KernelExecutionError> {
+    ) -> Result<ResolvedCapabilitySlot, KernelExecutionError> {
         self.cspace
-            .lookup_cnode_descriptor(path)
+            .resolve_cnode_descriptor(path)
             .map_err(InvocationError::Cap)
             .map_err(KernelExecutionError::Invocation)
     }
 
-    fn resolve_cnode_empty_slot(&self, path: CNodePath) -> Result<SlotId, KernelExecutionError> {
+    fn resolve_cnode_empty_slot(
+        &self,
+        path: CNodePath,
+    ) -> Result<ResolvedCte, KernelExecutionError> {
         self.cspace
-            .lookup_cnode_empty_slot(path)
+            .resolve_cnode_empty_slot(path)
             .map_err(InvocationError::Cap)
             .map_err(KernelExecutionError::Invocation)
     }
