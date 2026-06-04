@@ -905,6 +905,20 @@ impl CapabilitySpace {
         Ok(lookup.slot)
     }
 
+    pub fn lookup_cnode_empty_slot(&self, path: CNodePath) -> Result<SlotId, CapError> {
+        let slot = self.lookup_cnode_slot(path)?;
+        self.validate_empty_slot(slot)?;
+        Ok(slot)
+    }
+
+    pub fn lookup_cnode_descriptor(
+        &self,
+        path: CNodePath,
+    ) -> Result<CapabilityDescriptor, CapError> {
+        let slot = self.lookup_cnode_slot(path)?;
+        self.descriptor_for_live_slot(slot)
+    }
+
     pub fn lookup_cnode_window(&self, path: CNodePath) -> Result<CNodeLookup, CapError> {
         let lookup = self.resolve_cnode_path(path)?;
         if lookup.bits_remaining != 0 {
@@ -1195,7 +1209,7 @@ impl CapabilitySpace {
         self.validate_retype_untyped_capacity(source, target, destination.count)
     }
 
-    pub(crate) fn validate_empty_slot(&self, slot: SlotId) -> Result<(), CapError> {
+    fn validate_empty_slot(&self, slot: SlotId) -> Result<(), CapError> {
         if self.slots.get(slot).is_some_and(|slot| slot.alive) {
             return Err(CapError::SlotOccupied(slot));
         }
@@ -2336,6 +2350,53 @@ mod tests {
                 slot: SlotId::new(3),
                 bits_remaining: 4,
             })
+        );
+    }
+
+    #[test]
+    fn cnode_path_lookup_reports_live_descriptor_or_empty_destination() {
+        // Goal: CNode operation preflight consumes resolved CTE facts without caller re-lookup.
+        // Scope: capability-space source and destination CNode path helpers.
+        // Semantics: source lookup returns the live descriptor, while destination preflight rejects occupied slots.
+        let mut cspace = CapabilitySpace::new();
+        let root = cspace
+            .insert_initial_capability(Capability::CNode(CNodeCap::with_window(
+                4,
+                0,
+                0,
+                SlotId::new(32),
+            )))
+            .unwrap();
+        let source = cspace
+            .insert_initial_capability(endpoint(Rights::READ))
+            .unwrap();
+        let copied = cspace
+            .copy_into(source, SlotId::new(33), Rights::READ)
+            .unwrap();
+
+        assert_eq!(
+            cspace.lookup_cnode_descriptor(CNodePath {
+                root,
+                capptr: 0b0001,
+                depth: 4,
+            }),
+            Ok(copied)
+        );
+        assert_eq!(
+            cspace.lookup_cnode_empty_slot(CNodePath {
+                root,
+                capptr: 0b0010,
+                depth: 4,
+            }),
+            Ok(SlotId::new(34))
+        );
+        assert_eq!(
+            cspace.lookup_cnode_empty_slot(CNodePath {
+                root,
+                capptr: 0b0001,
+                depth: 4,
+            }),
+            Err(CapError::SlotOccupied(SlotId::new(33)))
         );
     }
 

@@ -217,8 +217,7 @@ impl KernelState {
                 destination,
                 requested_rights,
             } => {
-                let destination = self.resolve_cnode_slot(destination)?;
-                self.validate_cnode_empty_destination(destination)?;
+                let destination = self.resolve_cnode_empty_slot(destination)?;
                 let source = self.resolve_cnode_descriptor(source)?;
                 self.execute_cnode_copy(source, destination, requested_rights)
             }
@@ -228,8 +227,7 @@ impl KernelState {
                 requested_rights,
                 params,
             } => {
-                let destination = self.resolve_cnode_slot(destination)?;
-                self.validate_cnode_empty_destination(destination)?;
+                let destination = self.resolve_cnode_empty_slot(destination)?;
                 let source = self.resolve_cnode_descriptor(source)?;
                 self.execute_cnode_mint(source, destination, requested_rights, params)
             }
@@ -237,8 +235,7 @@ impl KernelState {
                 source,
                 destination,
             } => {
-                let destination = self.resolve_cnode_slot(destination)?;
-                self.validate_cnode_empty_destination(destination)?;
+                let destination = self.resolve_cnode_empty_slot(destination)?;
                 let source = self.resolve_cnode_descriptor(source)?;
                 self.execute_cnode_move(source, destination)
             }
@@ -418,27 +415,19 @@ impl KernelState {
         Ok(ExecutionOutcome::CapabilityMutation)
     }
 
-    fn resolve_cnode_slot(&self, path: CNodePath) -> Result<SlotId, KernelExecutionError> {
-        self.cspace
-            .lookup_cnode_slot(path)
-            .map_err(InvocationError::Cap)
-            .map_err(KernelExecutionError::Invocation)
-    }
-
     fn resolve_cnode_descriptor(
         &self,
         path: CNodePath,
     ) -> Result<CapabilityDescriptor, KernelExecutionError> {
-        let slot = self.resolve_cnode_slot(path)?;
         self.cspace
-            .descriptor_for_live_slot(slot)
+            .lookup_cnode_descriptor(path)
             .map_err(InvocationError::Cap)
             .map_err(KernelExecutionError::Invocation)
     }
 
-    fn validate_cnode_empty_destination(&self, slot: SlotId) -> Result<(), KernelExecutionError> {
+    fn resolve_cnode_empty_slot(&self, path: CNodePath) -> Result<SlotId, KernelExecutionError> {
         self.cspace
-            .validate_empty_slot(slot)
+            .lookup_cnode_empty_slot(path)
             .map_err(InvocationError::Cap)
             .map_err(KernelExecutionError::Invocation)
     }
