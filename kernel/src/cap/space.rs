@@ -324,9 +324,7 @@ pub enum RetypeTarget {
 impl RetypeTarget {
     pub(crate) fn validate_retype_bounds(&self) -> Result<(), CapError> {
         if let Self::CNode { radix } = self {
-            if *radix == 0 || *radix > MAX_MODEL_CNODE_RADIX {
-                return Err(CapError::InvalidCNodeDepth { depth: *radix });
-            }
+            validate_cnode_radix(*radix)?;
         }
 
         Ok(())
@@ -477,6 +475,10 @@ pub enum CapError {
         requested: usize,
         available: usize,
     },
+    SlotWindowOverflow {
+        start: SlotId,
+        count: usize,
+    },
     InvalidCNodeDepth {
         depth: u8,
     },
@@ -507,11 +509,16 @@ struct KernelObject {
 enum KernelObjectPayload {
     Endpoint,
     Frame,
-    CNode { window_start: SlotId },
+    CNode { slots: CNodeSlots },
     Untyped,
     Tcb,
     Notification,
     Reply,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct CNodeSlots {
+    slots: Vec<SlotId>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -606,9 +613,10 @@ impl CapabilitySpace {
         capability: CNodeCap,
         window_start: SlotId,
     ) -> Result<CapabilityDescriptor, CapError> {
+        validate_cnode_radix(capability.radix)?;
         let capability = Capability::CNode(capability);
         validate_capability_rights(&capability)?;
-        Ok(self.insert_validated_initial_capability_with_cnode_window(capability, window_start))
+        self.insert_validated_initial_capability_with_cnode_window(capability, window_start)
     }
 
     #[cfg(test)]
@@ -642,12 +650,16 @@ impl CapabilitySpace {
         &mut self,
         capability: Capability,
         window_start: SlotId,
-    ) -> CapabilityDescriptor {
-        let kind = capability_kind(&capability);
-        debug_assert_eq!(kind, ObjectKind::CNode);
+    ) -> Result<CapabilityDescriptor, CapError> {
+        let Capability::CNode(cnode) = &capability else {
+            unreachable!("initial CNode insertion requires a CNode capability")
+        };
+        let slot_count = cnode_slot_count(cnode.radix);
+        validate_slot_window_bounds(window_start, slot_count)?;
+        let cnode_slots = CNodeSlots::from_window(window_start, slot_count);
         let (object, generation) =
-            self.alloc_object_with_payload(KernelObjectPayload::CNode { window_start });
-        self.insert_root_slot(object, capability, generation)
+            self.alloc_object_with_payload(KernelObjectPayload::CNode { slots: cnode_slots });
+        Ok(self.insert_root_slot(object, capability, generation))
     }
 
     pub fn derive(
@@ -739,20 +751,19 @@ impl CapabilitySpace {
         destination: RetypeDestination,
     ) -> Result<RetypeCommitPlan, CapError> {
         let allocation = self.validate_retype_untyped_into(source, &target, destination)?;
-        let mut next_slot = self.next_slot_after_retype_destinations(destination);
-        let entries = (0..destination.count)
-            .map(|offset| {
-                let window_start =
-                    matches!(target, RetypeTarget::CNode { .. }).then_some(SlotId(next_slot));
-                let capability = self.planned_retype_capability(&target, &mut next_slot);
-                RetypeCommitEntry {
-                    slot: SlotId(destination.start.raw() + offset as u64),
-                    object: ObjectId(self.next_object + offset as u64),
-                    capability,
-                    kind: self.planned_retype_kind(&target, window_start),
-                }
-            })
-            .collect();
+        let mut next_slot = self.next_slot_after_retype_destinations(destination)?;
+        let mut entries = Vec::new();
+        for offset in 0..destination.count {
+            let window_start =
+                matches!(target, RetypeTarget::CNode { .. }).then_some(SlotId(next_slot));
+            let capability = self.planned_retype_capability(&target, &mut next_slot)?;
+            entries.push(RetypeCommitEntry {
+                slot: slot_in_window(destination.start, offset),
+                object: ObjectId(self.next_object + offset as u64),
+                capability,
+                kind: self.planned_retype_kind(&target, window_start),
+            });
+        }
 
         Ok(RetypeCommitPlan {
             source,
@@ -1224,8 +1235,10 @@ impl CapabilitySpace {
         if destination.count == 0 {
             return Err(CapError::EmptyRetypeWindow);
         }
+        validate_slot_window_bounds(destination.start, destination.count)?;
+        destination_window_end(destination)?;
         for offset in 0..destination.count {
-            let slot = SlotId(destination.start.raw() + offset as u64);
+            let slot = slot_in_window(destination.start, offset);
             self.validate_empty_slot(slot)?;
         }
         self.validate_retype_untyped_capacity(source, target, destination.count)
@@ -1259,6 +1272,7 @@ impl CapabilitySpace {
                 window_start,
             } = entry.kind
             {
+                validate_slot_window_bounds(window_start, cnode_slot_count(radix))?;
                 self.validate_empty_slot_window(window_start, cnode_slot_count(radix))?;
             }
         }
@@ -1348,13 +1362,25 @@ impl CapabilitySpace {
         })
     }
 
-    fn planned_retype_capability(&self, target: &RetypeTarget, next_slot: &mut u64) -> Capability {
+    fn planned_retype_capability(
+        &self,
+        target: &RetypeTarget,
+        next_slot: &mut u64,
+    ) -> Result<Capability, CapError> {
         match target {
             RetypeTarget::CNode { radix } => {
-                *next_slot += cnode_slot_count(*radix) as u64;
-                Capability::CNode(CNodeCap::new(*radix))
+                let slot_count = cnode_slot_count(*radix);
+                let window_start = SlotId(*next_slot);
+                validate_slot_window_bounds(window_start, slot_count)?;
+                *next_slot = next_slot.checked_add(slot_count as u64).ok_or(
+                    CapError::SlotWindowOverflow {
+                        start: window_start,
+                        count: slot_count,
+                    },
+                )?;
+                Ok(Capability::CNode(CNodeCap::new(*radix)))
             }
-            target => target.clone().into_capability(),
+            target => Ok(target.clone().into_capability()),
         }
     }
 
@@ -1377,8 +1403,9 @@ impl CapabilitySpace {
     }
 
     fn validate_empty_slot_window(&self, start: SlotId, count: usize) -> Result<(), CapError> {
+        validate_slot_window_bounds(start, count)?;
         for offset in 0..count {
-            self.validate_empty_slot(SlotId(start.raw() + offset as u64))?;
+            self.validate_empty_slot(slot_in_window(start, offset))?;
         }
         Ok(())
     }
@@ -1461,8 +1488,7 @@ impl CapabilitySpace {
             }
 
             let offset = extract_cptr_bits(capptr, bits_remaining - node.guard_size, node.radix);
-            let window_start = self.cnode_window_start(node_object)?;
-            let slot = SlotId(window_start.raw() + offset);
+            let slot = self.cnode_slot(node_object, offset);
             let slots_remaining = slots_remaining_in_level(node.radix, offset);
             if bits_remaining == level_bits {
                 return Ok(CNodeLookup {
@@ -1492,19 +1518,19 @@ impl CapabilitySpace {
         }
     }
 
-    fn cnode_window_start(&self, object: ObjectId) -> Result<SlotId, CapError> {
-        let object_ref = self.object(object)?;
-        let actual = object_ref.kind();
-        if actual != ObjectKind::CNode {
-            return Err(CapError::WrongCapability {
-                expected: ObjectKind::CNode,
-                actual,
-            });
+    fn cnode_slot(&self, object: ObjectId, offset: u64) -> SlotId {
+        let object_ref = self
+            .object(object)
+            .expect("CNode cap must reference an existing CSpace object during lookup");
+        match &object_ref.payload {
+            KernelObjectPayload::CNode { slots } => slots
+                .slot(offset)
+                .expect("validated CNode radix must keep lookup offset inside owned slots"),
+            payload => panic!(
+                "CNode cap must reference CNode object payload, found {:?}",
+                payload.kind()
+            ),
         }
-
-        Ok(object_ref
-            .cnode_window_start()
-            .expect("CNode object must own CTE window metadata"))
     }
 
     fn alloc_object(&mut self, kind: ObjectKind) -> (ObjectId, u64) {
@@ -1616,9 +1642,12 @@ impl CapabilitySpace {
         }
     }
 
-    fn next_slot_after_retype_destinations(&self, destination: RetypeDestination) -> u64 {
-        let after_destination = destination.start.raw() + destination.count as u64;
-        self.next_slot.max(after_destination)
+    fn next_slot_after_retype_destinations(
+        &self,
+        destination: RetypeDestination,
+    ) -> Result<u64, CapError> {
+        let after_destination = destination_window_end(destination)?;
+        Ok(self.next_slot.max(after_destination))
     }
 
     fn slot_generation_for_insert(&self, slot: SlotId) -> u64 {
@@ -1791,11 +1820,16 @@ impl KernelObjectPayload {
         }
     }
 
-    const fn from_retyped_kind(kind: RetypedObjectKind) -> Self {
+    fn from_retyped_kind(kind: RetypedObjectKind) -> Self {
         match kind {
             RetypedObjectKind::Endpoint => Self::Endpoint,
             RetypedObjectKind::Frame => Self::Frame,
-            RetypedObjectKind::CNode { window_start, .. } => Self::CNode { window_start },
+            RetypedObjectKind::CNode {
+                radix,
+                window_start,
+            } => Self::CNode {
+                slots: CNodeSlots::from_window(window_start, cnode_slot_count(radix)),
+            },
             RetypedObjectKind::Untyped => Self::Untyped,
             RetypedObjectKind::Tcb => Self::Tcb,
             RetypedObjectKind::Notification => Self::Notification,
@@ -1813,27 +1847,25 @@ impl KernelObjectPayload {
             Self::Reply => ObjectKind::Reply,
         }
     }
+}
 
-    const fn cnode_window_start(&self) -> Option<SlotId> {
-        match self {
-            Self::CNode { window_start } => Some(*window_start),
-            Self::Endpoint
-            | Self::Frame
-            | Self::Untyped
-            | Self::Tcb
-            | Self::Notification
-            | Self::Reply => None,
-        }
+impl CNodeSlots {
+    fn from_window(window_start: SlotId, count: usize) -> Self {
+        let slots = (0..count)
+            .map(|offset| slot_in_window(window_start, offset))
+            .collect();
+        Self { slots }
+    }
+
+    fn slot(&self, offset: u64) -> Option<SlotId> {
+        let offset = usize::try_from(offset).ok()?;
+        self.slots.get(offset).copied()
     }
 }
 
 impl KernelObject {
     fn kind(&self) -> ObjectKind {
         self.payload.kind()
-    }
-
-    fn cnode_window_start(&self) -> Option<SlotId> {
-        self.payload.cnode_window_start()
     }
 }
 
@@ -2076,6 +2108,54 @@ fn validate_capability_rights(capability: &Capability) -> Result<(), CapError> {
     let object = capability_kind(capability);
     let requested_rights = capability_rights(capability);
     validate_rights_for(object, requested_rights)
+}
+
+fn validate_cnode_radix(radix: u8) -> Result<(), CapError> {
+    if radix == 0 || radix > MAX_MODEL_CNODE_RADIX {
+        return Err(CapError::InvalidCNodeDepth { depth: radix });
+    }
+
+    Ok(())
+}
+
+fn validate_slot_window_bounds(start: SlotId, count: usize) -> Result<(), CapError> {
+    let Some(last_offset) = count.checked_sub(1) else {
+        return Ok(());
+    };
+    let Some(last_offset) = u64::try_from(last_offset).ok() else {
+        return Err(CapError::SlotWindowOverflow { start, count });
+    };
+    if start.raw().checked_add(last_offset).is_none() {
+        return Err(CapError::SlotWindowOverflow { start, count });
+    }
+
+    Ok(())
+}
+
+fn destination_window_end(destination: RetypeDestination) -> Result<u64, CapError> {
+    let Some(count) = u64::try_from(destination.count).ok() else {
+        return Err(CapError::SlotWindowOverflow {
+            start: destination.start,
+            count: destination.count,
+        });
+    };
+    destination
+        .start
+        .raw()
+        .checked_add(count)
+        .ok_or(CapError::SlotWindowOverflow {
+            start: destination.start,
+            count: destination.count,
+        })
+}
+
+fn slot_in_window(start: SlotId, offset: usize) -> SlotId {
+    SlotId(
+        start
+            .raw()
+            .checked_add(offset as u64)
+            .expect("validated CNode slot window must not overflow"),
+    )
 }
 
 fn validate_rights_for(object: ObjectKind, requested_rights: Rights) -> Result<(), CapError> {
@@ -2482,10 +2562,10 @@ mod tests {
     }
 
     #[test]
-    fn copied_cnode_cap_uses_object_window_metadata() {
+    fn copied_cnode_cap_uses_object_slot_array() {
         // Goal: CNode storage location belongs to the object, not the copied cap payload.
         // Scope: capability-space CNode copy and path lookup.
-        // Semantics: a copied CNode cap resolves paths through the source object's CTE window metadata.
+        // Semantics: a copied CNode cap resolves paths through the source object's owned CTE slot array.
         let mut cspace = CapabilitySpace::new();
         let root = cspace
             .insert_initial_cnode_capability(CNodeCap::with_guard(4, 0b10, 2), SlotId::new(48))
@@ -3378,6 +3458,90 @@ mod tests {
         );
     }
 
+    #[test]
+    fn overflowing_retype_destination_window_fails_before_mutation() {
+        // Goal: retype destination slot windows cannot wrap around the CSpace slot id range.
+        // Scope: cap-layer Untyped retype preflight for caller-provided destination slots.
+        // Semantics: overflow fails before object ids, slot cursor, or Untyped watermark move.
+        let mut cspace = CapabilitySpace::new();
+        let root = cspace.insert_initial_capability(untyped(16)).unwrap();
+        let root_object = cspace.object_of(root).unwrap();
+        let next_object = cspace.next_object;
+        let next_slot = cspace.next_slot;
+        let watermark = cspace
+            .untyped_allocations
+            .get(root_object)
+            .unwrap()
+            .watermark;
+
+        assert_eq!(
+            cspace.retype_untyped_into(
+                root,
+                RetypeTarget::Endpoint,
+                RetypeDestination {
+                    start: SlotId(u64::MAX),
+                    count: 1,
+                },
+            ),
+            Err(CapError::SlotWindowOverflow {
+                start: SlotId(u64::MAX),
+                count: 1,
+            })
+        );
+        assert_eq!(cspace.next_object, next_object);
+        assert_eq!(cspace.next_slot, next_slot);
+        assert_eq!(
+            cspace
+                .untyped_allocations
+                .get(root_object)
+                .unwrap()
+                .watermark,
+            watermark
+        );
+    }
+
+    #[test]
+    fn overflowing_retyped_cnode_reserved_window_fails_before_mutation() {
+        // Goal: CNode retype cannot wrap its reserved CTE slot array window.
+        // Scope: cap-layer CNode retype planning after destination slot preflight.
+        // Semantics: reserved-window overflow fails before object ids, slot cursor, or Untyped watermark move.
+        let mut cspace = CapabilitySpace::new();
+        let root = cspace.insert_initial_capability(untyped(16)).unwrap();
+        let root_object = cspace.object_of(root).unwrap();
+        let next_object = cspace.next_object;
+        let next_slot = cspace.next_slot;
+        let watermark = cspace
+            .untyped_allocations
+            .get(root_object)
+            .unwrap()
+            .watermark;
+
+        assert_eq!(
+            cspace.retype_untyped_into(
+                root,
+                RetypeTarget::CNode { radix: 1 },
+                RetypeDestination {
+                    start: SlotId(u64::MAX - 1),
+                    count: 1,
+                },
+            ),
+            Err(CapError::SlotWindowOverflow {
+                start: SlotId(u64::MAX),
+                count: 2,
+            })
+        );
+        assert_eq!(cspace.next_object, next_object);
+        assert_eq!(cspace.next_slot, next_slot);
+        assert_eq!(
+            cspace
+                .untyped_allocations
+                .get(root_object)
+                .unwrap()
+                .watermark,
+            watermark
+        );
+    }
+
     fn frame_cap(rights: Rights) -> Capability {
         Capability::Frame(FrameCap { rights })
     }
@@ -3711,6 +3875,39 @@ mod tests {
             cspace.insert_initial_capability(capability.clone()),
             Err(CapError::InvalidInitialCapability { capability })
         );
+    }
+
+    #[test]
+    fn initial_cnode_rejects_invalid_radix_before_slot_array_allocation() {
+        // Goal: CNode bootstrap does not allocate unbounded or empty CTE slot arrays.
+        // Scope: CNode-specific root cap creation boundary.
+        // Semantics: invalid radix values fail before any CNode object or slot payload is installed.
+        let mut cspace = CapabilitySpace::new();
+
+        assert_eq!(
+            cspace.insert_initial_cnode_capability(CNodeCap::new(0), SlotId::new(0)),
+            Err(CapError::InvalidCNodeDepth { depth: 0 })
+        );
+        assert_eq!(cspace.objects.objects.iter().flatten().count(), 0);
+        assert_eq!(cspace.slots.slots.iter().flatten().count(), 0);
+    }
+
+    #[test]
+    fn initial_cnode_rejects_overflowing_slot_window_before_mutation() {
+        // Goal: CNode bootstrap does not wrap slot ids while expanding CTE slot arrays.
+        // Scope: CNode-specific root cap creation boundary.
+        // Semantics: overflowing windows fail before any CNode object or slot payload is installed.
+        let mut cspace = CapabilitySpace::new();
+
+        assert_eq!(
+            cspace.insert_initial_cnode_capability(CNodeCap::new(1), SlotId::new(u64::MAX)),
+            Err(CapError::SlotWindowOverflow {
+                start: SlotId::new(u64::MAX),
+                count: 2,
+            })
+        );
+        assert_eq!(cspace.objects.objects.iter().flatten().count(), 0);
+        assert_eq!(cspace.slots.slots.iter().flatten().count(), 0);
     }
 
     #[test]
