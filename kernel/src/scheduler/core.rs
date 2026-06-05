@@ -94,6 +94,10 @@ pub enum SchedulerError {
         cpu: CpuId,
         current: ThreadId,
     },
+    ReadyQueueFull {
+        cpu: CpuId,
+        capacity: usize,
+    },
 }
 
 #[derive(Debug)]
@@ -109,9 +113,11 @@ pub struct Scheduler {
     run_queues: Vec<PerCpuRunQueue>,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 struct ReadyLane {
-    threads: Vec<ThreadId>,
+    threads: [Option<ThreadId>; READY_LANE_CAPACITY],
+    head: usize,
+    len: usize,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -121,6 +127,7 @@ struct ReadySelector {
 }
 
 const READY_LANES: usize = 1;
+const READY_LANE_CAPACITY: usize = 256;
 const DEFAULT_SELECTOR: ReadySelector = ReadySelector {
     priority: 0,
     domain: 0,
@@ -162,6 +169,14 @@ impl PerCpuRunQueue {
             return Err(SchedulerError::ThreadAlreadyScheduled { thread, placement });
         }
 
+        let lane = DEFAULT_SELECTOR.lane();
+        if self.ready[lane].is_full() {
+            return Err(SchedulerError::ReadyQueueFull {
+                cpu: self.cpu,
+                capacity: READY_LANE_CAPACITY,
+            });
+        }
+
         Ok(())
     }
 
@@ -175,7 +190,8 @@ impl PerCpuRunQueue {
 
         self.validate_enqueue_fields(thread, actual_cpu, state)?;
 
-        self.push_ready(DEFAULT_SELECTOR, thread);
+        self.push_ready(DEFAULT_SELECTOR, thread)
+            .expect("validated scheduler enqueue must have ready queue capacity");
         Ok(SchedulerAction::Enqueued {
             thread,
             cpu: self.cpu,
@@ -183,7 +199,8 @@ impl PerCpuRunQueue {
     }
 
     fn enqueue_validated(&mut self, thread: ThreadId) -> SchedulerAction {
-        self.push_ready(DEFAULT_SELECTOR, thread);
+        self.push_ready(DEFAULT_SELECTOR, thread)
+            .expect("validated scheduler enqueue must have ready queue capacity");
         SchedulerAction::Enqueued {
             thread,
             cpu: self.cpu,
@@ -232,11 +249,12 @@ impl PerCpuRunQueue {
             };
         }
 
-        self.current = None;
-        self.push_ready(DEFAULT_SELECTOR, previous);
         let next = self
             .pop_next_ready()
             .expect("non-empty ready bitmap must provide next thread during yield");
+        self.current = None;
+        self.push_ready(DEFAULT_SELECTOR, previous)
+            .expect("yield popped one ready slot before requeueing previous current");
         self.current = Some(next);
 
         SchedulerAction::Switched {
@@ -291,10 +309,20 @@ impl PerCpuRunQueue {
         None
     }
 
-    fn push_ready(&mut self, selector: ReadySelector, thread: ThreadId) {
+    fn push_ready(
+        &mut self,
+        selector: ReadySelector,
+        thread: ThreadId,
+    ) -> Result<(), SchedulerError> {
         let lane = selector.lane();
-        self.ready[lane].push(thread);
+        if !self.ready[lane].push(thread) {
+            return Err(SchedulerError::ReadyQueueFull {
+                cpu: self.cpu,
+                capacity: READY_LANE_CAPACITY,
+            });
+        }
         self.ready_bitmap |= 1 << lane;
+        Ok(())
     }
 
     fn pop_next_ready(&mut self) -> Option<ThreadId> {
@@ -418,39 +446,73 @@ impl Scheduler {
 impl ReadyLane {
     const fn new() -> Self {
         Self {
-            threads: Vec::new(),
+            threads: [None; READY_LANE_CAPACITY],
+            head: 0,
+            len: 0,
         }
     }
 
-    fn push(&mut self, thread: ThreadId) {
-        self.threads.push(thread);
+    fn push(&mut self, thread: ThreadId) -> bool {
+        if self.is_full() {
+            return false;
+        }
+        let index = self.physical_index(self.len);
+        self.threads[index] = Some(thread);
+        self.len += 1;
+        true
     }
 
     fn pop_front(&mut self) -> Option<ThreadId> {
-        if self.threads.is_empty() {
+        if self.is_empty() {
             return None;
         }
-        Some(self.threads.remove(0))
+        let thread = self.threads[self.head].take();
+        self.head = self.physical_index(1);
+        self.len -= 1;
+        if self.len == 0 {
+            self.head = 0;
+        }
+        thread
     }
 
     fn remove(&mut self, thread: ThreadId) -> bool {
-        let Some(index) = self.threads.iter().position(|ready| *ready == thread) else {
+        let Some(offset) =
+            (0..self.len).find(|offset| self.threads[self.physical_index(*offset)] == Some(thread))
+        else {
             return false;
         };
-        self.threads.remove(index);
+        for shift in offset..self.len - 1 {
+            let from = self.physical_index(shift + 1);
+            let to = self.physical_index(shift);
+            self.threads[to] = self.threads[from].take();
+        }
+        let tail = self.physical_index(self.len - 1);
+        self.threads[tail] = None;
+        self.len -= 1;
+        if self.len == 0 {
+            self.head = 0;
+        }
         true
     }
 
     fn contains(&self, thread: ThreadId) -> bool {
-        self.threads.contains(&thread)
+        (0..self.len).any(|offset| self.threads[self.physical_index(offset)] == Some(thread))
     }
 
     fn is_empty(&self) -> bool {
-        self.threads.is_empty()
+        self.len == 0
+    }
+
+    fn is_full(&self) -> bool {
+        self.len == READY_LANE_CAPACITY
     }
 
     fn len(&self) -> usize {
-        self.threads.len()
+        self.len
+    }
+
+    fn physical_index(&self, offset: usize) -> usize {
+        (self.head + offset) % READY_LANE_CAPACITY
     }
 }
 
@@ -608,6 +670,149 @@ mod tests {
             })
         );
         assert_eq!(scheduler.run_queue(cpu(0)).unwrap().ready_bitmap, 0);
+    }
+
+    #[test]
+    fn ready_queue_capacity_failure_preserves_existing_fifo() {
+        // Goal: ready queues have an explicit fixed-capacity boundary.
+        // Scope: Scheduler enqueue failure after filling one CPU ready lane.
+        // Semantics: overflow reports resource exhaustion and does not disturb existing FIFO order.
+        let mut scheduler = scheduler();
+        for raw in 0..READY_LANE_CAPACITY as u64 {
+            scheduler
+                .enqueue(&thread(raw, cpu(0), ThreadState::Restart))
+                .unwrap();
+        }
+
+        assert_eq!(
+            scheduler.enqueue(&thread(
+                READY_LANE_CAPACITY as u64,
+                cpu(0),
+                ThreadState::Restart,
+            )),
+            Err(SchedulerError::ReadyQueueFull {
+                cpu: cpu(0),
+                capacity: READY_LANE_CAPACITY,
+            })
+        );
+        assert_eq!(
+            SchedulerError::ReadyQueueFull {
+                cpu: cpu(0),
+                capacity: READY_LANE_CAPACITY,
+            }
+            .error_code(),
+            KernelErrorCode::NotEnoughMemory
+        );
+        assert_eq!(
+            scheduler.run_queue(cpu(0)).unwrap().ready_len(),
+            READY_LANE_CAPACITY
+        );
+
+        assert_eq!(
+            scheduler.schedule_next(cpu(0)),
+            Ok(SchedulerAction::Switched {
+                cpu: cpu(0),
+                previous: None,
+                next: ThreadId::new(0),
+            })
+        );
+    }
+
+    #[test]
+    fn ready_queue_ring_storage_reuses_popped_slots_fifo() {
+        // Goal: fixed ready lane storage reuses freed slots without dynamic growth.
+        // Scope: PerCpuRunQueue pop/push sequence across ring-buffer wraparound.
+        // Semantics: after popping from the head, new ready work appends at the tail and FIFO order is preserved.
+        let mut queue = PerCpuRunQueue::new(cpu(0));
+        for raw in 0..READY_LANE_CAPACITY as u64 {
+            queue
+                .enqueue(&thread(raw, cpu(0), ThreadState::Restart))
+                .unwrap();
+        }
+        assert_eq!(
+            queue.schedule_next().unwrap(),
+            SchedulerAction::Switched {
+                cpu: cpu(0),
+                previous: None,
+                next: ThreadId::new(0),
+            }
+        );
+        queue.block_current();
+        queue
+            .enqueue(&thread(
+                READY_LANE_CAPACITY as u64,
+                cpu(0),
+                ThreadState::Restart,
+            ))
+            .unwrap();
+
+        assert_eq!(
+            queue.schedule_next().unwrap(),
+            SchedulerAction::Switched {
+                cpu: cpu(0),
+                previous: None,
+                next: ThreadId::new(1),
+            }
+        );
+    }
+
+    #[test]
+    fn ready_queue_remove_preserves_fifo_after_wraparound() {
+        // Goal: arbitrary ready removal keeps ring-buffer order after head wraparound.
+        // Scope: PerCpuRunQueue removal through scheduler placement cleanup.
+        // Semantics: removing wrapped logical head, middle, and tail patches the remaining FIFO order.
+        let mut scheduler = Scheduler::new(&[cpu(0), cpu(1)]).unwrap();
+        for raw in 0..READY_LANE_CAPACITY as u64 {
+            scheduler
+                .enqueue(&thread(raw, cpu(0), ThreadState::Restart))
+                .unwrap();
+        }
+
+        assert_eq!(
+            scheduler.schedule_next(cpu(0)).unwrap(),
+            SchedulerAction::Switched {
+                cpu: cpu(0),
+                previous: None,
+                next: ThreadId::new(0),
+            }
+        );
+        scheduler.block_current(cpu(0)).unwrap();
+        scheduler
+            .enqueue(&thread(
+                READY_LANE_CAPACITY as u64,
+                cpu(0),
+                ThreadState::Restart,
+            ))
+            .unwrap();
+
+        assert_eq!(
+            scheduler.remove_thread(ThreadId::new(1)),
+            Some(ThreadPlacement::Ready { cpu: cpu(0) })
+        );
+        assert_eq!(
+            scheduler.remove_thread(ThreadId::new(128)),
+            Some(ThreadPlacement::Ready { cpu: cpu(0) })
+        );
+        assert_eq!(
+            scheduler.remove_thread(ThreadId::new(READY_LANE_CAPACITY as u64)),
+            Some(ThreadPlacement::Ready { cpu: cpu(0) })
+        );
+        assert_eq!(
+            scheduler.run_queue(cpu(0)).unwrap().ready_len(),
+            READY_LANE_CAPACITY - 3
+        );
+
+        for raw in (2..128).chain(129..READY_LANE_CAPACITY as u64) {
+            assert_eq!(
+                scheduler.schedule_next(cpu(0)).unwrap(),
+                SchedulerAction::Switched {
+                    cpu: cpu(0),
+                    previous: None,
+                    next: ThreadId::new(raw),
+                }
+            );
+            scheduler.block_current(cpu(0)).unwrap();
+        }
     }
 
     #[test]
