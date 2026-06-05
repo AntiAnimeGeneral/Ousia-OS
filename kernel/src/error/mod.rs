@@ -120,6 +120,7 @@ impl ObjectTableError {
                 KernelErrorCode::FailedLookup
             }
             Self::WrongObjectType { .. } => KernelErrorCode::InvalidCapability,
+            Self::ObjectTableFull { .. } => KernelErrorCode::NotEnoughMemory,
             Self::ObjectIdAlreadyBound { .. }
             | Self::TcbObjectUnbound { .. }
             | Self::ThreadObjectAlreadyBound { .. } => KernelErrorCode::IllegalOperation,

@@ -7,7 +7,7 @@ use kernel::{
     invocation::InvocationError,
     invocation::{Invocation, RetypeDestinationPath},
     notification::NotificationState,
-    object::{FrameObject, KernelObjectRef, ObjectTableError},
+    object::{FrameObject, KernelObjectRef, ObjectTable, ObjectTableError},
     state::{ExecutionOutcome, InvocationContext, KernelExecutionError},
     thread::action::ThreadAction,
 };
@@ -283,6 +283,57 @@ fn untyped_retype_into_occupied_destination_fails_without_side_effects() {
     assert_eq!(
         state.cspace.lookup(descriptor).map(|view| view.object),
         Ok(predicted_object)
+    );
+}
+
+#[test]
+fn object_table_capacity_failure_does_not_commit_retype() {
+    // Goal: runtime object capacity is checked before committing CSpace/Untyped retype state.
+    // Scope: executor preflight across CapabilitySpace and bounded ObjectTable storage.
+    // Semantics: ObjectTableFull leaves the retype plan reusable, and retrying with capacity creates the same object.
+    let (mut state, untyped) = state_with_untyped(12);
+    state.objects = ObjectTable::with_capacity(0);
+    let [predicted_object] = planned_objects(&state, untyped, RetypeTarget::Endpoint)[..] else {
+        panic!("single endpoint retype plan must contain one object");
+    };
+
+    assert_eq!(
+        state.execute_invocation(
+            InvocationContext::new(thread(1), cpu(0)),
+            untyped,
+            Invocation::UntypedRetype {
+                target: RetypeTarget::Endpoint,
+            },
+        ),
+        Err(KernelExecutionError::Object(
+            ObjectTableError::ObjectTableFull { capacity: 0 }
+        ))
+    );
+    assert_eq!(
+        planned_objects(&state, untyped, RetypeTarget::Endpoint),
+        vec![predicted_object]
+    );
+
+    state.objects = ObjectTable::with_capacity(1);
+    let descriptor = retyped_descriptor(
+        state
+            .execute_invocation(
+                InvocationContext::new(thread(1), cpu(0)),
+                untyped,
+                Invocation::UntypedRetype {
+                    target: RetypeTarget::Endpoint,
+                },
+            )
+            .unwrap(),
+        "endpoint retype after object table capacity failure",
+    );
+    assert_eq!(
+        state.cspace.lookup(descriptor).map(|view| view.object),
+        Ok(predicted_object)
+    );
+    assert_eq!(
+        state.objects.get(predicted_object),
+        Ok(KernelObjectRef::Endpoint)
     );
 }
 

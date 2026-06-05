@@ -337,21 +337,21 @@ impl KernelState {
         })
     }
 
-    fn validate_retype_runtime_destinations(
+    fn validate_retype_runtime_destinations<I>(
         &self,
         target: &RetypeTarget,
-        objects: impl IntoIterator<Item = ObjectId>,
-    ) -> Result<(), KernelExecutionError> {
+        objects: I,
+    ) -> Result<(), KernelExecutionError>
+    where
+        I: IntoIterator<Item = ObjectId>,
+        I::IntoIter: Clone,
+    {
         match target {
             RetypeTarget::Endpoint
             | RetypeTarget::Frame { .. }
             | RetypeTarget::CNode { .. }
             | RetypeTarget::Notification
-            | RetypeTarget::Tcb { .. } => {
-                for object in objects {
-                    self.objects.validate_unbound(object)?;
-                }
-            }
+            | RetypeTarget::Tcb { .. } => self.objects.validate_insert_batch(objects)?,
             RetypeTarget::Untyped { .. } => {}
         }
         Ok(())

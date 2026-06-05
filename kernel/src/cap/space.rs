@@ -373,7 +373,7 @@ struct RetypeCommitEntry {
 }
 
 impl RetypeCommitPlan {
-    pub fn objects(&self) -> impl Iterator<Item = ObjectId> + '_ {
+    pub fn objects(&self) -> impl Iterator<Item = ObjectId> + Clone + '_ {
         self.entries.iter().map(|entry| entry.object)
     }
 

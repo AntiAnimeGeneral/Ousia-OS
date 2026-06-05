@@ -1,4 +1,4 @@
-use alloc::vec::Vec;
+use alloc::{boxed::Box, vec::Vec};
 
 use crate::{
     cap::{ObjectId, ObjectKind, SlotId},
@@ -58,6 +58,9 @@ pub enum ObjectTableError {
     ThreadObjectAlreadyBound {
         thread: ThreadId,
     },
+    ObjectTableFull {
+        capacity: usize,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -106,9 +109,9 @@ impl CNodeObject {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct ObjectTable {
-    objects: Vec<ObjectSlot>,
+    objects: Box<[Option<ObjectSlot>]>,
 }
 
 #[derive(Debug)]
@@ -178,8 +181,22 @@ impl KernelObject {
 }
 
 impl ObjectTable {
+    pub const DEFAULT_CAPACITY: usize = 512;
+
     pub fn new() -> Self {
-        Self::default()
+        Self::with_capacity(Self::DEFAULT_CAPACITY)
+    }
+
+    pub fn with_capacity(capacity: usize) -> Self {
+        let mut objects = Vec::with_capacity(capacity);
+        objects.resize_with(capacity, || None);
+        Self {
+            objects: objects.into_boxed_slice(),
+        }
+    }
+
+    pub fn capacity(&self) -> usize {
+        self.objects.len()
     }
 
     pub fn insert_endpoint(
@@ -188,15 +205,38 @@ impl ObjectTable {
         endpoint: Endpoint,
     ) -> Result<(), ObjectTableError> {
         self.ensure_unbound(object)?;
-        self.objects.push(ObjectSlot {
+        self.insert_object(ObjectSlot {
             object,
             value: KernelObject::Endpoint(endpoint),
-        });
-        Ok(())
+        })
     }
 
     pub fn validate_unbound(&self, object: ObjectId) -> Result<(), ObjectTableError> {
         self.ensure_unbound(object)
+    }
+
+    pub fn validate_insert_batch<I>(&self, objects: I) -> Result<(), ObjectTableError>
+    where
+        I: IntoIterator<Item = ObjectId>,
+        I::IntoIter: Clone,
+    {
+        let objects = objects.into_iter();
+        for object in objects.clone() {
+            self.ensure_unbound(object)?;
+        }
+
+        let mut remaining = objects.clone();
+        while let Some(object) = remaining.next() {
+            if remaining.clone().any(|other| other == object) {
+                return Err(ObjectTableError::ObjectIdAlreadyBound { object });
+            }
+        }
+        if self.free_slot_count() < objects.count() {
+            return Err(ObjectTableError::ObjectTableFull {
+                capacity: self.capacity(),
+            });
+        }
+        Ok(())
     }
 
     pub fn insert_frame(
@@ -205,11 +245,10 @@ impl ObjectTable {
         frame: FrameObject,
     ) -> Result<(), ObjectTableError> {
         self.ensure_unbound(object)?;
-        self.objects.push(ObjectSlot {
+        self.insert_object(ObjectSlot {
             object,
             value: KernelObject::Frame(frame),
-        });
-        Ok(())
+        })
     }
 
     pub fn insert_cnode(
@@ -218,11 +257,10 @@ impl ObjectTable {
         cnode: CNodeObject,
     ) -> Result<(), ObjectTableError> {
         self.ensure_unbound(object)?;
-        self.objects.push(ObjectSlot {
+        self.insert_object(ObjectSlot {
             object,
             value: KernelObject::CNode(cnode),
-        });
-        Ok(())
+        })
     }
 
     pub fn insert_notification(
@@ -231,29 +269,26 @@ impl ObjectTable {
         notification: Notification,
     ) -> Result<(), ObjectTableError> {
         self.ensure_unbound(object)?;
-        self.objects.push(ObjectSlot {
+        self.insert_object(ObjectSlot {
             object,
             value: KernelObject::Notification(notification),
-        });
-        Ok(())
+        })
     }
 
     pub fn insert_reply(&mut self, object: ObjectId, reply: Reply) -> Result<(), ObjectTableError> {
         self.ensure_unbound(object)?;
-        self.objects.push(ObjectSlot {
+        self.insert_object(ObjectSlot {
             object,
             value: KernelObject::Reply(reply),
-        });
-        Ok(())
+        })
     }
 
     pub fn insert_tcb(&mut self, object: ObjectId) -> Result<(), ObjectTableError> {
         self.ensure_unbound(object)?;
-        self.objects.push(ObjectSlot {
+        self.insert_object(ObjectSlot {
             object,
             value: KernelObject::Tcb { thread: None },
-        });
-        Ok(())
+        })
     }
 
     pub fn bind_tcb(&mut self, object: ObjectId, thread: ThreadId) -> Result<(), ObjectTableError> {
@@ -465,6 +500,7 @@ impl ObjectTable {
     pub fn tcb_object_for_thread(&self, thread: ThreadId) -> Result<ObjectId, ObjectTableError> {
         self.objects
             .iter()
+            .filter_map(Option::as_ref)
             .find_map(|slot| match slot.value {
                 KernelObject::Tcb {
                     thread: Some(bound),
@@ -485,6 +521,7 @@ impl ObjectTable {
     fn object(&self, object: ObjectId) -> Option<&KernelObject> {
         self.objects
             .iter()
+            .filter_map(Option::as_ref)
             .find(|slot| slot.object == object)
             .map(|slot| &slot.value)
     }
@@ -492,13 +529,21 @@ impl ObjectTable {
     fn object_mut(&mut self, object: ObjectId) -> Option<&mut KernelObject> {
         self.objects
             .iter_mut()
+            .filter_map(Option::as_mut)
             .find(|slot| slot.object == object)
             .map(|slot| &mut slot.value)
     }
 
     fn remove_object(&mut self, object: ObjectId) -> Option<KernelObject> {
-        let index = self.objects.iter().position(|slot| slot.object == object)?;
-        Some(self.objects.remove(index).value)
+        let slot = self
+            .objects
+            .iter_mut()
+            .find(|slot| matches!(slot, Some(slot) if slot.object == object))?;
+        Some(
+            slot.take()
+                .expect("matched object slot must be occupied")
+                .value,
+        )
     }
 
     fn two_objects_mut(
@@ -506,23 +551,64 @@ impl ObjectTable {
         first: ObjectId,
         second: ObjectId,
     ) -> Option<(Option<&mut KernelObject>, Option<&mut KernelObject>)> {
-        let first_index = self.objects.iter().position(|slot| slot.object == first)?;
-        let second_index = self.objects.iter().position(|slot| slot.object == second)?;
+        let first_index = self
+            .objects
+            .iter()
+            .position(|slot| matches!(slot, Some(slot) if slot.object == first))?;
+        let second_index = self
+            .objects
+            .iter()
+            .position(|slot| matches!(slot, Some(slot) if slot.object == second))?;
         if first_index == second_index {
             return None;
         }
         if first_index < second_index {
             let (left, right) = self.objects.split_at_mut(second_index);
             return Some((
-                Some(&mut left[first_index].value),
-                Some(&mut right[0].value),
+                Some(
+                    &mut left[first_index]
+                        .as_mut()
+                        .expect("first object index must remain occupied")
+                        .value,
+                ),
+                Some(
+                    &mut right[0]
+                        .as_mut()
+                        .expect("second object index must remain occupied")
+                        .value,
+                ),
             ));
         }
         let (left, right) = self.objects.split_at_mut(first_index);
         Some((
-            Some(&mut right[0].value),
-            Some(&mut left[second_index].value),
+            Some(
+                &mut right[0]
+                    .as_mut()
+                    .expect("first object index must remain occupied")
+                    .value,
+            ),
+            Some(
+                &mut left[second_index]
+                    .as_mut()
+                    .expect("second object index must remain occupied")
+                    .value,
+            ),
         ))
+    }
+
+    fn insert_object(&mut self, object: ObjectSlot) -> Result<(), ObjectTableError> {
+        let capacity = self.capacity();
+        let slot = self
+            .objects
+            .iter_mut()
+            .find(|slot| slot.is_none())
+            .ok_or(ObjectTableError::ObjectTableFull { capacity })?;
+        *slot = Some(object);
+        Ok(())
+    }
+
+    fn free_slot_count(&self) -> usize {
+        self.objects.iter().filter(|slot| slot.is_none()).count()
     }
 
     const fn wrong_type(
@@ -560,6 +646,42 @@ mod tests {
 
         assert_eq!(
             table.insert_notification(object(1), Notification::new()),
+            Err(ObjectTableError::ObjectIdAlreadyBound { object: object(1) })
+        );
+    }
+
+    #[test]
+    fn bounded_table_rejects_capacity_overflow_without_leaking_slots() {
+        // Goal: ObjectTable insertion has an explicit fixed-capacity failure boundary.
+        // Scope: bounded runtime object storage insertion and removal.
+        // Semantics: a full table rejects new objects, and removing an object frees its slot for reuse.
+        let mut table = ObjectTable::with_capacity(1);
+
+        table.insert_endpoint(object(1), Endpoint::new()).unwrap();
+        assert_eq!(
+            table.insert_notification(object(2), Notification::new()),
+            Err(ObjectTableError::ObjectTableFull { capacity: 1 })
+        );
+
+        assert_eq!(
+            table.remove_finalised(object(1)),
+            Some(KernelObjectRef::Endpoint)
+        );
+        table
+            .insert_notification(object(2), Notification::new())
+            .unwrap();
+        assert_eq!(table.get(object(2)), Ok(KernelObjectRef::Notification));
+    }
+
+    #[test]
+    fn batch_validation_rejects_duplicate_planned_objects() {
+        // Goal: batch runtime-object preflight rejects duplicate object ids before commit.
+        // Scope: ObjectTable preflight used by Untyped retype executor paths.
+        // Semantics: a duplicate planned object id is rejected even when capacity is available.
+        let table = ObjectTable::with_capacity(2);
+
+        assert_eq!(
+            table.validate_insert_batch([object(1), object(1)]),
             Err(ObjectTableError::ObjectIdAlreadyBound { object: object(1) })
         );
     }
