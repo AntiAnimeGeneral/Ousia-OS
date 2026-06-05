@@ -396,6 +396,123 @@ impl ThreadTable {
         }
         waiters
     }
+
+    fn append_notification_waiter(&mut self, notification: &mut Notification, thread: ThreadId) {
+        let prev = notification.enqueue_waiter(thread);
+        if let Some(prev) = prev {
+            let prev_link = self
+                .get(prev)
+                .expect("notification waiter tail must reference an existing TCB")
+                .wait_queue_link();
+            self.get_mut(prev)
+                .expect("notification waiter tail must reference an existing TCB")
+                .set_wait_queue_link(TcbWaitQueueLink::new(prev_link.prev(), Some(thread)));
+        }
+        self.get_mut(thread)
+            .expect("blocked notification waiter must exist before notification enqueue")
+            .set_wait_queue_link(TcbWaitQueueLink::new(prev, None));
+    }
+
+    pub fn pop_notification_waiter(
+        &mut self,
+        notification: &mut Notification,
+    ) -> Result<Option<ThreadId>, ThreadActionError> {
+        let Some(waiter) = notification.next_waiter().map(|waiter| waiter.thread()) else {
+            return Ok(None);
+        };
+        let link = self
+            .get(waiter)
+            .ok_or(ThreadActionError::UnknownThread { thread: waiter })?
+            .wait_queue_link();
+        let next_link = if let Some(next) = link.next() {
+            Some(
+                self.get(next)
+                    .ok_or(ThreadActionError::UnknownThread { thread: next })?
+                    .wait_queue_link(),
+            )
+        } else {
+            None
+        };
+        notification.dequeue_waiter_head(link.next());
+        if let Some(next) = link.next() {
+            self.get_mut(next)
+                .expect("validated notification waiter successor must exist")
+                .set_wait_queue_link(TcbWaitQueueLink::new(
+                    None,
+                    next_link
+                        .expect("validated notification successor link must exist")
+                        .next(),
+                ));
+        }
+        self.get_mut(waiter)
+            .expect("validated notification waiter head must exist")
+            .clear_wait_queue_link();
+        Ok(Some(waiter))
+    }
+
+    pub fn unlink_notification_waiter(
+        &mut self,
+        notification: &mut Notification,
+        notification_object: ObjectId,
+        thread: ThreadId,
+    ) -> bool {
+        let Some(tcb) = self.get(thread) else {
+            return false;
+        };
+        let ThreadState::BlockedOnNotification {
+            notification: blocked_notification,
+            ..
+        } = tcb.state()
+        else {
+            return false;
+        };
+        if blocked_notification != notification_object {
+            return false;
+        }
+        let link = tcb.wait_queue_link();
+        if !notification.unlink_waiter(thread, link.prev(), link.next()) {
+            return false;
+        }
+        if let Some(prev) = link.prev() {
+            let prev_link = self
+                .get(prev)
+                .expect("notification queue predecessor must reference an existing TCB")
+                .wait_queue_link();
+            self.get_mut(prev)
+                .expect("notification queue predecessor must reference an existing TCB")
+                .set_wait_queue_link(TcbWaitQueueLink::new(prev_link.prev(), link.next()));
+        }
+        if let Some(next) = link.next() {
+            let next_link = self
+                .get(next)
+                .expect("notification queue successor must reference an existing TCB")
+                .wait_queue_link();
+            self.get_mut(next)
+                .expect("notification queue successor must reference an existing TCB")
+                .set_wait_queue_link(TcbWaitQueueLink::new(link.prev(), next_link.next()));
+        }
+        self.get_mut(thread)
+            .expect("unlinked notification waiter must exist")
+            .clear_wait_queue_link();
+        true
+    }
+
+    pub fn drain_notification_waiters(
+        &mut self,
+        notification: &mut Notification,
+    ) -> Vec<(ThreadId, CpuId)> {
+        let mut waiters = Vec::new();
+        while let Some(waiter) = notification.next_waiter().map(|waiter| waiter.thread()) {
+            let cpu = match self.state(waiter) {
+                Some(ThreadState::BlockedOnNotification { receiver_cpu, .. }) => receiver_cpu,
+                _ => self.affinity(waiter).unwrap_or(CpuId::new(0)),
+            };
+            self.pop_notification_waiter(notification)
+                .expect("notification waiter drain must consume existing queue head");
+            waiters.push((waiter, cpu));
+        }
+        waiters
+    }
 }
 
 impl SendIpcRequest {
@@ -1032,8 +1149,29 @@ pub fn wait_notification(
 ) -> Result<ThreadAction, ThreadActionError> {
     validate_block_current(threads, scheduler, receiver, receiver_cpu)?;
 
-    let action = notification.wait(receiver, receiver_cpu);
-    apply_notification_action(threads, scheduler, notification_object, action)
+    match notification.state() {
+        NotificationState::Active => {
+            let action = notification.wait(receiver, receiver_cpu);
+            apply_notification_action(threads, scheduler, notification_object, action)
+        }
+        NotificationState::Idle | NotificationState::Waiting => {
+            block_current(
+                threads,
+                scheduler,
+                receiver,
+                receiver_cpu,
+                ThreadState::BlockedOnNotification {
+                    notification: notification_object,
+                    receiver_cpu,
+                },
+            )?;
+            threads.append_notification_waiter(notification, receiver);
+            Ok(ThreadAction::Blocked {
+                thread: receiver,
+                cpu: receiver_cpu,
+            })
+        }
+    }
 }
 
 pub fn poll_notification(
@@ -1076,7 +1214,7 @@ pub fn signal_notification(
     badge: u64,
     bound_tcb: BoundTcbSignal,
 ) -> Result<ThreadAction, ThreadActionError> {
-    let waiting_context = if let Some(waiter) = notification.next_waiter() {
+    if let Some(waiter) = notification.next_waiter() {
         let context = blocked_notification_context(threads, notification_object, waiter.thread())?;
         validate_wake(
             threads,
@@ -1088,8 +1226,19 @@ pub fn signal_notification(
                 receiver_cpu: context.cpu,
             }),
         )?;
-        Some(context)
-    } else if notification.state() == NotificationState::Idle && bound_tcb.is_ready() {
+        let delivered = threads
+            .pop_notification_waiter(notification)?
+            .expect("prechecked notification delivery must consume waiter head");
+        assert_eq!(delivered, context.thread);
+        return Ok(wake_thread_validated(
+            threads,
+            scheduler,
+            context.thread,
+            context.cpu,
+        ));
+    }
+
+    if notification.state() == NotificationState::Idle && bound_tcb.is_ready() {
         if let Some(bound) = notification.bound_tcb() {
             validate_wake(
                 threads,
@@ -1101,26 +1250,10 @@ pub fn signal_notification(
                 },
             )?;
         }
-        None
-    } else {
-        None
-    };
+    }
 
     let action = notification.signal(badge, bound_tcb);
-    match action {
-        NotificationAction::Delivered { receiver, .. } => {
-            let context =
-                waiting_context.expect("prechecked notification delivery must have waiter context");
-            assert_eq!(receiver, context.thread);
-            Ok(wake_thread_validated(
-                threads,
-                scheduler,
-                context.thread,
-                context.cpu,
-            ))
-        }
-        action => apply_notification_action(threads, scheduler, notification_object, action),
-    }
+    apply_notification_action(threads, scheduler, notification_object, action)
 }
 
 fn apply_reply_action(
@@ -1778,6 +1911,79 @@ mod tests {
         assert_eq!(threads.pop_endpoint_sender(&mut endpoint), Ok(None));
         assert_eq!(endpoint.queued_senders(), 0);
         assert_eq!(endpoint.sender_head(), None);
+    }
+
+    #[test]
+    fn notification_queue_uses_tcb_links_for_fifo_and_middle_unlink() {
+        // Goal: Notification wait queues keep only anchors while TCB links own membership.
+        // Scope: ThreadTable notification helpers used by signal, cancel, and finalisation paths.
+        // Semantics: unlinking a middle waiter patches neighboring TCB links and preserves FIFO order.
+        let mut notification = Notification::new();
+        let mut threads = table_with_threads(&[(1, cpu(0)), (2, cpu(1)), (3, cpu(0))]);
+        for (thread_id, receiver_cpu) in [
+            (thread(1), cpu(0)),
+            (thread(2), cpu(1)),
+            (thread(3), cpu(0)),
+        ] {
+            threads
+                .get_mut(thread_id)
+                .unwrap()
+                .set_state(ThreadState::BlockedOnNotification {
+                    notification: object(20),
+                    receiver_cpu,
+                });
+            threads.append_notification_waiter(&mut notification, thread_id);
+        }
+
+        assert_eq!(
+            notification.next_waiter().map(|waiter| waiter.thread()),
+            Some(thread(1))
+        );
+        assert_eq!(notification.queued_waiters(), 3);
+        assert_eq!(
+            threads.get(thread(1)).unwrap().wait_queue_link().next(),
+            Some(thread(2))
+        );
+        assert_eq!(
+            threads.get(thread(2)).unwrap().wait_queue_link().prev(),
+            Some(thread(1))
+        );
+        assert_eq!(
+            threads.get(thread(2)).unwrap().wait_queue_link().next(),
+            Some(thread(3))
+        );
+        assert_eq!(
+            threads.get(thread(3)).unwrap().wait_queue_link().prev(),
+            Some(thread(2))
+        );
+
+        assert!(threads.unlink_notification_waiter(&mut notification, object(20), thread(2)));
+        assert_eq!(
+            notification.next_waiter().map(|waiter| waiter.thread()),
+            Some(thread(1))
+        );
+        assert_eq!(notification.queued_waiters(), 2);
+        assert!(threads.get(thread(2)).unwrap().wait_queue_link().is_empty());
+        assert_eq!(
+            threads.get(thread(1)).unwrap().wait_queue_link().next(),
+            Some(thread(3))
+        );
+        assert_eq!(
+            threads.get(thread(3)).unwrap().wait_queue_link().prev(),
+            Some(thread(1))
+        );
+
+        assert_eq!(
+            threads.pop_notification_waiter(&mut notification),
+            Ok(Some(thread(1)))
+        );
+        assert_eq!(
+            threads.pop_notification_waiter(&mut notification),
+            Ok(Some(thread(3)))
+        );
+        assert_eq!(threads.pop_notification_waiter(&mut notification), Ok(None));
+        assert_eq!(notification.queued_waiters(), 0);
+        assert_eq!(notification.next_waiter(), None);
     }
 
     #[test]
@@ -2631,7 +2837,6 @@ mod tests {
         // Scope: signal_notification delivery across Notification and ThreadTable owner boundary.
         // Semantics: a queued waiter wakes on the CPU recorded by its BlockedOnNotification state.
         let mut notification = Notification::new();
-        notification.wait(thread(1), cpu(0));
         let mut threads = table_with_threads(&[(1, cpu(1))]);
         threads
             .get_mut(thread(1))
@@ -2640,6 +2845,7 @@ mod tests {
                 notification: object(20),
                 receiver_cpu: cpu(1),
             });
+        threads.append_notification_waiter(&mut notification, thread(1));
         let mut scheduler = Scheduler::new(&[cpu(0), cpu(1)]).unwrap();
 
         assert_eq!(
@@ -2670,7 +2876,6 @@ mod tests {
         // Scope: signal_notification failure path for stale Notification waiters.
         // Semantics: mismatched TCB state leaves notification queue and Waiting state intact.
         let mut notification = Notification::new();
-        notification.wait(thread(1), cpu(0));
         let mut threads = table_with_threads(&[(1, cpu(0))]);
         threads
             .get_mut(thread(1))
@@ -2681,6 +2886,7 @@ mod tests {
                 can_grant: true,
                 reply: None,
             });
+        notification.enqueue_waiter(thread(1));
         let mut scheduler = Scheduler::new(&[cpu(0), cpu(1)]).unwrap();
 
         assert_eq!(
@@ -2710,6 +2916,57 @@ mod tests {
         assert_eq!(
             notification.state(),
             crate::notification::NotificationState::Waiting
+        );
+    }
+
+    #[test]
+    fn signal_notification_stale_successor_does_not_consume_waiter() {
+        // Goal: notification queue successor validation happens before anchor mutation.
+        // Scope: signal_notification failure path when the head TCB link points to a missing successor.
+        // Semantics: missing successor leaves the queued head, queue count, and head link intact.
+        let mut notification = Notification::new();
+        notification.enqueue_waiter(thread(1));
+        notification.enqueue_waiter(thread(2));
+        let mut threads = table_with_threads(&[(1, cpu(0))]);
+        threads
+            .get_mut(thread(1))
+            .unwrap()
+            .set_state(ThreadState::BlockedOnNotification {
+                notification: object(20),
+                receiver_cpu: cpu(0),
+            });
+        threads
+            .get_mut(thread(1))
+            .unwrap()
+            .set_wait_queue_link(TcbWaitQueueLink::new(None, Some(thread(2))));
+        let mut scheduler = Scheduler::new(&[cpu(0), cpu(1)]).unwrap();
+
+        assert_eq!(
+            signal_notification(
+                &mut threads,
+                &mut scheduler,
+                &mut notification,
+                object(20),
+                0b100,
+                BoundTcbSignal::NotReady,
+            ),
+            Err(ThreadActionError::UnknownThread { thread: thread(2) })
+        );
+        assert_eq!(
+            notification.next_waiter().map(|waiter| waiter.thread()),
+            Some(thread(1))
+        );
+        assert_eq!(notification.queued_waiters(), 2);
+        assert_eq!(
+            threads.get(thread(1)).unwrap().wait_queue_link().next(),
+            Some(thread(2))
+        );
+        assert_eq!(
+            threads.state(thread(1)),
+            Some(ThreadState::BlockedOnNotification {
+                notification: object(20),
+                receiver_cpu: cpu(0),
+            })
         );
     }
 

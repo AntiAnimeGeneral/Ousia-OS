@@ -477,23 +477,17 @@ impl KernelState {
     }
 
     fn finalise_notification(&mut self, object: ObjectId) {
-        let cancellation = self
-            .objects
-            .notification_mut(object)
-            .expect("notification finalisation must target a notification object")
-            .cancel_all();
-        for waiter in cancellation.waiters {
-            let receiver_cpu = match self.threads.state(waiter.thread()) {
-                Some(ThreadState::BlockedOnNotification {
-                    notification,
-                    receiver_cpu,
-                }) if notification == object => receiver_cpu,
-                state => panic!(
-                    "notification finalisation waiter must match blocked TCB state: {:?}",
-                    state
-                ),
-            };
-            self.restart_thread(waiter.thread(), receiver_cpu);
+        let (waiters, cancellation) = {
+            let notification = self
+                .objects
+                .notification_mut(object)
+                .expect("notification finalisation must target a notification object");
+            let waiters = self.threads.drain_notification_waiters(notification);
+            let cancellation = notification.cancel_all();
+            (waiters, cancellation)
+        };
+        for (thread, cpu) in waiters {
+            self.restart_thread(thread, cpu);
         }
         if let Some(bound) = cancellation.bound_tcb {
             self.threads.unbind_notification(bound.thread());
@@ -521,8 +515,13 @@ impl KernelState {
                 }
             }
             ThreadState::BlockedOnNotification { notification, .. } => {
-                if let Ok(notification) = self.objects.notification_mut(notification) {
-                    notification.cancel_waiter(tcb.id());
+                let notification_object = notification;
+                if let Ok(notification) = self.objects.notification_mut(notification_object) {
+                    self.threads.unlink_notification_waiter(
+                        notification,
+                        notification_object,
+                        tcb.id(),
+                    );
                 }
             }
             ThreadState::BlockedOnReply

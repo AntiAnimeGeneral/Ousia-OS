@@ -1,5 +1,3 @@
-use alloc::vec::Vec;
-
 use crate::{
     cap::ObjectId,
     thread::tcb::{CpuId, ThreadId},
@@ -64,18 +62,19 @@ pub enum NotificationAction {
 pub struct Notification {
     state: NotificationState,
     badge: u64,
-    waiters: NotificationQueue<NotificationWaiter>,
+    waiters: NotificationWaitQueue,
     bound_tcb: Option<BoundTcb>,
 }
 
-#[derive(Debug)]
-struct NotificationQueue<T> {
-    entries: Vec<T>,
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct NotificationWaitQueue {
+    head: Option<ThreadId>,
+    tail: Option<ThreadId>,
+    len: usize,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct NotificationCancellation {
-    pub waiters: Vec<NotificationWaiter>,
     pub bound_tcb: Option<BoundTcb>,
 }
 
@@ -118,11 +117,11 @@ impl BoundTcbSignal {
 }
 
 impl Notification {
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self {
             state: NotificationState::Idle,
             badge: 0,
-            waiters: NotificationQueue::new(),
+            waiters: NotificationWaitQueue::new(),
             bound_tcb: None,
         }
     }
@@ -154,17 +153,9 @@ impl Notification {
                 NotificationAction::BecameActive { badge: self.badge }
             }
             NotificationState::Waiting => {
-                let waiter = self
-                    .waiters
-                    .pop_front()
-                    .expect("Waiting notification state must have a waiting receiver");
-                if self.waiters.is_empty() {
-                    self.state = NotificationState::Idle;
-                }
-                NotificationAction::Delivered {
-                    receiver: waiter.thread,
-                    badge,
-                }
+                unreachable!(
+                    "waiting notification delivery must be coordinated through ThreadTable waiter links"
+                )
             }
         }
     }
@@ -172,9 +163,6 @@ impl Notification {
     pub fn wait(&mut self, receiver: ThreadId, receiver_cpu: CpuId) -> NotificationAction {
         match self.state {
             NotificationState::Idle | NotificationState::Waiting => {
-                self.waiters
-                    .push_back(NotificationWaiter { thread: receiver });
-                self.state = NotificationState::Waiting;
                 NotificationAction::ReceiverBlocked {
                     thread: receiver,
                     cpu: receiver_cpu,
@@ -222,74 +210,138 @@ impl Notification {
         self.badge
     }
 
-    pub fn queued_waiters(&self) -> usize {
+    pub const fn queued_waiters(&self) -> usize {
         self.waiters.len()
     }
 
-    pub fn next_waiter(&self) -> Option<NotificationWaiter> {
-        self.waiters.front().copied()
+    pub const fn next_waiter(&self) -> Option<NotificationWaiter> {
+        match self.waiters.head() {
+            Some(thread) => Some(NotificationWaiter { thread }),
+            None => None,
+        }
     }
 
     pub const fn bound_tcb(&self) -> Option<BoundTcb> {
         self.bound_tcb
     }
 
+    pub(crate) fn enqueue_waiter(&mut self, thread: ThreadId) -> Option<ThreadId> {
+        let prev = self.waiters.push_back(thread);
+        self.state = NotificationState::Waiting;
+        prev
+    }
+
+    pub(crate) fn dequeue_waiter_head(&mut self, next: Option<ThreadId>) -> Option<ThreadId> {
+        let thread = self.waiters.pop_front(next)?;
+        self.refresh_state_after_waiter_mutation();
+        Some(thread)
+    }
+
+    pub(crate) fn unlink_waiter(
+        &mut self,
+        thread: ThreadId,
+        prev: Option<ThreadId>,
+        next: Option<ThreadId>,
+    ) -> bool {
+        let removed = self.waiters.unlink(thread, prev, next);
+        if removed {
+            self.refresh_state_after_waiter_mutation();
+        }
+        removed
+    }
+
     pub fn cancel_all(&mut self) -> NotificationCancellation {
-        let waiters = self.waiters.drain_all().collect();
         let bound_tcb = self.bound_tcb.take();
         self.badge = 0;
+        self.waiters.clear();
         self.state = NotificationState::Idle;
 
-        NotificationCancellation { waiters, bound_tcb }
+        NotificationCancellation { bound_tcb }
     }
 
     pub fn cancel_waiter(&mut self, thread: ThreadId) -> bool {
-        let waiter_count = self.waiters.len();
-        self.waiters.retain(|waiter| waiter.thread != thread);
+        self.unlink_waiter(thread, None, None)
+    }
+
+    fn refresh_state_after_waiter_mutation(&mut self) {
         if self.waiters.is_empty() && self.state == NotificationState::Waiting {
             self.state = NotificationState::Idle;
         }
-
-        waiter_count != self.waiters.len()
     }
 }
 
-impl<T> NotificationQueue<T> {
+impl NotificationWaitQueue {
     const fn new() -> Self {
         Self {
-            entries: Vec::new(),
+            head: None,
+            tail: None,
+            len: 0,
         }
     }
 
-    fn push_back(&mut self, value: T) {
-        self.entries.push(value);
+    const fn head(&self) -> Option<ThreadId> {
+        self.head
     }
 
-    fn pop_front(&mut self) -> Option<T> {
-        if self.entries.is_empty() {
-            return None;
+    const fn len(&self) -> usize {
+        self.len
+    }
+
+    const fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    fn push_back(&mut self, thread: ThreadId) -> Option<ThreadId> {
+        let prev = self.tail;
+        if self.head.is_none() {
+            self.head = Some(thread);
         }
-        Some(self.entries.remove(0))
+        self.tail = Some(thread);
+        self.len += 1;
+        prev
     }
 
-    fn front(&self) -> Option<&T> {
-        self.entries.first()
+    fn pop_front(&mut self, next: Option<ThreadId>) -> Option<ThreadId> {
+        let thread = self.head?;
+        self.head = next;
+        self.len -= 1;
+        if self.len == 0 {
+            self.tail = None;
+        } else if next.is_none() {
+            self.tail = None;
+            self.len = 0;
+        }
+        Some(thread)
     }
 
-    fn is_empty(&self) -> bool {
-        self.entries.is_empty()
+    fn unlink(&mut self, thread: ThreadId, prev: Option<ThreadId>, next: Option<ThreadId>) -> bool {
+        if self.head != Some(thread)
+            && self.tail != Some(thread)
+            && prev.is_none()
+            && next.is_none()
+        {
+            return false;
+        }
+        if self.head == Some(thread) {
+            self.head = next;
+        }
+        if self.tail == Some(thread) {
+            self.tail = prev;
+        }
+        if self.len > 0 {
+            self.len -= 1;
+        }
+        if self.len == 0 {
+            self.head = None;
+            self.tail = None;
+        }
+        true
     }
 
-    fn len(&self) -> usize {
-        self.entries.len()
-    }
-
-    fn drain_all(&mut self) -> impl Iterator<Item = T> + '_ {
-        self.entries.drain(..)
-    }
-
-    fn retain(&mut self, keep: impl FnMut(&T) -> bool) {
-        self.entries.retain(keep);
+    fn clear(&mut self) {
+        self.head = None;
+        self.tail = None;
+        self.len = 0;
     }
 }
 
@@ -316,13 +368,6 @@ mod tests {
 
     fn idle_notification() -> Notification {
         Notification::new()
-    }
-
-    fn waiting_notification() -> Notification {
-        let mut notification = Notification::new();
-        notification.wait(thread(1), cpu(0));
-        notification.wait(thread(2), cpu(1));
-        notification
     }
 
     fn active_notification() -> Notification {
@@ -352,19 +397,6 @@ mod tests {
         NotificationState::Active,
         0b0010,
         0,
-        None,
-    )]
-    #[case::waiting_receives_oldest_waiter(
-        waiting_notification(),
-        0b1000,
-        BoundTcbSignal::NotReady,
-        NotificationAction::Delivered {
-            receiver: thread(1),
-            badge: 0b1000,
-        },
-        NotificationState::Waiting,
-        0,
-        1,
         None,
     )]
     #[case::active_without_bound_accumulates_badge(
@@ -422,10 +454,9 @@ mod tests {
         #[case] expected_waiters: usize,
         #[case] expected_bound_tcb: Option<BoundTcb>,
     ) {
-        // Goal: signal rewrites notification state according to idle, waiting, and bound-TCB conditions.
-        // Scope: local Notification state machine contract for signal delivery.
-        // Semantics: each case preserves the owner state it does not consume and updates only the intended badge/waiter side effects.
-
+        // Goal: signal rewrites notification state according to idle, active, and bound-TCB conditions.
+        // Scope: local Notification state machine contract for non-waiting signal delivery.
+        // Semantics: each case preserves the owner state it does not consume and updates only the intended badge side effects.
         assert_eq!(
             notification.signal(badge, bound_tcb_signal),
             expected_action
@@ -438,12 +469,10 @@ mod tests {
 
     #[test]
     fn wait_consumes_active_badge() {
-        let mut notification = Notification::new();
-
         // Goal: wait drains an already active notification badge instead of blocking.
         // Scope: local Notification wait path when a badge is pending.
         // Semantics: active input becomes a badge-consumed action and resets the owner to Idle.
-
+        let mut notification = Notification::new();
         notification.signal(0b1010, BoundTcbSignal::NotReady);
 
         assert_eq!(
@@ -459,31 +488,43 @@ mod tests {
     }
 
     #[test]
-    fn wait_blocks_when_idle() {
+    fn wait_queue_anchor_tracks_head_tail_and_count() {
+        // Goal: Notification owns only waiter anchors while TCB owns waiter links.
+        // Scope: local head/tail/count mutation helpers used by ThreadTable transactions.
+        // Semantics: enqueue, dequeue, and unlink keep notification queue anchors coherent.
         let mut notification = Notification::new();
 
-        // Goal: wait enqueues the receiver when no badge is available.
-        // Scope: local Notification wait path for the idle state.
-        // Semantics: the receiver becomes the first queued waiter and the owner enters Waiting.
+        assert_eq!(notification.enqueue_waiter(thread(1)), None);
+        assert_eq!(notification.enqueue_waiter(thread(2)), Some(thread(1)));
+        assert_eq!(
+            notification.next_waiter(),
+            Some(NotificationWaiter { thread: thread(1) })
+        );
+        assert_eq!(notification.queued_waiters(), 2);
+        assert_eq!(notification.state(), NotificationState::Waiting);
 
         assert_eq!(
-            notification.wait(thread(1), cpu(0)),
-            NotificationAction::ReceiverBlocked {
-                thread: thread(1),
-                cpu: cpu(0),
-            }
+            notification.dequeue_waiter_head(Some(thread(2))),
+            Some(thread(1))
         );
-        assert_eq!(notification.state(), NotificationState::Waiting);
+        assert_eq!(
+            notification.next_waiter(),
+            Some(NotificationWaiter { thread: thread(2) })
+        );
         assert_eq!(notification.queued_waiters(), 1);
+
+        assert!(notification.unlink_waiter(thread(2), None, None));
+        assert_eq!(notification.next_waiter(), None);
+        assert_eq!(notification.queued_waiters(), 0);
+        assert_eq!(notification.state(), NotificationState::Idle);
     }
 
     #[test]
     fn poll_does_not_block_without_active_badge() {
-        let mut notification = Notification::new();
-
         // Goal: poll observes the empty owner state without changing queue ownership.
         // Scope: local Notification poll path without a pending badge.
         // Semantics: poll failure leaves the notification idle and empty.
+        let mut notification = Notification::new();
 
         assert_eq!(
             notification.poll(thread(1), cpu(0)),
