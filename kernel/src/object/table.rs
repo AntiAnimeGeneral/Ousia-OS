@@ -189,7 +189,9 @@ impl ObjectTable {
 
     pub fn with_capacity(capacity: usize) -> Self {
         let mut objects = Vec::with_capacity(capacity);
-        fill_reserved_object_slots(&mut objects, capacity);
+        // Initialization-only fixed backing: capacity is allocated before the
+        // table becomes owner storage, and later inserts never grow it.
+        objects.resize_with(capacity, || None);
         Self {
             objects: objects.into_boxed_slice(),
         }
@@ -622,14 +624,6 @@ impl ObjectTable {
             actual,
         }
     }
-}
-
-fn fill_reserved_object_slots(objects: &mut Vec<Option<ObjectSlot>>, capacity: usize) {
-    assert!(
-        objects.capacity() >= capacity,
-        "ObjectTable::with_capacity allocates fixed backing before filling object slots"
-    );
-    objects.resize_with(capacity, || None);
 }
 
 #[cfg(test)]

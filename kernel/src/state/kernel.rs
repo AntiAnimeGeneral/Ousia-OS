@@ -286,50 +286,33 @@ impl KernelState {
             .commit_retype_plan(plan)
             .expect("prevalidated untyped retype plan must commit");
 
-        match target {
-            RetypeTarget::Endpoint => {
-                for object in &retype_result.objects {
-                    self.objects
-                        .insert_endpoint(*object, Endpoint::new())
-                        .expect("prevalidated endpoint object insertion must succeed");
-                }
+        for retyped in retype_result.retyped_objects() {
+            match retyped.kind {
+                RetypedObjectKind::Endpoint => self
+                    .objects
+                    .insert_endpoint(retyped.object, Endpoint::new())
+                    .expect("prevalidated endpoint object insertion must succeed"),
+                RetypedObjectKind::Frame => self
+                    .objects
+                    .insert_frame(retyped.object, FrameObject::new(target.minimum_size_bits()))
+                    .expect("prevalidated frame object insertion must succeed"),
+                RetypedObjectKind::CNode {
+                    radix,
+                    window_start,
+                } => self
+                    .objects
+                    .insert_cnode(retyped.object, CNodeObject::new(radix, window_start))
+                    .expect("prevalidated CNode object insertion must succeed"),
+                RetypedObjectKind::Notification => self
+                    .objects
+                    .insert_notification(retyped.object, Notification::new())
+                    .expect("prevalidated notification object insertion must succeed"),
+                RetypedObjectKind::Tcb => self
+                    .objects
+                    .insert_tcb(retyped.object)
+                    .expect("prevalidated TCB object insertion must succeed"),
+                RetypedObjectKind::Untyped => {}
             }
-            RetypeTarget::Frame { .. } => {
-                for object in &retype_result.objects {
-                    self.objects
-                        .insert_frame(*object, FrameObject::new(target.minimum_size_bits()))
-                        .expect("prevalidated frame object insertion must succeed");
-                }
-            }
-            RetypeTarget::CNode { .. } => {
-                for retyped in retype_result.retyped_objects() {
-                    let RetypedObjectKind::CNode {
-                        radix,
-                        window_start,
-                    } = retyped.kind
-                    else {
-                        unreachable!("CNode retype result must contain CNode object metadata")
-                    };
-                    self.objects
-                        .insert_cnode(retyped.object, CNodeObject::new(radix, window_start))
-                        .expect("prevalidated CNode object insertion must succeed");
-                }
-            }
-            RetypeTarget::Notification => {
-                for object in &retype_result.objects {
-                    self.objects
-                        .insert_notification(*object, Notification::new())
-                        .expect("prevalidated notification object insertion must succeed");
-                }
-            }
-            RetypeTarget::Tcb { .. } => {
-                for object in &retype_result.objects {
-                    self.objects
-                        .insert_tcb(*object)
-                        .expect("prevalidated TCB object insertion must succeed");
-                }
-            }
-            RetypeTarget::Untyped { .. } => {}
         }
 
         Ok(ExecutionOutcome::Retyped {

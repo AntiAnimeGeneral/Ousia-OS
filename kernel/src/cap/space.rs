@@ -339,7 +339,6 @@ pub struct RetypeResult {
     // Boundary return collection: capacity is reserved before commit, then the
     // committed entries are reported without growing these vectors.
     pub descriptors: Vec<CapabilityDescriptor>,
-    pub objects: Vec<ObjectId>,
     pub retyped_objects: Vec<RetypedObject>,
 }
 
@@ -400,24 +399,13 @@ impl RetypeCommitPlan {
         // Boundary return collections: allocated before CSpace commit begins,
         // then returned as snapshots after the already-preflighted entries land.
         let mut descriptors = Vec::new();
-        let mut objects = Vec::new();
         let mut retyped_objects = Vec::new();
         descriptors.try_reserve(self.entries.len())?;
-        objects.try_reserve(self.entries.len())?;
         retyped_objects.try_reserve(self.entries.len())?;
         Ok(RetypeResult {
             descriptors,
-            objects,
             retyped_objects,
         })
-    }
-
-    fn push_reserved_entry(&mut self, entry: RetypeCommitEntry) {
-        push_reserved(
-            &mut self.entries,
-            entry,
-            "retype commit plan pre-reserves every destination",
-        );
     }
 }
 
@@ -431,40 +419,6 @@ impl RevocationPlan {
 
     fn free_list_reservations(&self) -> usize {
         self.delete_ctes.len().saturating_mul(2)
-    }
-
-    fn push_reserved_delete_cte(&mut self, cte: CteRef) {
-        push_reserved(
-            &mut self.delete_ctes,
-            cte,
-            "revoke plan reserves one delete CTE per descendant",
-        );
-    }
-}
-
-impl RetypeResult {
-    fn push_reserved_descriptor(&mut self, descriptor: CapabilityDescriptor) {
-        push_reserved(
-            &mut self.descriptors,
-            descriptor,
-            "retype result reserves one descriptor per commit entry",
-        );
-    }
-
-    fn push_reserved_object(&mut self, object: ObjectId) {
-        push_reserved(
-            &mut self.objects,
-            object,
-            "retype result reserves one object id per commit entry",
-        );
-    }
-
-    fn push_reserved_retyped_object(&mut self, object: RetypedObject) {
-        push_reserved(
-            &mut self.retyped_objects,
-            object,
-            "retype result reserves one typed-object record per commit entry",
-        );
     }
 }
 
@@ -1032,7 +986,7 @@ impl CapabilitySpace {
             let payload =
                 self.planned_retype_payload(&target, window_start, &mut plan.next_slot)?;
             let capability = target.clone().into_capability();
-            plan.push_reserved_entry(RetypeCommitEntry {
+            plan.entries.push(RetypeCommitEntry {
                 destination,
                 object: ObjectId(self.next_object + offset as u64),
                 capability,
@@ -1513,7 +1467,7 @@ impl CapabilitySpace {
                 push_unique_object(&mut plan.revoked_objects, next_slot.object);
             }
 
-            plan.push_reserved_delete_cte(next_cte);
+            plan.delete_ctes.push(next_cte);
             next = next_slot.mdb.next;
         }
         plan.revoked_objects.sort_by_key(|object| object.raw());
@@ -1725,20 +1679,12 @@ impl CapabilitySpace {
             match &object.payload {
                 KernelObjectPayload::CNode { slots } => {
                     for entry in slots.live_entries() {
-                        push_reserved(
-                            &mut live,
-                            entry,
-                            "object-owned live slot iterator reserves every diagnostic entry",
-                        );
+                        live.push(entry);
                     }
                 }
                 KernelObjectPayload::Tcb { slots } => {
                     for entry in slots.live_entries() {
-                        push_reserved(
-                            &mut live,
-                            entry,
-                            "object-owned live slot iterator reserves every diagnostic entry",
-                        );
+                        live.push(entry);
                     }
                 }
                 KernelObjectPayload::Endpoint
@@ -1896,11 +1842,7 @@ impl CapabilitySpace {
         destinations.try_reserve(destination.count)?;
         for offset in 0..destination.count {
             let slot = slot_in_window(destination.start, offset);
-            push_reserved(
-                &mut destinations,
-                self.empty_cte_for_slot(slot)?,
-                "retype destination vector reserves the validated window length",
-            );
+            destinations.push(self.empty_cte_for_slot(slot)?);
         }
         let allocation =
             self.validate_retype_untyped_capacity(source, target, destination.count)?;
@@ -2036,12 +1978,11 @@ impl CapabilitySpace {
                 .children
                 .insert(entry.destination.cte);
 
-            result.push_reserved_descriptor(CapabilityDescriptor {
+            result.descriptors.push(CapabilityDescriptor {
                 slot: entry.destination.slot,
                 slot_generation,
             });
-            result.push_reserved_object(entry.object);
-            result.push_reserved_retyped_object(RetypedObject {
+            result.retyped_objects.push(RetypedObject {
                 object: entry.object,
                 kind: entry.kind,
             });
@@ -2811,11 +2752,11 @@ impl CapabilitySpace {
 
     fn push_free_slot_once(&mut self, slot: SlotId) {
         if !self.free_slots.contains(&slot) {
-            push_reserved(
-                &mut self.free_slots,
-                slot,
-                "free-list insertion is reserved before CTE mutation commits",
+            debug_assert!(
+                self.free_slots.len() < self.free_slots.capacity(),
+                "free-list insertion is reserved before CTE mutation commits"
             );
+            self.free_slots.push(slot);
         }
     }
 
@@ -2943,14 +2884,10 @@ impl CNodeSlots {
         let mut slots = Vec::new();
         slots.try_reserve(count)?;
         for offset in 0..count {
-            push_reserved(
-                &mut slots,
-                CNodeSlotEntry {
-                    handle: slot_in_window(window_start, offset),
-                    slot: None,
-                },
-                "CNodeSlots::from_window reserves the full validated window before filling it",
-            );
+            slots.push(CNodeSlotEntry {
+                handle: slot_in_window(window_start, offset),
+                slot: None,
+            });
         }
         Ok(Self { slots })
     }
@@ -3058,11 +2995,11 @@ impl ChildSlots {
 
     fn insert(&mut self, cte: CteRef) {
         if !self.slots.contains(&cte) {
-            push_reserved(
-                &mut self.slots,
-                cte,
-                "capability child link insertion is pre-reserved by caller",
+            debug_assert!(
+                self.slots.len() < self.slots.capacity(),
+                "capability child link insertion is pre-reserved by caller"
             );
+            self.slots.push(cte);
         }
     }
 
@@ -3248,20 +3185,12 @@ fn extend_reserved_with_none<T>(items: &mut Vec<Option<T>>, index: usize, contex
 
 fn push_unique_object(objects: &mut Vec<ObjectId>, object: ObjectId) {
     if !objects.contains(&object) {
-        push_reserved(
-            objects,
-            object,
-            "revoke plan reserves unique object snapshots per descendant",
+        debug_assert!(
+            objects.len() < objects.capacity(),
+            "revoke plan reserves unique object snapshots per descendant"
         );
+        objects.push(object);
     }
-}
-
-fn push_reserved<T>(items: &mut Vec<T>, value: T, invariant: &str) {
-    assert!(
-        items.len() < items.capacity(),
-        "{invariant}; Vec::push must not allocate in this kernel path"
-    );
-    items.push(value);
 }
 
 impl UntypedAllocation {

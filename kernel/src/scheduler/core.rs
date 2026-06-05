@@ -372,7 +372,7 @@ impl Scheduler {
             {
                 return Err(SchedulerError::DuplicateCpu { cpu: *cpu });
             }
-            push_reserved_run_queue(&mut run_queues, PerCpuRunQueue::new(*cpu));
+            run_queues.push(PerCpuRunQueue::new(*cpu));
         }
 
         Ok(Self { run_queues })
@@ -449,14 +449,6 @@ impl Scheduler {
             .iter_mut()
             .find_map(|queue| queue.remove_thread(thread))
     }
-}
-
-fn push_reserved_run_queue(run_queues: &mut Vec<PerCpuRunQueue>, queue: PerCpuRunQueue) {
-    assert!(
-        run_queues.len() < run_queues.capacity(),
-        "Scheduler::new reserves one run queue per validated CPU before pushing"
-    );
-    run_queues.push(queue);
 }
 
 impl ReadyLane {
