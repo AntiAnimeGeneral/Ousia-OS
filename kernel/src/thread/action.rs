@@ -1,16 +1,19 @@
-use alloc::vec::Vec;
+use alloc::{boxed::Box, vec, vec::Vec};
 
 use crate::{
     cap::ObjectId,
     ipc::{
-        Endpoint, IpcAction, IpcMessage, IpcPayload, IpcReceiveOptions, IpcSendOptions,
-        QueuedReceiver, QueuedSender, ReplyRequest, ReplySetup,
+        Endpoint, IpcMessage, IpcPayload, IpcReceiveOptions, IpcSendOptions, ReplyRequest,
+        ReplySetup,
     },
     notification::{BoundTcbSignal, Notification, NotificationAction, NotificationState},
     reply::{Reply, ReplyAction, ReplyCaller, ReplyCallerParams, ReplyError, ReplyState},
     scheduler::{Scheduler, SchedulerAction, SchedulerError},
-    thread::tcb::{CpuId, Tcb, ThreadId, ThreadState},
+    thread::tcb::{CpuId, Tcb, TcbWaitQueueLink, ThreadId, ThreadState},
 };
+
+#[cfg(test)]
+use crate::ipc::IpcAction;
 
 fn reply_setup_for(request: ReplyRequest, receiver_can_grant: bool) -> ReplySetup {
     ReplySetup {
@@ -92,6 +95,9 @@ pub enum ThreadActionError {
         thread: ThreadId,
         state: ThreadState,
     },
+    ThreadTableFull {
+        capacity: usize,
+    },
     Reply(ReplyError),
     Scheduler(SchedulerError),
 }
@@ -146,32 +152,68 @@ pub struct ReceiveIpcRequest {
 
 #[derive(Debug, Default)]
 pub struct ThreadTable {
-    tcbs: Vec<Tcb>,
+    tcbs: Box<[Option<Tcb>]>,
 }
 
 impl ThreadTable {
+    pub const DEFAULT_CAPACITY: usize = 256;
+
     pub fn new() -> Self {
-        Self { tcbs: Vec::new() }
+        Self::with_capacity(Self::DEFAULT_CAPACITY)
     }
 
-    pub fn insert(&mut self, tcb: Tcb) -> Option<Tcb> {
+    pub fn with_capacity(capacity: usize) -> Self {
+        Self {
+            tcbs: vec![None; capacity].into_boxed_slice(),
+        }
+    }
+
+    pub fn capacity(&self) -> usize {
+        self.tcbs.len()
+    }
+
+    pub fn validate_insert_capacity(&self, thread: ThreadId) -> Result<(), ThreadActionError> {
+        if self.get(thread).is_some() || self.tcbs.iter().any(Option::is_none) {
+            return Ok(());
+        }
+
+        Err(ThreadActionError::ThreadTableFull {
+            capacity: self.capacity(),
+        })
+    }
+
+    pub fn insert(&mut self, tcb: Tcb) -> Result<Option<Tcb>, ThreadActionError> {
         if let Some(existing) = self
             .tcbs
             .iter_mut()
+            .filter_map(Option::as_mut)
             .find(|existing| existing.id() == tcb.id())
         {
-            return Some(core::mem::replace(existing, tcb));
+            return Ok(Some(core::mem::replace(existing, tcb)));
         }
-        self.tcbs.push(tcb);
-        None
+
+        let capacity = self.capacity();
+        let slot = self
+            .tcbs
+            .iter_mut()
+            .find(|slot| slot.is_none())
+            .ok_or(ThreadActionError::ThreadTableFull { capacity })?;
+        *slot = Some(tcb);
+        Ok(None)
     }
 
     pub fn get(&self, thread: ThreadId) -> Option<&Tcb> {
-        self.tcbs.iter().find(|tcb| tcb.id() == thread)
+        self.tcbs
+            .iter()
+            .filter_map(Option::as_ref)
+            .find(|tcb| tcb.id() == thread)
     }
 
     pub fn get_mut(&mut self, thread: ThreadId) -> Option<&mut Tcb> {
-        self.tcbs.iter_mut().find(|tcb| tcb.id() == thread)
+        self.tcbs
+            .iter_mut()
+            .filter_map(Option::as_mut)
+            .find(|tcb| tcb.id() == thread)
     }
 
     pub fn state(&self, thread: ThreadId) -> Option<ThreadState> {
@@ -189,12 +231,170 @@ impl ThreadTable {
     }
 
     pub fn remove(&mut self, thread: ThreadId) -> Option<Tcb> {
-        let index = self.tcbs.iter().position(|tcb| tcb.id() == thread)?;
-        Some(self.tcbs.remove(index))
+        let slot = self
+            .tcbs
+            .iter_mut()
+            .find(|slot| slot.as_ref().is_some_and(|tcb| tcb.id() == thread))?;
+        slot.take()
     }
 
     pub fn unbind_notification(&mut self, thread: ThreadId) -> Option<ObjectId> {
         self.get_mut(thread)?.unbind_notification()
+    }
+
+    fn append_endpoint_sender(&mut self, endpoint: &mut Endpoint, thread: ThreadId) {
+        let prev = endpoint.enqueue_sender(thread);
+        if let Some(prev) = prev {
+            let prev_link = self
+                .get(prev)
+                .expect("endpoint sender tail must reference an existing TCB")
+                .wait_queue_link();
+            self.get_mut(prev)
+                .expect("endpoint sender tail must reference an existing TCB")
+                .set_wait_queue_link(TcbWaitQueueLink::new(prev_link.prev(), Some(thread)));
+        }
+        self.get_mut(thread)
+            .expect("blocked sender must exist before endpoint enqueue")
+            .set_wait_queue_link(TcbWaitQueueLink::new(prev, None));
+    }
+
+    fn append_endpoint_receiver(&mut self, endpoint: &mut Endpoint, thread: ThreadId) {
+        let prev = endpoint.enqueue_receiver(thread);
+        if let Some(prev) = prev {
+            let prev_link = self
+                .get(prev)
+                .expect("endpoint receiver tail must reference an existing TCB")
+                .wait_queue_link();
+            self.get_mut(prev)
+                .expect("endpoint receiver tail must reference an existing TCB")
+                .set_wait_queue_link(TcbWaitQueueLink::new(prev_link.prev(), Some(thread)));
+        }
+        self.get_mut(thread)
+            .expect("blocked receiver must exist before endpoint enqueue")
+            .set_wait_queue_link(TcbWaitQueueLink::new(prev, None));
+    }
+
+    pub fn pop_endpoint_sender(
+        &mut self,
+        endpoint: &mut Endpoint,
+    ) -> Result<Option<ThreadId>, ThreadActionError> {
+        let Some(sender) = endpoint.sender_head() else {
+            return Ok(None);
+        };
+        let link = self
+            .get(sender)
+            .ok_or(ThreadActionError::UnknownThread { thread: sender })?
+            .wait_queue_link();
+        endpoint.dequeue_sender_head(link.next());
+        if let Some(next) = link.next() {
+            let next_link = self
+                .get(next)
+                .ok_or(ThreadActionError::UnknownThread { thread: next })?
+                .wait_queue_link();
+            self.get_mut(next)
+                .expect("validated sender queue successor must exist")
+                .set_wait_queue_link(TcbWaitQueueLink::new(None, next_link.next()));
+        }
+        self.get_mut(sender)
+            .expect("validated sender queue head must exist")
+            .clear_wait_queue_link();
+        Ok(Some(sender))
+    }
+
+    pub fn pop_endpoint_receiver(
+        &mut self,
+        endpoint: &mut Endpoint,
+    ) -> Result<Option<ThreadId>, ThreadActionError> {
+        let Some(receiver) = endpoint.receiver_head() else {
+            return Ok(None);
+        };
+        let link = self
+            .get(receiver)
+            .ok_or(ThreadActionError::UnknownThread { thread: receiver })?
+            .wait_queue_link();
+        endpoint.dequeue_receiver_head(link.next());
+        if let Some(next) = link.next() {
+            let next_link = self
+                .get(next)
+                .ok_or(ThreadActionError::UnknownThread { thread: next })?
+                .wait_queue_link();
+            self.get_mut(next)
+                .expect("validated receiver queue successor must exist")
+                .set_wait_queue_link(TcbWaitQueueLink::new(None, next_link.next()));
+        }
+        self.get_mut(receiver)
+            .expect("validated receiver queue head must exist")
+            .clear_wait_queue_link();
+        Ok(Some(receiver))
+    }
+
+    pub fn unlink_endpoint_waiter(&mut self, endpoint: &mut Endpoint, thread: ThreadId) -> bool {
+        let Some(tcb) = self.get(thread) else {
+            return false;
+        };
+        let link = tcb.wait_queue_link();
+        let removed = match tcb.state() {
+            ThreadState::BlockedOnSend { .. } => {
+                endpoint.unlink_sender(thread, link.prev(), link.next())
+            }
+            ThreadState::BlockedOnReceive { .. } => {
+                endpoint.unlink_receiver(thread, link.prev(), link.next())
+            }
+            ThreadState::Inactive
+            | ThreadState::Running
+            | ThreadState::Restart
+            | ThreadState::BlockedOnReply
+            | ThreadState::BlockedOnNotification { .. }
+            | ThreadState::IdleThreadState => false,
+        };
+        if !removed {
+            return false;
+        }
+        if let Some(prev) = link.prev() {
+            let prev_link = self
+                .get(prev)
+                .expect("endpoint queue predecessor must reference an existing TCB")
+                .wait_queue_link();
+            self.get_mut(prev)
+                .expect("endpoint queue predecessor must reference an existing TCB")
+                .set_wait_queue_link(TcbWaitQueueLink::new(prev_link.prev(), link.next()));
+        }
+        if let Some(next) = link.next() {
+            let next_link = self
+                .get(next)
+                .expect("endpoint queue successor must reference an existing TCB")
+                .wait_queue_link();
+            self.get_mut(next)
+                .expect("endpoint queue successor must reference an existing TCB")
+                .set_wait_queue_link(TcbWaitQueueLink::new(link.prev(), next_link.next()));
+        }
+        self.get_mut(thread)
+            .expect("unlinked endpoint waiter must exist")
+            .clear_wait_queue_link();
+        true
+    }
+
+    pub fn drain_endpoint_waiters(&mut self, endpoint: &mut Endpoint) -> Vec<(ThreadId, CpuId)> {
+        let mut waiters = Vec::new();
+        while let Some(sender) = endpoint.sender_head() {
+            let cpu = match self.state(sender) {
+                Some(ThreadState::BlockedOnSend { sender_cpu, .. }) => sender_cpu,
+                _ => self.affinity(sender).unwrap_or(CpuId::new(0)),
+            };
+            self.pop_endpoint_sender(endpoint)
+                .expect("endpoint sender drain must consume existing queue head");
+            waiters.push((sender, cpu));
+        }
+        while let Some(receiver) = endpoint.receiver_head() {
+            let cpu = match self.state(receiver) {
+                Some(ThreadState::BlockedOnReceive { receiver_cpu, .. }) => receiver_cpu,
+                _ => self.affinity(receiver).unwrap_or(CpuId::new(0)),
+            };
+            self.pop_endpoint_receiver(endpoint)
+                .expect("endpoint receiver drain must consume existing queue head");
+            waiters.push((receiver, cpu));
+        }
+        waiters
     }
 }
 
@@ -255,12 +455,10 @@ impl ReceiveIpcRequest {
 fn blocked_sender_message(
     threads: &ThreadTable,
     endpoint: ObjectId,
-    sender: QueuedSender,
+    sender: ThreadId,
 ) -> Result<BlockedSenderMessage, ThreadActionError> {
-    let Some(state) = threads.state(sender.thread()) else {
-        return Err(ThreadActionError::UnknownThread {
-            thread: sender.thread(),
-        });
+    let Some(state) = threads.state(sender) else {
+        return Err(ThreadActionError::UnknownThread { thread: sender });
     };
     let ThreadState::BlockedOnSend {
         endpoint: blocked_endpoint,
@@ -273,10 +471,10 @@ fn blocked_sender_message(
     } = state
     else {
         return Err(ThreadActionError::UnexpectedThreadState {
-            thread: sender.thread(),
+            thread: sender,
             expected: ThreadState::BlockedOnSend {
                 endpoint,
-                sender_cpu: sender.cpu(),
+                sender_cpu: CpuId::new(0),
                 badge: 0,
                 can_grant: false,
                 can_grant_reply: false,
@@ -286,12 +484,12 @@ fn blocked_sender_message(
             actual: state,
         });
     };
-    if blocked_endpoint != endpoint || sender_cpu != sender.cpu() {
+    if blocked_endpoint != endpoint {
         return Err(ThreadActionError::UnexpectedThreadState {
-            thread: sender.thread(),
+            thread: sender,
             expected: ThreadState::BlockedOnSend {
                 endpoint,
-                sender_cpu: sender.cpu(),
+                sender_cpu,
                 badge,
                 can_grant,
                 can_grant_reply,
@@ -308,8 +506,8 @@ fn blocked_sender_message(
         crate::ipc::IpcSendMode::Send
     };
     let message = IpcMessage::new_for_blocked_sender(
-        sender.thread(),
-        sender.cpu(),
+        sender,
+        sender_cpu,
         badge,
         can_grant,
         can_grant_reply,
@@ -317,8 +515,8 @@ fn blocked_sender_message(
         payload,
     );
     let reply_request = is_call.then_some(ReplyRequest {
-        caller: sender.thread(),
-        caller_cpu: sender.cpu(),
+        caller: sender,
+        caller_cpu: sender_cpu,
         sender_can_reply: can_grant || can_grant_reply,
     });
 
@@ -331,23 +529,23 @@ fn blocked_sender_message(
 fn blocked_receiver_context(
     threads: &ThreadTable,
     endpoint: ObjectId,
-    receiver: QueuedReceiver,
+    receiver: ThreadId,
 ) -> Result<BlockedReceiverContext, ThreadActionError> {
-    let Some(state) = threads.state(receiver.thread()) else {
-        return Err(ThreadActionError::UnknownThread {
-            thread: receiver.thread(),
-        });
+    let Some(state) = threads.state(receiver) else {
+        return Err(ThreadActionError::UnknownThread { thread: receiver });
     };
     let ThreadState::BlockedOnReceive {
         endpoint: blocked_endpoint,
+        receiver_cpu,
         can_grant,
         reply,
     } = state
     else {
         return Err(ThreadActionError::UnexpectedThreadState {
-            thread: receiver.thread(),
+            thread: receiver,
             expected: ThreadState::BlockedOnReceive {
                 endpoint,
+                receiver_cpu: threads.affinity(receiver).unwrap_or(CpuId::new(0)),
                 can_grant: false,
                 reply: None,
             },
@@ -356,9 +554,10 @@ fn blocked_receiver_context(
     };
     if blocked_endpoint != endpoint {
         return Err(ThreadActionError::UnexpectedThreadState {
-            thread: receiver.thread(),
+            thread: receiver,
             expected: ThreadState::BlockedOnReceive {
                 endpoint,
+                receiver_cpu,
                 can_grant,
                 reply,
             },
@@ -367,35 +566,11 @@ fn blocked_receiver_context(
     }
 
     Ok(BlockedReceiverContext {
-        thread: receiver.thread(),
-        cpu: receiver.cpu(),
+        thread: receiver,
+        cpu: receiver_cpu,
         can_grant,
         reply,
     })
-}
-
-fn blocked_receive_grant(
-    threads: &ThreadTable,
-    endpoint: ObjectId,
-    receiver: ThreadId,
-) -> Result<bool, ThreadActionError> {
-    match threads.state(receiver) {
-        Some(ThreadState::BlockedOnReceive {
-            endpoint: blocked_endpoint,
-            can_grant,
-            ..
-        }) if blocked_endpoint == endpoint => Ok(can_grant),
-        Some(actual) => Err(ThreadActionError::UnexpectedThreadState {
-            thread: receiver,
-            expected: ThreadState::BlockedOnReceive {
-                endpoint,
-                can_grant: false,
-                reply: None,
-            },
-            actual,
-        }),
-        None => Err(ThreadActionError::UnknownThread { thread: receiver }),
-    }
 }
 
 fn blocked_notification_context(
@@ -426,6 +601,7 @@ fn blocked_notification_context(
     }
 }
 
+#[cfg(test)]
 fn apply_ipc_action(
     threads: &mut ThreadTable,
     scheduler: &mut Scheduler,
@@ -468,26 +644,26 @@ fn apply_ipc_action(
             cpu,
             ThreadState::BlockedOnReceive {
                 endpoint,
+                receiver_cpu: cpu,
                 can_grant,
                 reply: receiver_reply,
             },
         ),
-        IpcAction::DeliveredToReceiver {
-            receiver,
-            receiver_cpu,
-            ..
-        } => wake_thread(
-            threads,
-            scheduler,
-            receiver,
-            receiver_cpu,
-            WakeExpectation::Receive {
-                endpoint,
-                can_grant: blocked_receive_grant(threads, endpoint, receiver)?,
-            },
-        ),
+        IpcAction::DeliveredToReceiver { receiver, .. } => {
+            let receiver_context = blocked_receiver_context(threads, endpoint, receiver)?;
+            wake_thread(
+                threads,
+                scheduler,
+                receiver_context.thread,
+                receiver_context.cpu,
+                WakeExpectation::Receive {
+                    endpoint,
+                    can_grant: receiver_context.can_grant,
+                },
+            )
+        }
         IpcAction::SenderReleased { sender, .. } => {
-            let blocked = blocked_sender_message(threads, endpoint, sender)?;
+            let blocked = blocked_sender_message(threads, endpoint, sender.thread())?;
             let message = blocked.message;
             let reply_request = blocked.reply_request;
             if let Some(request) = reply_request {
@@ -530,7 +706,7 @@ pub fn send_ipc(
 
     let mut reply = reply;
 
-    let receiver_context = if let Some(receiver) = endpoint.next_receiver() {
+    let receiver_context = if let Some(receiver) = endpoint.receiver_head() {
         let receiver = blocked_receiver_context(threads, request.endpoint, receiver)?;
         validate_wake(
             threads,
@@ -568,26 +744,28 @@ pub fn send_ipc(
         None
     };
 
-    let action = endpoint.send(
-        request.sender,
-        request.sender_cpu,
-        request.badge,
-        request.options,
-        request.payload,
-    );
-    match action {
-        IpcAction::DeliveredToReceiver {
-            receiver,
-            receiver_cpu,
-            message,
-            reply_request: Some(reply_request),
-        } => {
+    if let Some(receiver_context) = receiver_context {
+        let receiver = threads
+            .pop_endpoint_receiver(endpoint)?
+            .expect("prechecked receiver queue must have a head");
+        assert_eq!(receiver, receiver_context.thread);
+        let message = IpcMessage::new_for_blocked_sender(
+            request.sender,
+            request.sender_cpu,
+            request.badge,
+            request.options.can_grant,
+            request.options.can_grant_reply,
+            request.options.mode(),
+            request.payload,
+        );
+        let reply_request = request.options.is_call().then_some(ReplyRequest {
+            caller: request.sender,
+            caller_cpu: request.sender_cpu,
+            sender_can_reply: request.options.can_grant || request.options.can_grant_reply,
+        });
+        if let Some(reply_request) = reply_request {
             let caller_can_reply = reply_request.sender_can_reply;
-            let receiver_can_grant = receiver_context
-                .filter(|context| context.thread == receiver && context.cpu == receiver_cpu)
-                .expect("prechecked immediate call delivery must target the queued receiver")
-                .can_grant;
-            let setup = reply_setup_for(reply_request, receiver_can_grant);
+            let setup = reply_setup_for(reply_request, receiver_context.can_grant);
             let sender_action = if caller_can_reply {
                 let caller_object = request
                     .caller
@@ -614,11 +792,52 @@ pub fn send_ipc(
             } else {
                 stop_current_validated(threads, scheduler, message.sender(), message.sender_cpu())
             };
-            let wake = wake_thread_validated(threads, scheduler, receiver, receiver_cpu);
+            let wake = wake_thread_validated(
+                threads,
+                scheduler,
+                receiver_context.thread,
+                receiver_context.cpu,
+            );
+            let _ = sender_action;
+            Ok(wake)
+        } else {
+            let sender_action =
+                stop_current_validated(threads, scheduler, request.sender, request.sender_cpu);
+            let wake = wake_thread_validated(
+                threads,
+                scheduler,
+                receiver_context.thread,
+                receiver_context.cpu,
+            );
             let _ = sender_action;
             Ok(wake)
         }
-        action => apply_ipc_action(threads, scheduler, request.endpoint, None, action),
+    } else if request.options.is_blocking() {
+        block_current_validated(
+            threads,
+            scheduler,
+            request.sender,
+            request.sender_cpu,
+            ThreadState::BlockedOnSend {
+                endpoint: request.endpoint,
+                sender_cpu: request.sender_cpu,
+                badge: request.badge,
+                can_grant: request.options.can_grant,
+                can_grant_reply: request.options.can_grant_reply,
+                is_call: request.options.is_call(),
+                payload: request.payload,
+            },
+        );
+        threads.append_endpoint_sender(endpoint, request.sender);
+        Ok(ThreadAction::Blocked {
+            thread: request.sender,
+            cpu: request.sender_cpu,
+        })
+    } else {
+        Ok(ThreadAction::Ignored {
+            thread: request.sender,
+            cpu: request.sender_cpu,
+        })
     }
 }
 
@@ -633,7 +852,7 @@ pub fn recv_ipc(
 
     let mut reply = reply;
 
-    if let Some(sender) = endpoint.next_sender() {
+    if let Some(sender) = endpoint.sender_head() {
         let blocked = blocked_sender_message(threads, request.endpoint, sender)?;
         let message = blocked.message;
         let expected = ThreadState::BlockedOnSend {
@@ -683,58 +902,74 @@ pub fn recv_ipc(
         }
     }
 
-    let action = endpoint.recv(request.receiver, request.receiver_cpu, request.options);
-    match action {
-        IpcAction::SenderReleased { sender, .. } => {
-            let blocked = blocked_sender_message(threads, request.endpoint, sender)?;
-            let message = blocked.message;
-            if let Some(reply_request) = blocked.reply_request {
-                let caller_can_reply = reply_request.sender_can_reply;
-                let setup = reply_setup_for(reply_request, request.options.can_grant);
-                if caller_can_reply {
-                    let caller_object = request
-                        .caller
-                        .expect("prechecked receive-side call must provide caller TCB object");
-                    let reply = reply
-                        .as_deref_mut()
-                        .expect("prechecked receive-side call must provide reply object");
-                    let _ = reply
-                        .record_caller(ReplyCaller::new(ReplyCallerParams {
-                            caller: caller_object,
-                            target: request.endpoint,
-                            thread: setup.caller,
-                            cpu: setup.caller_cpu,
-                            can_grant: setup.reply_can_grant,
-                        }))
-                        .expect("prechecked receive-side call reply object must be empty");
-                    threads
-                        .get_mut(message.sender())
-                        .expect("prechecked receive-side call sender must exist")
-                        .set_state(ThreadState::BlockedOnReply);
-                    Ok(ThreadAction::ReplyRecorded { setup })
-                } else {
-                    Ok(stop_thread_validated(
-                        threads,
-                        message.sender(),
-                        message.sender_cpu(),
-                    ))
-                }
+    if endpoint.sender_head().is_some() {
+        let sender = threads
+            .pop_endpoint_sender(endpoint)?
+            .expect("prechecked sender queue must have a head");
+        let blocked = blocked_sender_message(threads, request.endpoint, sender)?;
+        let message = blocked.message;
+        if let Some(reply_request) = blocked.reply_request {
+            let caller_can_reply = reply_request.sender_can_reply;
+            let setup = reply_setup_for(reply_request, request.options.can_grant);
+            if caller_can_reply {
+                let caller_object = request
+                    .caller
+                    .expect("prechecked receive-side call must provide caller TCB object");
+                let reply = reply
+                    .as_deref_mut()
+                    .expect("prechecked receive-side call must provide reply object");
+                let _ = reply
+                    .record_caller(ReplyCaller::new(ReplyCallerParams {
+                        caller: caller_object,
+                        target: request.endpoint,
+                        thread: setup.caller,
+                        cpu: setup.caller_cpu,
+                        can_grant: setup.reply_can_grant,
+                    }))
+                    .expect("prechecked receive-side call reply object must be empty");
+                threads
+                    .get_mut(message.sender())
+                    .expect("prechecked receive-side call sender must exist")
+                    .set_state(ThreadState::BlockedOnReply);
+                Ok(ThreadAction::ReplyRecorded { setup })
             } else {
-                Ok(wake_thread_validated(
+                Ok(stop_thread_validated(
                     threads,
-                    scheduler,
                     message.sender(),
                     message.sender_cpu(),
                 ))
             }
+        } else {
+            Ok(wake_thread_validated(
+                threads,
+                scheduler,
+                message.sender(),
+                message.sender_cpu(),
+            ))
         }
-        action => apply_ipc_action(
+    } else if request.options.blocking {
+        block_current_validated(
             threads,
             scheduler,
-            request.endpoint,
-            request.receiver_reply,
-            action,
-        ),
+            request.receiver,
+            request.receiver_cpu,
+            ThreadState::BlockedOnReceive {
+                endpoint: request.endpoint,
+                receiver_cpu: request.receiver_cpu,
+                can_grant: request.options.can_grant,
+                reply: request.receiver_reply,
+            },
+        );
+        threads.append_endpoint_receiver(endpoint, request.receiver);
+        Ok(ThreadAction::Blocked {
+            thread: request.receiver,
+            cpu: request.receiver_cpu,
+        })
+    } else {
+        Ok(ThreadAction::Ignored {
+            thread: request.receiver,
+            cpu: request.receiver_cpu,
+        })
     }
 }
 
@@ -1164,6 +1399,7 @@ fn validate_wake_expectation(
                     thread,
                     expected: ThreadState::BlockedOnReceive {
                         endpoint,
+                        receiver_cpu: tcb.affinity(),
                         can_grant,
                         reply: None,
                     },
@@ -1245,7 +1481,12 @@ mod tests {
     fn table_with_threads(threads: &[(u64, CpuId)]) -> ThreadTable {
         let mut table = ThreadTable::new();
         for (thread, cpu) in threads {
-            assert!(table.insert(runnable_tcb(*thread, *cpu)).is_none());
+            assert!(
+                table
+                    .insert(runnable_tcb(*thread, *cpu))
+                    .expect("test thread table must have capacity")
+                    .is_none()
+            );
         }
         table
     }
@@ -1308,7 +1549,12 @@ mod tests {
         // Scope: ThreadTable and Scheduler ownership after TCB resume authorization.
         // Semantics: the TCB enters Restart and is enqueued on its affinity CPU.
         let mut threads = ThreadTable::new();
-        assert!(threads.insert(Tcb::new(thread(1), cpu(1))).is_none());
+        assert!(
+            threads
+                .insert(Tcb::new(thread(1), cpu(1)))
+                .expect("test thread table must have capacity")
+                .is_none()
+        );
         let mut scheduler = Scheduler::new(&[cpu(0), cpu(1)]).unwrap();
 
         assert_eq!(
@@ -1354,7 +1600,12 @@ mod tests {
         // Scope: ThreadTable and Scheduler failure ordering for TCB resume.
         // Semantics: unknown affinity CPU leaves the TCB inactive and unplaced.
         let mut threads = ThreadTable::new();
-        assert!(threads.insert(Tcb::new(thread(1), cpu(9))).is_none());
+        assert!(
+            threads
+                .insert(Tcb::new(thread(1), cpu(9)))
+                .expect("test thread table must have capacity")
+                .is_none()
+        );
         let mut scheduler = Scheduler::new(&[cpu(0), cpu(1)]).unwrap();
 
         assert_eq!(
@@ -1375,7 +1626,12 @@ mod tests {
         let mut threads = ThreadTable::new();
         let mut tcb = Tcb::new(thread(1), cpu(0));
         tcb.set_state(ThreadState::Inactive);
-        assert!(threads.insert(tcb).is_none());
+        assert!(
+            threads
+                .insert(tcb)
+                .expect("test thread table must have capacity")
+                .is_none()
+        );
         let mut scheduler = Scheduler::new(&[cpu(0), cpu(1)]).unwrap();
         scheduler
             .enqueue(&runnable_tcb(1, cpu(0)))
@@ -1392,6 +1648,27 @@ mod tests {
         );
         assert_eq!(threads.state(thread(1)), Some(ThreadState::Inactive));
         assert_eq!(scheduler.run_queue(cpu(0)).unwrap().ready_len(), 1);
+    }
+
+    #[test]
+    fn thread_table_rejects_capacity_overflow_without_inserting() {
+        // Goal: ThreadTable does not allocate during TCB insertion.
+        // Scope: bounded ThreadTable storage used as the current TCB owner.
+        // Semantics: capacity exhaustion is recoverable and existing entries remain intact.
+        let mut threads = ThreadTable::with_capacity(1);
+        assert!(
+            threads
+                .insert(Tcb::new(thread(1), cpu(0)))
+                .expect("first insert fits bounded table")
+                .is_none()
+        );
+
+        assert_eq!(
+            threads.insert(Tcb::new(thread(2), cpu(1))),
+            Err(ThreadActionError::ThreadTableFull { capacity: 1 })
+        );
+        assert_eq!(threads.state(thread(1)), Some(ThreadState::Inactive));
+        assert_eq!(threads.state(thread(2)), None);
     }
 
     #[test]
@@ -1432,6 +1709,78 @@ mod tests {
     }
 
     #[test]
+    fn endpoint_sender_queue_uses_tcb_links_for_fifo_and_middle_unlink() {
+        // Goal: Endpoint wait queues keep only anchors while TCB links own membership.
+        // Scope: ThreadTable endpoint sender helpers used by IPC and finalisation paths.
+        // Semantics: unlinking a middle waiter patches neighboring TCB links and preserves FIFO order.
+        let mut endpoint = crate::ipc::Endpoint::new();
+        let mut threads = table_with_threads(&[(1, cpu(0)), (2, cpu(1)), (3, cpu(0))]);
+        for (thread_id, sender_cpu, badge) in [
+            (thread(1), cpu(0), 1),
+            (thread(2), cpu(1), 2),
+            (thread(3), cpu(0), 3),
+        ] {
+            threads
+                .get_mut(thread_id)
+                .unwrap()
+                .set_state(ThreadState::BlockedOnSend {
+                    endpoint: object(10),
+                    sender_cpu,
+                    badge,
+                    can_grant: true,
+                    can_grant_reply: false,
+                    is_call: false,
+                    payload: IpcPayload::empty(),
+                });
+            threads.append_endpoint_sender(&mut endpoint, thread_id);
+        }
+
+        assert_eq!(endpoint.sender_head(), Some(thread(1)));
+        assert_eq!(endpoint.queued_senders(), 3);
+        assert_eq!(
+            threads.get(thread(1)).unwrap().wait_queue_link().next(),
+            Some(thread(2))
+        );
+        assert_eq!(
+            threads.get(thread(2)).unwrap().wait_queue_link().prev(),
+            Some(thread(1))
+        );
+        assert_eq!(
+            threads.get(thread(2)).unwrap().wait_queue_link().next(),
+            Some(thread(3))
+        );
+        assert_eq!(
+            threads.get(thread(3)).unwrap().wait_queue_link().prev(),
+            Some(thread(2))
+        );
+
+        assert!(threads.unlink_endpoint_waiter(&mut endpoint, thread(2)));
+        assert_eq!(endpoint.sender_head(), Some(thread(1)));
+        assert_eq!(endpoint.queued_senders(), 2);
+        assert!(threads.get(thread(2)).unwrap().wait_queue_link().is_empty());
+        assert_eq!(
+            threads.get(thread(1)).unwrap().wait_queue_link().next(),
+            Some(thread(3))
+        );
+        assert_eq!(
+            threads.get(thread(3)).unwrap().wait_queue_link().prev(),
+            Some(thread(1))
+        );
+
+        assert_eq!(
+            threads.pop_endpoint_sender(&mut endpoint),
+            Ok(Some(thread(1)))
+        );
+        assert_eq!(
+            threads.pop_endpoint_sender(&mut endpoint),
+            Ok(Some(thread(3)))
+        );
+        assert_eq!(threads.pop_endpoint_sender(&mut endpoint), Ok(None));
+        assert_eq!(endpoint.queued_senders(), 0);
+        assert_eq!(endpoint.sender_head(), None);
+    }
+
+    #[test]
     fn send_ipc_receiver_precheck_failure_does_not_consume_waiter() {
         // Goal: send-side delivery validates the queued receiver before consuming it.
         // Scope: send_ipc preflight across Endpoint, ThreadTable, and Scheduler.
@@ -1460,6 +1809,7 @@ mod tests {
                 thread: thread(2),
                 expected: ThreadState::BlockedOnReceive {
                     endpoint: object(10),
+                    receiver_cpu: cpu(1),
                     can_grant: false,
                     reply: None,
                 },
@@ -1492,6 +1842,7 @@ mod tests {
             .unwrap()
             .set_state(ThreadState::BlockedOnReceive {
                 endpoint: object(10),
+                receiver_cpu: cpu(1),
                 can_grant: true,
                 reply: None,
             });
@@ -1535,6 +1886,7 @@ mod tests {
             .unwrap()
             .set_state(ThreadState::BlockedOnReceive {
                 endpoint: object(10),
+                receiver_cpu: cpu(1),
                 can_grant: false,
                 reply: None,
             });
@@ -1585,6 +1937,7 @@ mod tests {
             .unwrap()
             .set_state(ThreadState::BlockedOnReceive {
                 endpoint: object(10),
+                receiver_cpu: cpu(1),
                 can_grant: true,
                 reply: None,
             });
@@ -1626,6 +1979,7 @@ mod tests {
             .unwrap()
             .set_state(ThreadState::BlockedOnReceive {
                 endpoint: object(10),
+                receiver_cpu: cpu(1),
                 can_grant: true,
                 reply: None,
             });
@@ -1654,6 +2008,7 @@ mod tests {
             threads.state(thread(2)),
             Some(ThreadState::BlockedOnReceive {
                 endpoint: object(10),
+                receiver_cpu: cpu(1),
                 can_grant: true,
                 reply: None,
             })
@@ -1684,6 +2039,7 @@ mod tests {
             .unwrap()
             .set_state(ThreadState::BlockedOnReceive {
                 endpoint: object(10),
+                receiver_cpu: cpu(1),
                 can_grant: true,
                 reply: None,
             });
@@ -1715,6 +2071,7 @@ mod tests {
             .unwrap()
             .set_state(ThreadState::BlockedOnReceive {
                 endpoint: object(10),
+                receiver_cpu: cpu(1),
                 can_grant: true,
                 reply: None,
             });
@@ -1743,6 +2100,7 @@ mod tests {
             threads.state(thread(2)),
             Some(ThreadState::BlockedOnReceive {
                 endpoint: object(10),
+                receiver_cpu: cpu(1),
                 can_grant: true,
                 reply: None,
             })
@@ -1780,6 +2138,7 @@ mod tests {
                 thread: thread(2),
                 expected: ThreadState::BlockedOnReceive {
                     endpoint: object(10),
+                    receiver_cpu: cpu(1),
                     can_grant: false,
                     reply: None,
                 },
@@ -2217,6 +2576,7 @@ mod tests {
             threads.state(thread(2)),
             Some(ThreadState::BlockedOnReceive {
                 endpoint: object(10),
+                receiver_cpu: cpu(1),
                 can_grant: true,
                 reply: None,
             })
@@ -2317,6 +2677,7 @@ mod tests {
             .unwrap()
             .set_state(ThreadState::BlockedOnReceive {
                 endpoint: object(10),
+                receiver_cpu: cpu(0),
                 can_grant: true,
                 reply: None,
             });
@@ -2339,6 +2700,7 @@ mod tests {
                 },
                 actual: ThreadState::BlockedOnReceive {
                     endpoint: object(10),
+                    receiver_cpu: cpu(0),
                     can_grant: true,
                     reply: None,
                 },
@@ -2372,6 +2734,7 @@ mod tests {
             .unwrap()
             .set_state(ThreadState::BlockedOnReceive {
                 endpoint: object(10),
+                receiver_cpu: cpu(0),
                 can_grant: false,
                 reply: None,
             });

@@ -140,6 +140,7 @@ impl ThreadActionError {
             | Self::ReceiveCallTransactionUnsupported { .. }
             | Self::ReplyAlreadyPending
             | Self::ThreadNotResumable { .. } => KernelErrorCode::IllegalOperation,
+            Self::ThreadTableFull { .. } => KernelErrorCode::NotEnoughMemory,
             Self::Reply(error) => error.error_code(),
             Self::Scheduler(error) => error.error_code(),
         }
@@ -498,7 +499,9 @@ mod tests {
         let mut tcb = Tcb::new(thread(1), cpu(0));
         tcb.set_state(ThreadState::Running);
         let mut threads = ThreadTable::new();
-        threads.insert(tcb.clone());
+        threads
+            .insert(tcb.clone())
+            .expect("test thread table must have capacity");
         let mut scheduler = Scheduler::new(&[cpu(0), cpu(1)]).unwrap();
         scheduler.enqueue(&tcb).unwrap();
         scheduler.schedule_next(cpu(0)).unwrap();

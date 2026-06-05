@@ -145,8 +145,13 @@ impl KernelState {
             return Err(KernelExecutionError::ThreadAlreadyExists { thread });
         }
         self.scheduler.run_queue(tcb.affinity())?;
+        self.threads
+            .validate_insert_capacity(thread)
+            .map_err(KernelExecutionError::Thread)?;
         self.objects.bind_tcb(object, thread)?;
-        self.threads.insert(tcb);
+        self.threads
+            .insert(tcb)
+            .expect("prevalidated thread table insertion must succeed");
         Ok(())
     }
 
@@ -458,16 +463,15 @@ impl KernelState {
     }
 
     fn finalise_endpoint(&mut self, object: ObjectId) {
-        let cancellation = self
-            .objects
-            .endpoint_mut(object)
-            .expect("endpoint finalisation must target an endpoint object")
-            .cancel_all();
-        for sender in cancellation.senders {
-            self.restart_thread(sender.thread(), sender.cpu());
-        }
-        for receiver in cancellation.receivers {
-            self.restart_thread(receiver.thread(), receiver.cpu());
+        let waiters = {
+            let endpoint = self
+                .objects
+                .endpoint_mut(object)
+                .expect("endpoint finalisation must target an endpoint object");
+            self.threads.drain_endpoint_waiters(endpoint)
+        };
+        for (thread, cpu) in waiters {
+            self.restart_thread(thread, cpu);
         }
         self.objects.remove_finalised(object);
     }
@@ -500,8 +504,9 @@ impl KernelState {
     fn finalise_tcb_object(&mut self, object: ObjectId, thread: Option<ThreadId>) {
         if let Some(thread) = thread {
             self.scheduler.remove_thread(thread);
-            if let Some(tcb) = self.threads.remove(thread) {
+            if let Some(tcb) = self.threads.get(thread).cloned() {
                 self.cancel_tcb_runtime_state(&tcb);
+                self.threads.remove(thread);
             }
         }
         self.objects.remove_finalised(object);
@@ -512,7 +517,7 @@ impl KernelState {
             ThreadState::BlockedOnSend { endpoint, .. }
             | ThreadState::BlockedOnReceive { endpoint, .. } => {
                 if let Ok(endpoint) = self.objects.endpoint_mut(endpoint) {
-                    endpoint.cancel_thread(tcb.id());
+                    self.threads.unlink_endpoint_waiter(endpoint, tcb.id());
                 }
             }
             ThreadState::BlockedOnNotification { notification, .. } => {
@@ -883,11 +888,16 @@ impl KernelState {
             ));
         }
         self.scheduler.run_queue(affinity)?;
+        self.threads
+            .validate_insert_capacity(thread)
+            .map_err(KernelExecutionError::Thread)?;
 
         self.objects
             .bind_tcb(tcb, thread)
             .expect("prevalidated TCB binding must succeed");
-        self.threads.insert(Tcb::new(thread, affinity));
+        self.threads
+            .insert(Tcb::new(thread, affinity))
+            .expect("prevalidated thread table insertion must succeed");
         Ok(ExecutionOutcome::Thread(ThreadAction::NoThread))
     }
 
@@ -1001,6 +1011,15 @@ mod tests {
         tcb
     }
 
+    fn insert_test_thread(threads: &mut ThreadTable, tcb: Tcb) {
+        assert!(
+            threads
+                .insert(tcb)
+                .expect("test thread table must have capacity")
+                .is_none()
+        );
+    }
+
     fn state_with_current_thread() -> (KernelState, CapabilityDescriptor, ObjectId) {
         let mut cspace = CapabilitySpace::new();
         let endpoint_descriptor = cspace
@@ -1016,7 +1035,7 @@ mod tests {
             .unwrap();
         let mut threads = ThreadTable::new();
         let tcb = runnable_tcb(1, cpu(0));
-        threads.insert(tcb.clone());
+        insert_test_thread(&mut threads, tcb.clone());
         let mut scheduler = Scheduler::new(&[cpu(0), cpu(1)]).unwrap();
         scheduler.enqueue(&tcb).unwrap();
         scheduler.schedule_next(cpu(0)).unwrap();
@@ -1147,7 +1166,7 @@ mod tests {
             .unwrap();
         let mut threads = ThreadTable::new();
         let tcb = runnable_tcb(1, cpu(0));
-        threads.insert(tcb.clone());
+        insert_test_thread(&mut threads, tcb.clone());
         let mut scheduler = Scheduler::new(&[cpu(0), cpu(1)]).unwrap();
         scheduler.enqueue(&tcb).unwrap();
         scheduler.schedule_next(cpu(0)).unwrap();
@@ -1236,7 +1255,7 @@ mod tests {
             .insert_notification(notification_object, notification)
             .unwrap();
         let mut threads = ThreadTable::new();
-        threads.insert(runnable_tcb(1, cpu(0)));
+        insert_test_thread(&mut threads, runnable_tcb(1, cpu(0)));
         let scheduler = Scheduler::new(&[cpu(0), cpu(1)]).unwrap();
         let mut state = KernelState::from_parts(cspace, objects, threads, scheduler);
 
@@ -1317,6 +1336,36 @@ mod tests {
     }
 
     #[test]
+    fn insert_thread_object_rejects_full_thread_table_before_binding_object() {
+        // Goal: thread insertion validates bounded TCB storage before binding object identity.
+        // Scope: insert_thread_object failure ordering across ObjectTable and ThreadTable.
+        // Semantics: capacity failure leaves the TCB object unbound and no new thread inserted.
+        let mut state = KernelState::from_parts(
+            CapabilitySpace::new(),
+            ObjectTable::new(),
+            ThreadTable::with_capacity(1),
+            Scheduler::new(&[cpu(0), cpu(1)]).unwrap(),
+        );
+        state.objects.insert_tcb(object(10)).unwrap();
+        state.objects.insert_tcb(object(11)).unwrap();
+        state
+            .insert_thread_object(object(10), Tcb::new(thread(1), cpu(0)))
+            .unwrap();
+
+        assert_eq!(
+            state.insert_thread_object(object(11), Tcb::new(thread(2), cpu(1))),
+            Err(KernelExecutionError::Thread(
+                ThreadActionError::ThreadTableFull { capacity: 1 }
+            ))
+        );
+        assert_eq!(
+            state.objects.tcb_thread(object(11)),
+            Err(ObjectTableError::TcbObjectUnbound { object: object(11) })
+        );
+        assert_eq!(state.threads.get(thread(2)), None);
+    }
+
+    #[test]
     fn reply_invocation_wakes_pending_caller() {
         // Goal: Reply invocation consumes reply cap and wakes the recorded caller.
         // Scope: executor path across CSpace, Reply object, ThreadTable, and Scheduler.
@@ -1345,7 +1394,7 @@ mod tests {
         let mut threads = ThreadTable::new();
         let mut tcb = Tcb::new(thread(1), cpu(0));
         tcb.set_state(ThreadState::BlockedOnReply);
-        threads.insert(tcb);
+        insert_test_thread(&mut threads, tcb);
         let scheduler = Scheduler::new(&[cpu(0), cpu(1)]).unwrap();
         let mut state = KernelState::from_parts(cspace, objects, threads, scheduler);
 
@@ -1403,7 +1452,7 @@ mod tests {
         let mut threads = ThreadTable::new();
         let mut tcb = Tcb::new(thread(1), cpu(0));
         tcb.set_state(ThreadState::BlockedOnReply);
-        threads.insert(tcb);
+        insert_test_thread(&mut threads, tcb);
         let scheduler = Scheduler::new(&[cpu(0), cpu(1)]).unwrap();
         let mut state = KernelState::from_parts(cspace, objects, threads, scheduler);
 
@@ -1447,8 +1496,8 @@ mod tests {
         let mut threads = ThreadTable::new();
         let caller = runnable_tcb(1, cpu(0));
         let receiver = runnable_tcb(2, cpu(1));
-        threads.insert(caller.clone());
-        threads.insert(receiver.clone());
+        insert_test_thread(&mut threads, caller.clone());
+        insert_test_thread(&mut threads, receiver.clone());
         let mut scheduler = Scheduler::new(&[cpu(0), cpu(1)]).unwrap();
         scheduler.enqueue(&caller).unwrap();
         scheduler.enqueue(&receiver).unwrap();
@@ -1518,8 +1567,8 @@ mod tests {
         let mut threads = ThreadTable::new();
         let caller = runnable_tcb(1, cpu(0));
         let receiver = runnable_tcb(2, cpu(1));
-        threads.insert(caller.clone());
-        threads.insert(receiver.clone());
+        insert_test_thread(&mut threads, caller.clone());
+        insert_test_thread(&mut threads, receiver.clone());
         let mut scheduler = Scheduler::new(&[cpu(0), cpu(1)]).unwrap();
         scheduler.enqueue(&caller).unwrap();
         scheduler.enqueue(&receiver).unwrap();
@@ -1633,8 +1682,8 @@ mod tests {
         let mut threads = ThreadTable::new();
         let caller = runnable_tcb(1, cpu(0));
         let receiver = runnable_tcb(2, cpu(1));
-        threads.insert(caller.clone());
-        threads.insert(receiver.clone());
+        insert_test_thread(&mut threads, caller.clone());
+        insert_test_thread(&mut threads, receiver.clone());
         let mut scheduler = Scheduler::new(&[cpu(0), cpu(1)]).unwrap();
         scheduler.enqueue(&caller).unwrap();
         scheduler.enqueue(&receiver).unwrap();
@@ -1729,8 +1778,8 @@ mod tests {
         let mut threads = ThreadTable::new();
         let caller = runnable_tcb(1, cpu(0));
         let receiver = runnable_tcb(2, cpu(1));
-        threads.insert(caller.clone());
-        threads.insert(receiver.clone());
+        insert_test_thread(&mut threads, caller.clone());
+        insert_test_thread(&mut threads, receiver.clone());
         let mut scheduler = Scheduler::new(&[cpu(0), cpu(1)]).unwrap();
         scheduler.enqueue(&caller).unwrap();
         scheduler.enqueue(&receiver).unwrap();
@@ -1772,6 +1821,7 @@ mod tests {
                     thread: thread(2),
                     expected: ThreadState::BlockedOnReceive {
                         endpoint: endpoint_object,
+                        receiver_cpu: cpu(1),
                         can_grant: false,
                         reply: None,
                     },
@@ -1830,7 +1880,7 @@ mod tests {
         objects.insert_reply(reply_object, Reply::new()).unwrap();
         let mut threads = ThreadTable::new();
         let receiver = runnable_tcb(2, cpu(1));
-        threads.insert(receiver.clone());
+        insert_test_thread(&mut threads, receiver.clone());
         let mut scheduler = Scheduler::new(&[cpu(0), cpu(1)]).unwrap();
         scheduler.enqueue(&receiver).unwrap();
         scheduler.schedule_next(cpu(1)).unwrap();
@@ -1904,7 +1954,7 @@ mod tests {
         objects.insert_reply(reply_object, Reply::new()).unwrap();
         let mut threads = ThreadTable::new();
         let receiver = runnable_tcb(2, cpu(1));
-        threads.insert(receiver.clone());
+        insert_test_thread(&mut threads, receiver.clone());
         let mut scheduler = Scheduler::new(&[cpu(0), cpu(1)]).unwrap();
         scheduler.enqueue(&receiver).unwrap();
         scheduler.schedule_next(cpu(1)).unwrap();
@@ -1979,8 +2029,8 @@ mod tests {
         let mut threads = ThreadTable::new();
         let caller = runnable_tcb(1, cpu(0));
         let receiver = runnable_tcb(2, cpu(1));
-        threads.insert(caller.clone());
-        threads.insert(receiver.clone());
+        insert_test_thread(&mut threads, caller.clone());
+        insert_test_thread(&mut threads, receiver.clone());
         let mut scheduler = Scheduler::new(&[cpu(0), cpu(1)]).unwrap();
         scheduler.enqueue(&caller).unwrap();
         scheduler.enqueue(&receiver).unwrap();
@@ -2248,7 +2298,7 @@ mod tests {
         let mut objects = ObjectTable::new();
         objects.insert_tcb(tcb_object).unwrap();
         let mut threads = ThreadTable::new();
-        threads.insert(Tcb::new(thread(2), cpu(1)));
+        insert_test_thread(&mut threads, Tcb::new(thread(2), cpu(1)));
         let scheduler = Scheduler::new(&[cpu(0), cpu(1)]).unwrap();
         let mut state = KernelState::from_parts(cspace, objects, threads, scheduler);
 
@@ -2286,7 +2336,7 @@ mod tests {
         objects.insert_tcb(tcb_object).unwrap();
         objects.bind_tcb(tcb_object, thread(2)).unwrap();
         let mut threads = ThreadTable::new();
-        threads.insert(Tcb::new(thread(2), cpu(1)));
+        insert_test_thread(&mut threads, Tcb::new(thread(2), cpu(1)));
         let scheduler = Scheduler::new(&[cpu(0), cpu(1)]).unwrap();
         let mut state = KernelState::from_parts(cspace, objects, threads, scheduler);
 
@@ -2327,7 +2377,7 @@ mod tests {
         let mut objects = ObjectTable::new();
         objects.insert_tcb(tcb_object).unwrap();
         let mut threads = ThreadTable::new();
-        threads.insert(Tcb::new(thread(2), cpu(1)));
+        insert_test_thread(&mut threads, Tcb::new(thread(2), cpu(1)));
         let scheduler = Scheduler::new(&[cpu(0), cpu(1)]).unwrap();
         let mut state = KernelState::from_parts(cspace, objects, threads, scheduler);
 

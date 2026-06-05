@@ -33,6 +33,7 @@ pub enum ThreadState {
     Restart,
     BlockedOnReceive {
         endpoint: ObjectId,
+        receiver_cpu: CpuId,
         can_grant: bool,
         reply: Option<ObjectId>,
     },
@@ -53,12 +54,19 @@ pub enum ThreadState {
     IdleThreadState,
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct TcbWaitQueueLink {
+    prev: Option<ThreadId>,
+    next: Option<ThreadId>,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Tcb {
     id: ThreadId,
     affinity: CpuId,
     state: ThreadState,
     bound_notification: Option<ObjectId>,
+    wait_queue_link: TcbWaitQueueLink,
 }
 
 impl ThreadState {
@@ -88,6 +96,7 @@ impl Tcb {
             affinity,
             state: ThreadState::Inactive,
             bound_notification: None,
+            wait_queue_link: TcbWaitQueueLink::empty(),
         }
     }
 
@@ -107,8 +116,20 @@ impl Tcb {
         self.bound_notification
     }
 
+    pub const fn wait_queue_link(&self) -> TcbWaitQueueLink {
+        self.wait_queue_link
+    }
+
     pub fn set_state(&mut self, state: ThreadState) {
         self.state = state;
+    }
+
+    pub fn set_wait_queue_link(&mut self, link: TcbWaitQueueLink) {
+        self.wait_queue_link = link;
+    }
+
+    pub fn clear_wait_queue_link(&mut self) {
+        self.wait_queue_link = TcbWaitQueueLink::empty();
     }
 
     pub fn set_affinity(&mut self, affinity: CpuId) {
@@ -126,6 +147,31 @@ impl Tcb {
     pub fn waits_on_bound_notification_receive(&self, notification: ObjectId) -> bool {
         matches!(self.state, ThreadState::BlockedOnReceive { .. })
             && matches!(self.bound_notification, Some(bound) if bound == notification)
+    }
+}
+
+impl TcbWaitQueueLink {
+    pub const fn empty() -> Self {
+        Self {
+            prev: None,
+            next: None,
+        }
+    }
+
+    pub const fn new(prev: Option<ThreadId>, next: Option<ThreadId>) -> Self {
+        Self { prev, next }
+    }
+
+    pub const fn prev(self) -> Option<ThreadId> {
+        self.prev
+    }
+
+    pub const fn next(self) -> Option<ThreadId> {
+        self.next
+    }
+
+    pub const fn is_empty(self) -> bool {
+        self.prev.is_none() && self.next.is_none()
     }
 }
 
@@ -149,13 +195,19 @@ mod tests {
         assert_eq!(tcb.affinity(), CpuId::new(2));
         assert_eq!(tcb.state(), ThreadState::Inactive);
         assert_eq!(tcb.bound_notification(), None);
+        assert!(tcb.wait_queue_link().is_empty());
         assert!(tcb.state().is_stopped());
     }
 
     #[rstest]
     #[case::inactive_is_stopped_before_configuration(ThreadState::Inactive, false, false, true)]
     #[case::blocked_receive_is_blocked_and_stopped(
-        ThreadState::BlockedOnReceive { endpoint: object(1), can_grant: true, reply: None },
+        ThreadState::BlockedOnReceive {
+            endpoint: object(1),
+            receiver_cpu: CpuId::new(0),
+            can_grant: true,
+            reply: None,
+        },
         true,
         false,
         true
@@ -213,6 +265,7 @@ mod tests {
         tcb.bind_notification(object(10));
         tcb.set_state(ThreadState::BlockedOnReceive {
             endpoint: object(20),
+            receiver_cpu: CpuId::new(0),
             can_grant: false,
             reply: None,
         });
