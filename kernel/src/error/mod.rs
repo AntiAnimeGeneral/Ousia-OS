@@ -57,7 +57,9 @@ impl CapError {
             }
             Self::WrongCapability { .. } => KernelErrorCode::InvalidCapability,
             Self::InvalidRetypeSize { .. } => KernelErrorCode::RangeError,
-            Self::UntypedCapacityExhausted { .. } => KernelErrorCode::NotEnoughMemory,
+            Self::UntypedCapacityExhausted { .. } | Self::CapacityExhausted => {
+                KernelErrorCode::NotEnoughMemory
+            }
             Self::InvalidCNodeDepth { .. }
             | Self::RetypeWindowExceedsCNode { .. }
             | Self::SlotWindowOverflow { .. } => KernelErrorCode::RangeError,

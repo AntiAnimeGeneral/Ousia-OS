@@ -21,8 +21,15 @@
 //! next integration step is to complete CNode guard/radix lookup, Untyped
 //! accounting, typed backing storage, and TCB-embedded IPC/notification queues
 //! without changing seL4 baseline authority semantics.
+//!
+//! Dynamic containers in this module are intentionally split by boundary role:
+//! result vectors carry already-committed snapshots back to callers, commit-plan
+//! vectors are produced before state mutation, and owner-storage vectors remain
+//! model scaffolding until CSpace moves to seL4-style CTE arrays and typed
+//! object memory. Owner-storage growth must not be treated as final baseline
+//! shape or as acceptable post-preflight commit behavior.
 
-use alloc::vec::Vec;
+use alloc::{collections::TryReserveError, vec::Vec};
 
 use bitflags::bitflags;
 
@@ -329,6 +336,8 @@ impl CteRef {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RetypeResult {
+    // Boundary return collection: capacity is reserved before commit, then the
+    // committed entries are reported without growing these vectors.
     pub descriptors: Vec<CapabilityDescriptor>,
     pub objects: Vec<ObjectId>,
     pub retyped_objects: Vec<RetypedObject>,
@@ -360,6 +369,8 @@ pub enum RetypedObjectKind {
 pub struct RetypeCommitPlan {
     source: ResolvedCapabilitySlot,
     allocation: UntypedAllocationPlan,
+    // Preflight/decode collection: built before CSpace or object state changes,
+    // then consumed by commit without discovering new destination slots.
     entries: Vec<RetypeCommitEntry>,
     next_slot: u64,
 }
@@ -382,6 +393,35 @@ impl RetypeCommitPlan {
             object: entry.object,
             kind: entry.kind,
         })
+    }
+
+    fn empty_result(&self) -> Result<RetypeResult, CapError> {
+        // Boundary return collections: allocated before CSpace commit begins,
+        // then returned as snapshots after the already-preflighted entries land.
+        let mut descriptors = Vec::new();
+        let mut objects = Vec::new();
+        let mut retyped_objects = Vec::new();
+        descriptors.try_reserve(self.entries.len())?;
+        objects.try_reserve(self.entries.len())?;
+        retyped_objects.try_reserve(self.entries.len())?;
+        Ok(RetypeResult {
+            descriptors,
+            objects,
+            retyped_objects,
+        })
+    }
+}
+
+impl RevocationPlan {
+    fn try_reserve_next_descendant(&mut self) -> Result<(), CapError> {
+        self.delete_ctes.try_reserve(1)?;
+        self.revoked_object_ids.try_reserve(1)?;
+        self.revoked_objects.try_reserve(1)?;
+        Ok(())
+    }
+
+    fn free_list_reservations(&self) -> usize {
+        self.delete_ctes.len().saturating_mul(2)
     }
 }
 
@@ -488,7 +528,18 @@ pub struct CapabilityView {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CapabilityRevocation {
+    // Boundary return collection: built in RevocationPlan before revoke commits
+    // state changes, then returned as an already-complete snapshot.
     pub revoked_objects: Vec<ObjectId>,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+struct RevocationPlan {
+    // Preflight collection: all dynamic growth happens before descendant CTEs or
+    // Untyped allocation metadata are mutated.
+    delete_ctes: Vec<CteRef>,
+    revoked_object_ids: Vec<ObjectId>,
+    revoked_objects: Vec<ObjectId>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -552,6 +603,7 @@ pub enum CapError {
         requested: usize,
         available: usize,
     },
+    CapacityExhausted,
     SlotWindowOverflow {
         start: SlotId,
         count: usize,
@@ -575,6 +627,12 @@ pub enum CapError {
     },
 }
 
+impl From<TryReserveError> for CapError {
+    fn from(_: TryReserveError) -> Self {
+        Self::CapacityExhausted
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct KernelObject {
     payload: KernelObjectPayload,
@@ -595,6 +653,8 @@ enum KernelObjectPayload {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct CNodeSlots {
+    // Model-time backing for a CNode CTE window. It is allocated from a validated
+    // radix/window before insertion and must converge to typed CTE memory.
     slots: Vec<CNodeSlotEntry>,
 }
 
@@ -644,11 +704,15 @@ struct MdbNode {
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 struct ChildSlots {
+    // Temporary child index used by the executable MDB model. The authoritative
+    // seL4-aligned direction is slot-embedded MDB links, not a dynamic child bag.
     slots: Vec<CteRef>,
 }
 
 #[derive(Debug, Default)]
 struct CteSlots {
+    // Transitional CTE storage for the root namespace and object-slot reverse
+    // lookups. Growth here is model scaffolding pending fixed CTE arrays.
     root_slots: Vec<Option<CapabilitySlot>>,
     cnode_locations: Vec<Option<CteLocation>>,
     tcb_locations: Vec<Option<CteLocation>>,
@@ -656,11 +720,16 @@ struct CteSlots {
 
 #[derive(Debug, Default)]
 struct ObjectStorage {
+    // Transitional typed-object storage for the capability model. Runtime object
+    // ownership is already bounded in ObjectTable; this vector is not final
+    // seL4-style typed memory.
     objects: Vec<Option<KernelObject>>,
 }
 
 #[derive(Debug, Default)]
 struct UntypedStorage {
+    // Transitional allocation metadata keyed by model object id. Retype checks
+    // update it through commit plans; final storage should live with typed memory.
     allocations: Vec<Option<UntypedAllocation>>,
 }
 
@@ -680,6 +749,9 @@ struct UntypedAllocationPlan {
 pub struct CapabilitySpace {
     next_object: u64,
     next_slot: u64,
+    // Model free-list for reusable root slots. It records already-freed handles;
+    // it must be replaced by bounded CTE free-slot metadata before this becomes
+    // a hot kernel CSpace path.
     free_slots: Vec<SlotId>,
     initial_cnode: Option<ObjectId>,
     objects: ObjectStorage,
@@ -891,6 +963,8 @@ impl CapabilitySpace {
         let (allocation, destinations) =
             self.validate_retype_untyped_into(source, &target, destination)?;
         let mut next_slot = self.next_slot_after_retype_destinations(destination)?;
+        // Commit-plan collection: all destination lookup and untyped capacity
+        // checks have completed, and no owner state has been mutated yet.
         let mut entries = Vec::new();
         for (offset, destination) in destinations.into_iter().enumerate() {
             let window_start = self.planned_retype_window_start(&target, &mut next_slot)?;
@@ -1325,15 +1399,38 @@ impl CapabilitySpace {
         resolved: ResolvedCapabilitySlot,
     ) -> Result<CapabilityRevocation, CapError> {
         let (target_slot, _) = self.validated_resolved_slot(resolved)?;
-        let target_object = target_slot.object;
         let target = resolved.cte;
-        let mut revoked_object_ids = Vec::new();
-        let mut final_object_ids = Vec::new();
+        let plan = self.plan_revoke_descendants(target, target_slot.object)?;
+        self.free_slots.try_reserve(plan.free_list_reservations())?;
 
-        loop {
-            let Some(next_cte) = self.slot_by_ref(target).and_then(|slot| slot.mdb.next) else {
-                break;
-            };
+        for next_cte in &plan.delete_ctes {
+            self.delete_cte(ResolvedCapabilitySlot {
+                descriptor: CapabilityDescriptor {
+                    slot: next_cte.handle,
+                    slot_generation: 0,
+                },
+                cte: *next_cte,
+            });
+        }
+        for object in &plan.revoked_object_ids {
+            self.untyped_allocations.remove(object);
+        }
+        self.reset_untyped_allocation(target);
+
+        Ok(CapabilityRevocation {
+            revoked_objects: plan.revoked_objects,
+        })
+    }
+
+    fn plan_revoke_descendants(
+        &self,
+        target: CteRef,
+        target_object: ObjectId,
+    ) -> Result<RevocationPlan, CapError> {
+        let mut plan = RevocationPlan::default();
+        let mut next = self.slot_by_ref(target).and_then(|slot| slot.mdb.next);
+
+        while let Some(next_cte) = next {
             let Some(next_slot) = self.slot_by_ref(next_cte).filter(|slot| slot.alive) else {
                 break;
             };
@@ -1341,33 +1438,21 @@ impl CapabilitySpace {
                 break;
             }
 
+            plan.try_reserve_next_descendant()?;
             if self.is_final_capability(next_cte) {
-                push_unique_object(&mut final_object_ids, next_slot.object);
+                push_unique_object(&mut plan.revoked_objects, next_slot.object);
             }
             if next_slot.object != target_object {
-                push_unique_object(&mut revoked_object_ids, next_slot.object);
+                push_unique_object(&mut plan.revoked_object_ids, next_slot.object);
+                push_unique_object(&mut plan.revoked_objects, next_slot.object);
             }
 
-            self.delete_cte(ResolvedCapabilitySlot {
-                descriptor: CapabilityDescriptor {
-                    slot: next_cte.handle,
-                    slot_generation: 0,
-                },
-                cte: next_cte,
-            });
+            plan.delete_ctes.push(next_cte);
+            next = next_slot.mdb.next;
         }
-        for object in &revoked_object_ids {
-            self.untyped_allocations.remove(object);
-        }
-        self.reset_untyped_allocation(target);
+        plan.revoked_objects.sort_by_key(|object| object.raw());
 
-        let mut revoked_objects = final_object_ids;
-        for object in revoked_object_ids {
-            push_unique_object(&mut revoked_objects, object);
-        }
-        revoked_objects.sort_by_key(|object| object.raw());
-
-        Ok(CapabilityRevocation { revoked_objects })
+        Ok(plan)
     }
 
     pub fn object_has_live_cap(&self, object: ObjectId) -> bool {
@@ -1447,6 +1532,8 @@ impl CapabilitySpace {
         kernel_object.destroyed = true;
         kernel_object.generation += 1;
 
+        // Test-only diagnostic collection: gathers slot handles before deletion
+        // so the iterator does not borrow CSpace across mutation.
         let slots_to_remove: Vec<_> = self
             .live_slot_entries()
             .filter_map(|(slot_id, slot)| (slot.object == object).then_some(slot_id))
@@ -1522,6 +1609,9 @@ impl CapabilitySpace {
     }
 
     fn object_owned_live_slots(&self) -> impl Iterator<Item = (SlotId, &CapabilitySlot)> {
+        // Temporary iterator backing for the executable model. It avoids exposing
+        // object-storage internals to callers; final CTE-array traversal should
+        // replace this dynamic aggregation.
         let mut live = Vec::new();
         for object in self.objects.objects.iter() {
             let Some(object) = object.as_ref() else {
@@ -1767,11 +1857,10 @@ impl CapabilitySpace {
             );
             expected_object += 1;
         }
+        self.reserve_retype_commit_storage(&plan)?;
+        let mut result = plan.empty_result()?;
         self.next_slot = self.next_slot.max(plan.next_slot);
 
-        let mut descriptors = Vec::new();
-        let mut objects = Vec::new();
-        let mut retyped_objects = Vec::new();
         self.untyped_allocations
             .get_mut(plan.allocation.parent_object)
             .expect("validated parent untyped allocation must remain in CSpace")
@@ -1816,12 +1905,12 @@ impl CapabilitySpace {
                 .children
                 .insert(entry.destination.cte);
 
-            descriptors.push(CapabilityDescriptor {
+            result.descriptors.push(CapabilityDescriptor {
                 slot: entry.destination.slot,
                 slot_generation,
             });
-            objects.push(entry.object);
-            retyped_objects.push(RetypedObject {
+            result.objects.push(entry.object);
+            result.retyped_objects.push(RetypedObject {
                 object: entry.object,
                 kind: entry.kind,
             });
@@ -1830,11 +1919,50 @@ impl CapabilitySpace {
             self.next_slot = plan.next_slot;
         }
 
-        Ok(RetypeResult {
-            descriptors,
-            objects,
-            retyped_objects,
-        })
+        Ok(result)
+    }
+
+    fn reserve_retype_commit_storage(&mut self, plan: &RetypeCommitPlan) -> Result<(), CapError> {
+        let mut max_object = None;
+        let mut max_slot = None;
+        let mut next_internal_slot = self.next_slot.max(plan.next_slot);
+        for entry in &plan.entries {
+            max_object =
+                Some(max_object.map_or(entry.object, |object: ObjectId| object.max(entry.object)));
+            max_slot = Some(max_slot.map_or(entry.destination.slot, |slot: SlotId| {
+                slot.max(entry.destination.slot)
+            }));
+            if let CteStorageRef::Root = entry.destination.cte.storage {
+                max_slot = Some(max_slot.unwrap().max(entry.destination.cte.handle));
+            }
+            if let RetypedObjectKind::CNode {
+                radix,
+                window_start,
+            } = entry.kind
+            {
+                max_slot = Some(
+                    max_slot
+                        .unwrap()
+                        .max(slot_in_window(window_start, cnode_slot_count(radix) - 1)),
+                );
+            }
+            if let RetypedObjectKind::Tcb = entry.kind {
+                max_slot = Some(max_slot.unwrap().max(SlotId(next_internal_slot)));
+                next_internal_slot += 1;
+            }
+        }
+        if let Some(object) = max_object {
+            self.objects.try_reserve_object(object)?;
+            self.untyped_allocations.try_reserve_object(object)?;
+        }
+        if let Some(slot) = max_slot {
+            self.slots.try_reserve_slot(slot)?;
+        }
+        self.slot_mut_by_ref(plan.source.cte)
+            .expect("validated parent slot must remain in CSpace during retype preflight")
+            .children
+            .try_reserve(plan.entries.len())?;
+        Ok(())
     }
 
     fn planned_retype_window_start(
@@ -2079,8 +2207,11 @@ impl CapabilitySpace {
         else {
             return;
         };
-        let handles: Vec<_> = slots.handles().collect();
-        for (offset, handle) in handles {
+        let slot_count = slots.len();
+        for offset in 0..slot_count {
+            let handle = slots
+                .handle_at(offset)
+                .expect("CNode location registration offset must fit owned slots");
             self.slots
                 .insert_cnode_location(handle, CteLocation { object, offset });
         }
@@ -2672,11 +2803,12 @@ impl CNodeSlots {
         entry.slot = Some(slot);
     }
 
-    fn handles(&self) -> impl Iterator<Item = (usize, SlotId)> + '_ {
-        self.slots
-            .iter()
-            .enumerate()
-            .map(|(offset, entry)| (offset, entry.handle))
+    fn len(&self) -> usize {
+        self.slots.len()
+    }
+
+    fn handle_at(&self, offset: usize) -> Option<SlotId> {
+        self.slots.get(offset).map(|entry| entry.handle)
     }
 
     fn live_entries(&self) -> impl Iterator<Item = (SlotId, &CapabilitySlot)> {
@@ -2737,6 +2869,11 @@ impl ChildSlots {
         Self { slots: Vec::new() }
     }
 
+    fn try_reserve(&mut self, additional: usize) -> Result<(), CapError> {
+        self.slots.try_reserve(additional)?;
+        Ok(())
+    }
+
     fn insert(&mut self, cte: CteRef) {
         if !self.slots.contains(&cte) {
             self.slots.push(cte);
@@ -2765,6 +2902,14 @@ impl ChildSlots {
 }
 
 impl CteSlots {
+    fn try_reserve_slot(&mut self, slot: SlotId) -> Result<(), CapError> {
+        let index = slot_index(slot);
+        reserve_index(&mut self.root_slots, index)?;
+        reserve_index(&mut self.cnode_locations, index)?;
+        reserve_index(&mut self.tcb_locations, index)?;
+        Ok(())
+    }
+
     fn get(&self, slot: SlotId) -> Option<&CapabilitySlot> {
         self.root_slots
             .get(slot_index(slot))
@@ -2835,6 +2980,10 @@ impl CteSlots {
 }
 
 impl ObjectStorage {
+    fn try_reserve_object(&mut self, object: ObjectId) -> Result<(), CapError> {
+        reserve_index(&mut self.objects, object_index(object))
+    }
+
     fn get(&self, object: ObjectId) -> Option<&KernelObject> {
         self.objects
             .get(object_index(object))
@@ -2857,6 +3006,10 @@ impl ObjectStorage {
 }
 
 impl UntypedStorage {
+    fn try_reserve_object(&mut self, object: ObjectId) -> Result<(), CapError> {
+        reserve_index(&mut self.allocations, object_index(object))
+    }
+
     fn get(&self, object: ObjectId) -> Option<&UntypedAllocation> {
         self.allocations
             .get(object_index(object))
@@ -2890,6 +3043,13 @@ fn slot_index(slot: SlotId) -> usize {
 
 fn object_index(object: ObjectId) -> usize {
     usize::try_from(object.raw()).expect("object id must fit host usize")
+}
+
+fn reserve_index<T>(items: &mut Vec<T>, index: usize) -> Result<(), CapError> {
+    if items.len() <= index {
+        items.try_reserve(index + 1 - items.len())?;
+    }
+    Ok(())
 }
 
 fn push_unique_object(objects: &mut Vec<ObjectId>, object: ObjectId) {

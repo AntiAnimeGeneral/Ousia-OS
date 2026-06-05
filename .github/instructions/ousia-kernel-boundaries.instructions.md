@@ -51,6 +51,9 @@ description: "Ousia OS 内核边界：kernel/OSTD/tooling 职责归属、seL4 ba
 - Ousia-specific interface、Portal/Operation/Continuation、Package Cell、Service Graph、lease、session、Device Service 和浏览器/用户授权语义都属于 baseline 闭环后的扩展层，不得提前混入 Phase 1 kernel baseline。
 - slot/object generation 可以作为 Rust model 中的 stale descriptor 检测、测试和诊断辅助；不得替代 seL4 authority、revoke、capability freshness 或授权语义。
 - seL4 core 不使用通用 map 表达核心对象关系，也没有运行时 map 插入后动态扩容的主路径。CSpace/CNode 是连续 CTE slot 数组，MDB 是 slot 内嵌链，scheduler 是固定 ready queue 数组加 bitmap，endpoint/notification 等待队列是 TCB 内嵌链。Ousia 早期模型中出现 `HashMap`、`BTreeMap`、`VecDeque` 或类似通用容器时，只能视为过渡脚手架；长期必须收敛到对应 seL4 领域容器。
+- `kernel`/`ostd` 中的动态容器必须显式标注边界语义。owner storage、return/result collection、message buffer、diagnostic list、preflight/commit plan 和 initialization-only backing storage 必须通过模块、类型名或紧邻注释区分；不能让同一个 `Vec` 同时承担事实存储和返回集合职责。
+- 核心 owner storage 若暂时仍用 `Vec`/`Box<[Option<_>]>` 等 Rust backing storage 表达，必须说明它是否初始化期固定容量、是否在 commit 前完成容量预检、是否可能在热路径扩容，以及退出到 seL4-style CTE array、typed object memory、TCB link 或 ready queue array 的条件。
+- 边界返回值可以使用动态集合，但只能携带已经提交或已验证事实的快照；返回集合的分配失败不得发生在 owner state 已部分修改之后。需要在修改 owner state 后生成大集合时，应先预收集/预检、改成 iterator/cursor，或把该路径标为模型/诊断辅助而非长期 kernel 主路径。
 - 每个非平凡 kernel 语义实现或重构都应能指出本地 seL4 或 rust-sel4 reference 的对应路径；没有读取或无法映射 reference 时，应把 baseline drift 标为 residual risk，而不是凭概括性记忆放行。
 
 ## Kernel 错误模型
