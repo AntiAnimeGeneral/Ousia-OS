@@ -2,7 +2,7 @@
 
 本文档是 Ousia OS 设计文档的总纲。它只回答五件事：现有系统哪里错了，Ousia OS 想建立什么秩序，第一阶段必须满足哪些硬需求，需求如何推出核心抽象，以及这些目标和抽象分别由哪些主线章节承接。完整文档地图见 [outline.md](./outline.md)，完整需求库和抽象推导见 [requirements.md](./requirements.md)。
 
-项目自造术语和重新定义过的设计术语见 [glossary.md](./glossary.md)。除非特别说明，Portal、Operation、Continuation、Communication Fabric 等词都是 Ousia OS 的设计术语，不指代某个现有系统的专有技术，也不是 Phase 1 seL4 kernel baseline 的对象名。
+项目自造术语和重新定义过的设计术语见 [glossary.md](./glossary.md)。除非特别说明，Portal、Operation、Continuation、Communication Fabric、Capability 和 Handle 等词都是 Ousia OS 的设计术语，不指代某个现有系统的专有技术，也不要求复刻某个参考内核的对象模型。
 
 本文作为总纲入口，约束各专题文档的愿景边界、需求边界和抽象边界。随需求增长而扩展的内容应进入 [requirements.md](./requirements.md)，文档归属和查漏补缺规则由 [outline.md](./outline.md) 维护。
 
@@ -150,8 +150,8 @@ Ousia OS 的第一阶段分层如下，详细路线见 [06-roadmap.md](./topics/
 
 | 层级                    | 内容                                                                                                                                                                                                |
 | ----------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 第 0 层：微内核         | Phase 1 先复刻 seL4 baseline：调度、地址空间基础、CSpace/CNode、Untyped/retype、Endpoint/Notification/Reply、TCB、启动能力注入；Ousia Communication Fabric 和 MemoryObject 在 baseline 后映射或扩展 |
-| 第 1 层：基础系统服务   | 名字服务、Object Namespace、Capsule 管理器、网络、设备管理、Driver Manager/Index/Host、日志与观测；纯用户态 FS 方案还包含对象存储与 Pager 监督                                                      |
+| 第 0 层：Ousia capability kernel | Phase 1 验证 Ousia 原生高级内核底座：handle table、kernel object manager、VM/page allocator、IPC channel/call、process/thread/scheduler、VFS/Object Namespace 内核边界、启动句柄注入和资源预算；Zircon 提供结构参考，seL4 提供能力纪律参考 |
+| 第 1 层：基础系统服务           | 名字服务、Capsule 管理器、网络、设备管理、Driver Manager/Index/Host、日志与观测；Object Namespace、Object Store 和 Pager 可以按性能与边界裁决落在内核或系统服务中，但必须通过统一 handle/capability 边界暴露                 |
 | 第 2 层：平台服务       | Package Cell 管理器、图形与窗口系统、策略引擎、兼容域网关、身份与同步服务                                                                                                                           |
 | 第 3 层：应用与兼容环境 | 原生应用、Linux 兼容域、开发者工具链                                                                                                                                                                |
 
@@ -170,16 +170,15 @@ Ousia OS 的第一阶段分层如下，详细路线见 [06-roadmap.md](./topics/
 
 第一阶段应优先验证系统最核心的闭环：
 
-1. 能力核心合同：CapSlot/CSpace 等价结构、派生链、rights 单调性、delete/revoke/destroy/generation 语义。
-2. seL4 微内核 baseline：任务、地址空间基础、CSpace/CNode、Untyped/retype、Endpoint/Notification/Reply、TCB、抢占调度、启动能力注入。
-3. Communication Fabric 映射：在 baseline 闭环后评估 Portal fast call、Operation、Continuation、EventPort/WaitSet、timeout、cancel、late reply。
-4. Service Graph bootstrap 与 Capsule 生命周期。
-5. Object Namespace：路径解析、ProviderRoot、MountBinding、ObjectHandle 解析缓存和撤销。
-6. MemoryObject、缺页处理，以及纯用户态 Pager / 纯内核 Object Store 两条供页路径。
-7. 最小 Object Store 与 tier-1 tree view；裁决其作为用户态服务还是内核原语落地。
-8. Package Cell 安装、激活、回滚、卸载和多版本并存。
-9. 用户态驱动框架：设备能力句柄、IOMMU 授权、IOQueue/IOBuffer、用户态 MMIO。
-10. Linux Compatibility Domain 与兼容域网关。
+1. Kernel handle/object baseline：不可伪造 handle、rights 单调性、generation/stale handle 失败、object lifetime、delete/revoke 和资源预算语义。
+2. VM 与 allocator baseline：boot memory map、page allocator、kernel heap/slab 或 fixed pool、VMO/MemoryObject、VMAR/address-space owner 和失败前置检查。
+3. IPC 与等待 baseline：channel/call、Portal fast call、Operation、Continuation、EventPort/WaitSet、timeout、cancel、late reply 和 handle transfer。
+4. Process/thread/scheduler baseline：Capsule、process、thread、scheduler、priority/affinity、抢占和多核状态。
+5. Object Namespace 与 VFS/Object Store：路径解析、ProviderRoot、MountBinding、ObjectHandle 解析缓存、撤销、mmap 和 page cache 边界。
+6. Service Graph bootstrap 与 Capsule 生命周期。
+7. Package Cell 安装、激活、回滚、卸载和多版本并存。
+8. 驱动框架：设备能力句柄、IOMMU 授权、IOQueue/IOBuffer、用户态 MMIO、Driver Manager/Index/Host。
+9. Linux Compatibility Domain 与兼容域网关。
 
 ## 7. 设计判断标准
 
@@ -200,10 +199,10 @@ Ousia OS 的第一阶段分层如下，详细路线见 [06-roadmap.md](./topics/
 
 ## 8. 参考项目
 
-Ousia OS 的长期平台语义受以下项目启发，但不复刻其中任何一个；Phase 1 kernel baseline 例外，它先按 Rust 表达复刻 seL4 的核心语义，再评估 Ousia 扩展：
+Ousia OS 的长期平台语义受以下项目启发，但不复刻其中任何一个；Phase 1 以 Ousia 原生高级 capability kernel 为主线，外部系统只提供结构参考、边界警戒和可拒绝的证据：
 
-- Fuchsia：微内核、组件化、能力模型、用户态驱动框架。
-- seL4：能力系统和形式化验证经验。
+- Fuchsia / Zircon：handle/object model、VMO/VMAR、channel/call、driver framework、用户态库和产品化 capability API。
+- seL4：能力系统、硬撤销、最小权限、失败无副作用和形式化验证经验；不再作为 Ousia Phase 1 API 或对象模型的复刻目标。
 - Asterinas：Rust 内核框架与 safe/unsafe 边界组织。
 - Windows WDDM：用户态厂商主驱动与内核调度/内存管理层分工。
 - Apple DriverKit：受签名、受授权、可升级的用户态驱动扩展。

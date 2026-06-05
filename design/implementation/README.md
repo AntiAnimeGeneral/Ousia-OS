@@ -6,7 +6,7 @@
 
 ## 阅读顺序
 
-1. [00-sel4-baseline-rust-replica.md](./00-sel4-baseline-rust-replica.md)
-   说明近期内核实现先在 Rust 中复刻 seL4 baseline，再在 baseline 闭环后评估 Ousia 平台语义扩展。
+1. [00-ousia-kernel-architecture.md](./00-ousia-kernel-architecture.md)
+   说明近期内核实现以 Ousia 原生高级 capability kernel 为主线，参考 Zircon/Fuchsia 的 handle/object/VM/channel/driver framework，并保留 seL4 的能力纪律作为安全约束。
 2. [01-test-architecture.md](./01-test-architecture.md)
    定义 host、model/property、QEMU smoke、QEMU serial scenario、bare-metal integration、fuzzing 和 benchmark 的测试层级、工具栈与 crate 边界。

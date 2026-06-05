@@ -7,4 +7,6 @@
 ## 提案列表
 
 1. [00-sel4-baseline-implementation-alignment.md](./00-sel4-baseline-implementation-alignment.md)
-   将现有 `kernel` Rust model 的核心对象关系、容器形态、错误边界和测试语义一次性收敛到 seL4 baseline。
+   历史提案。它曾建议将现有 `kernel` Rust model 收敛到 seL4 baseline；当前路线已由 [implementation/00-ousia-kernel-architecture.md](../implementation/00-ousia-kernel-architecture.md) 取代，本文只作为历史设计记录和被拒绝方向参考。
+2. [01-ousia-native-kernel-refactor.md](./01-ousia-native-kernel-refactor.md)
+   当前推倒重来提案。它面向 `kernel/src/**` 和 `kernel/tests/**` 的 Ousia-native kernel skeleton greenfield replacement，不保留旧 seL4 prototype API、测试或文件布局兼容。

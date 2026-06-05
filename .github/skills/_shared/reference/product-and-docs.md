@@ -19,7 +19,7 @@
 - 外部参考事实、Ousia 约束和采用理由是否分别写清，没有混成“参考实现这么做所以我们也这么做”。
 - 当前文档中哪些模式是稳定约束，哪些只是历史偶然或早期草案。
 - proposal 是否给出至少两个真实候选方向，包括保守演进和不改动的理由。
-- Phase 1 seL4 baseline 与长期 Ousia platform abstraction 是否分属正确 owning docs，没有被写成同一阶段验收项。
+- Phase 1 Ousia capability kernel 路线、Zircon/Fuchsia 参考事实和 seL4 capability discipline 是否分属正确 owning docs，没有被写成互相替代或互相偷职责。
 
 ## Review Attacks
 
@@ -29,7 +29,8 @@
 - 参考事实是否被直接当成 Ousia 规范，缺少本项目约束和拒绝/调整理由。
 - 设计是否只有理念和口号，没有能力归属、状态所有权、失败语义或验证路径。
 - Roadmap、target、core docs 和 implementation docs 是否出现同一能力的不同语义。
-- Roadmap、target、core docs 和 implementation docs 是否一处说 Phase 1 seL4 baseline，另一处把 Portal、Operation、Communication Fabric、MemoryObject 或 Package Cell 写成 Phase 1 kernel baseline。
+- Roadmap、target、core docs 和 implementation docs 是否仍残留 Phase 1 seL4 baseline 复刻语言，导致实现者忽略 Ousia-native handle/object/VM/VFS 方向。
+- Fuchsia/Zircon reference 是否被直接写成 Ousia 规范，缺少采用、调整或拒绝理由。
 - `design/implementation/**` 是否只承担短期 baseline 实现路线，而没有反向重定义长期 `core/**` Ousia 抽象。
 
 ## Evidence To Seek
@@ -38,7 +39,7 @@
 - 目标区域的 owning docs、相邻 design docs、roadmap 或 target 引用。
 - 与 proposal 结论相关的 reference notes 或 external baseline 摘要。
 - 设计结论会驱动的代码模块、测试树或 workflow 区域。
-- Phase 1 baseline 的 owning doc、长期 Ousia 抽象的 owning doc，以及引用方是否只摘要不重定义。
+- Phase 1 Ousia kernel baseline 的 owning doc、长期 Ousia 抽象的 owning doc、Fuchsia/Zircon reference note 和 seL4 capability discipline reference 是否各自归位。
 - 已知 assumptions、open questions 和 residual risks。
 
 ## Residual Risk Triggers

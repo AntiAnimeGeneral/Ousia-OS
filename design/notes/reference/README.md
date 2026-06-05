@@ -22,6 +22,9 @@
 6. [05-rust-os-and-sel4-ecosystem.md](./05-rust-os-and-sel4-ecosystem.md)
    Rust OS/no_std/seL4 相关生态中可直接复用、可拆参考和暂不采用的库与工程组件。
 
+7. [06-fuchsia-zircon-kernel.md](./06-fuchsia-zircon-kernel.md)
+   Fuchsia/Zircon handle/object、VMO/VMAR、channel/call、driver framework 和用户库人体工程学参考。
+
 本目录只保存 external reference；基于现有技术的 Ousia 设计讨论、SDK 草案、旁路判断和子系统路径矩阵放在 [notes/analysis/](../analysis/README.md)。
 
 ## 语义区分
@@ -34,6 +37,7 @@
 1. **`epoll` / `kqueue` 证明等待集合需要成为一等内核对象，而不是每次阻塞都重建监听列表。**
 2. **Ousia 的原生等待模型应避免把 fd readiness 作为中心抽象。**
 3. **事件源应类型化，native 事件应覆盖 Operation completion、FenceReached、MemoryObjectLost、DeviceInterrupt 等。**
-4. **seL4 社区的主线不只是 kernel，而是 kernel + Microkit + sDDF + roadmap 共同演进。**
-5. **驱动框架应优先采用用户态隔离、共享内存数据面、Notification 同步和显式 virtualiser，而不是复制宏内核驱动模型。**
-6. **Rust OS 生态中小型架构 crate 可以直接复用，大型 seL4 userspace/runtime 仓库应先作为本地参考和拆件来源。**
+4. **seL4 社区的主线不只是 kernel，而是 kernel + Microkit + sDDF + roadmap 共同演进；它是能力纪律和高保证系统参考，不再是 Ousia Phase 1 governing architecture。**
+5. **Zircon 证明 handle/object、VMO/VMAR、channel/call 和用户态库 wrapper 可以把 capability 风格做成高级 API。**
+6. **驱动框架应优先采用用户态隔离、共享内存数据面、设备能力句柄和显式 driver manager，而不是复制宏内核驱动模型。**
+7. **Rust OS 生态中小型架构 crate 可以直接复用，大型 seL4/Fuchsia userspace/runtime 仓库应先作为本地参考和拆件来源。**

@@ -19,23 +19,23 @@ Testing reference 用于把 Ousia-specific review 从“有无测试”推进到
 - 是否需要模型测试、table test、property-like input、fake OSTD boundary 或 integration smoke test。
 - 测试夹具是否表达领域语义，还是复制实现内部结构导致重构时一起漂移。
 - 验证命令是否覆盖实际改动目标，例如 bare-metal target、doc checker、runner smoke 或 targeted Rust tests。
-- Phase 1 kernel 测试是否证明 seL4 baseline alignment，而不是只证明 Ousia-specific 抽象或 Rust helper 跑通。
+- Phase 1 kernel 测试是否证明 Ousia handle/object/channel/VM/VFS 语义，而不是只证明旧 seL4 prototype 或 Rust helper 跑通。
 
 ## Layer Projection
 
-- Capability rights、object type、badge preservation、retype size guard 和 public error code ordering 通常先由 unit test 证明；如果测试需要 CSpace/ObjectTable/ThreadTable 同时成立，应升级为 host integration。
-- Retype transaction、IPC call/reply、Notification wakeup、TCB configure/resume 和 Scheduler placement 通常需要 host integration，因为它们要证明多个 owner 的状态一起改变或一起不变。
+- Capability/handle rights、object type、badge/txid preservation、resource budget guard 和 public error code ordering 通常先由 unit test 证明；如果测试需要 handle table/ObjectTable/ThreadTable 同时成立，应升级为 host integration。
+- Object creation transaction、channel/call reply、Notification/Event wakeup、TCB configure/resume 和 Scheduler placement 通常需要 host integration，因为它们要证明多个 owner 的状态一起改变或一起不变。
 - Boot marker、exception marker、early heap、serial、target triple、linker script 和 QEMU runner drift 属于 QEMU smoke；这些测试只证明平台路径未断，不证明 kernel 语义完整。
 - Page table、FrameMap、address space、driver MMIO/PCI replay 和基础服务协作在对应 harness 成熟前只能作为 residual risk；不要用 host unit test 冒充 platform integration。
 
 ## State Comparison Checklist
 
-- CSpace：slot 是否新增、删除、复用或 generation 变化，lineage 是否仍指向正确 parent。
+- Handle table：handle 是否新增、删除、复用或 generation 变化，lineage/transfer metadata 是否仍指向正确 owner。
 - ObjectTable：object presence、kind、TCB binding、Frame metadata、Endpoint/Notification/Reply runtime state 是否保持预期。
 - ThreadTable：TCB state、affinity、bound notification 和 blocked reason 是否在失败后未漂移。
 - Scheduler：per-CPU current、ready queue、placement 和重复 enqueue/dequeue 语义是否保持一致。
 - IPC objects：Endpoint queue、Notification badge/waiters、Reply pending caller 是否没有被失败路径提前消费。
-- Future memory objects：page table entry、mapping owner、FrameMap metadata 和 Untyped capacity/watermark 应在实现后进入同一类状态对比。
+- Memory objects：page table entry、mapping owner、MemoryObject/VMO metadata、FrameMap metadata、allocator budget 和 cache/reclaim state 应在实现后进入同一类状态对比。
 
 ## Review Attacks
 
@@ -43,8 +43,8 @@ Testing reference 用于把 Ousia-specific review 从“有无测试”推进到
 - 测试是否绕过真实 invocation/syscall/API path，直接调用内部 function 后声称覆盖外部语义。
 - 测试是否复制 match table、rights mapping 或 default logic，导致和实现同错。
 - Happy path 是否只证明“跑通”，没有覆盖错误权限、错误对象类型、stale descriptor、重复提交、乱序调用或跨 owner 输入。
-- 测试是否把 Portal/Operation、MemoryObject、Service Graph 或 Package Cell 当成 Phase 1 kernel baseline，而没有覆盖对应 seL4 Endpoint/Notification/Reply/TCB/Untyped 语义。
-- 测试是否声称 baseline 对齐，却没有通过真实 invocation path 或本地 seL4 reference 映射说明受保护的语义。
+- 测试是否仍把 seL4 Endpoint/Notification/Reply/TCB/Untyped 当成唯一 Phase 1 baseline，而没有覆盖 Ousia handle/object/channel/MemoryObject/VFS 语义。
+- 测试是否声称参考对齐，却没有通过真实 syscall/object boundary 或本地 Zircon/seL4 reference 映射说明受保护的语义。
 - 测试夹具是否维护自己的事实源，和 production state owner 不一致。
 - Mock/fake 是否过宽，掩盖 OSTD/tooling/kernel 边界问题。
 - Proposal 的验证策略是否只列命令，没有说明每个命令覆盖什么风险。
@@ -64,7 +64,7 @@ Testing reference 用于把 Ousia-specific review 从“有无测试”推进到
 - Test contract 是否说明 Goal、Scope 和 Semantics，或 table case 是否有语义 label。
 - Assertions comparing state before and after failure。
 - Boundary-path tests or integration smoke tests。
-- 测试名或注释是否说明对应的 seL4 baseline 语义，以及 Ousia extension 是否明确后置。
+- 测试名或注释是否说明对应的 Ousia 语义，以及 Zircon/seL4 reference 只是参考还是采用约束。
 - Negative tests for black-team inputs relevant to the diff。
 - Verification output and why it covers the changed files。
 - Residual risk notes when hardware/reference/runner coverage is not available。

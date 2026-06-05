@@ -47,6 +47,7 @@
 | 外部参考     | [notes/reference/README.md](./notes/reference/README.md)                           | 保存外部系统、外部机制和现有技术模式。                     |
 | IPC 参考     | [notes/reference/00-ipc-sel4-fuchsia.md](./notes/reference/00-ipc-sel4-fuchsia.md) | 保存 seL4 / Fuchsia IPC 背景、机制和比较材料。             |
 | 事件等待参考 | [notes/reference/01-epoll-and-kqueue.md](./notes/reference/01-epoll-and-kqueue.md) | 比较 epoll / kqueue 的 wait set、ready notification 语义。 |
+| Zircon 内核参考 | [notes/reference/06-fuchsia-zircon-kernel.md](./notes/reference/06-fuchsia-zircon-kernel.md) | 保存 Fuchsia/Zircon handle/object、VMO/VMAR、channel/call、driver framework 和用户库参考。 |
 | 设计分析     | [notes/analysis/README.md](./notes/analysis/README.md)                             | 保存 Ousia 设计判断、候选方案、SDK 草案和子系统路径矩阵。  |
 | 实现草案     | [implementation/README.md](./implementation/README.md)                             | 保存临时实现路线、代码演进草案和短期 reviewer 入口。       |
 | FS/VM 分析   | [notes/analysis/00-fs-vm.md](./notes/analysis/00-fs-vm.md)                         | 保存 FS/VM 候选方案、调研、裁决标准和开放问题。            |
@@ -78,7 +79,7 @@
 | 术语定义                                                                                          | [glossary.md](./glossary.md)                                                                         | 使用同一术语，不在章节内重新定义。                                                   |
 | Capsule、Capability、能力转移与撤销                                                               | [core/01-capsule-and-capability.md](./core/01-capsule-and-capability.md)                             | 其他章节说明所需能力，不定义能力模型。                                               |
 | Portal、Operation、Continuation、EventPort、SharedQueue、bypass session                           | [core/02-communication-fabric.md](./core/02-communication-fabric.md)                                 | 其他章节说明调用形态，不定义通信原语。                                               |
-| Phase 1 seL4 baseline Rust 复刻、短期 kernel 实现路线和 reviewer 入口                             | [implementation/00-sel4-baseline-rust-replica.md](./implementation/00-sel4-baseline-rust-replica.md) | core 文档只说明长期 Ousia 抽象，不把 Portal/Operation 写成 Phase 1 kernel baseline。 |
+| Phase 1 Ousia capability kernel baseline、短期 kernel 实现路线和 reviewer 入口                     | [implementation/00-ousia-kernel-architecture.md](./implementation/00-ousia-kernel-architecture.md)     | core 文档说明长期 Ousia 抽象；implementation 文档只承接近期实现路线，不反向重定义 core 语义。 |
 | 进入实施前的 proposal packet、重构交接和 review focus                                             | [proposals/README.md](./proposals/README.md)                                                         | 提案通过 review 和实施后，稳定结论应回写 owning 文档或代码 rustdoc。                 |
 | MemoryObject、Pager、缺页、映射和回写边界                                                         | [core/03-pager-and-memory.md](./core/03-pager-and-memory.md)                                         | FS/VM 深挖只讨论方案和取舍。                                                         |
 | Hardware Core、Driver Host、IOQueue、IOBuffer、Doorbell、Fence、IOMMU 授权                        | [core/04-driver-and-kernel.md](./core/04-driver-and-kernel.md)                                       | reference 文档只保留背景和草案。                                                     |

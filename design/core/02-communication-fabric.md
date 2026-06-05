@@ -12,7 +12,7 @@
 
 Ousia 不追求为了“小内核”而把关键语义推给每个用户态 runtime 自行实现。相反，系统应把通信生命周期中会影响权限、安全、调度、公平性和生态一致性的部分做成统一 OS 原语；协议内容、IDL、服务框架、用户态队列布局和语言绑定留给用户态。
 
-阶段边界：本文定义的是 seL4 baseline 闭环之后的 Ousia Communication Fabric 设计。Phase 1 kernel baseline 仍先复刻 seL4 Endpoint、Notification、Reply、TCB、CSpace/CNode 和 IPC 调用语义；Portal、Operation、Continuation 和 EventPort 不能替代这些 baseline 对象，只能在 baseline 明确后作为映射或扩展方案进入实现评估。
+阶段边界：本文定义的是 Ousia Phase 1 主线通信语义。Communication Fabric 不再等待 seL4 Endpoint/Reply/Notification baseline 闭环后才进入评估；Phase 1 应直接裁决 channel/call、Portal、Operation、Continuation、EventPort/WaitSet、handle transfer 和 shared data path 的内核/用户库边界。seL4 IPC 只作为同步 IPC 和失败纪律参考，Zircon Channel/FIDL 作为消息队列、同步 call wrapper 和 handle transfer 的结构参考。
 
 ---
 

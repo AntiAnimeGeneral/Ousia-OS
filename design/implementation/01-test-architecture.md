@@ -53,7 +53,7 @@ Ousia 当前采用轻量行为契约：非平凡 Rust 测试通过测试名、ca
 
 当前边界：轻量行为契约是测试写法规范，不是独立测试层级，也不引入面向 Web/业务验收的场景框架。OS 内核没有购物车式业务链路；重大链路应由 QEMU 串口场景或 bare-metal integration tests 承载。
 
-准入条件：每个契约必须绑定稳定 owner、调用边界或系统链路；不得复述 Rust helper、局部变量安排或 seL4 baseline 状态表。
+准入条件：每个契约必须绑定稳定 owner、调用边界或系统链路；不得复述 Rust helper、局部变量安排或外部参考状态表。
 
 ### Fuzz Tests
 
