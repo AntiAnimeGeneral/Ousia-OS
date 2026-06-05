@@ -54,6 +54,7 @@ description: "Ousia OS 内核边界：kernel/OSTD/tooling 职责归属、seL4 ba
 - `kernel`/`ostd` 中的动态容器必须显式标注边界语义。owner storage、return/result collection、message buffer、diagnostic list、preflight/commit plan 和 initialization-only backing storage 必须通过模块、类型名或紧邻注释区分；不能让同一个 `Vec` 同时承担事实存储和返回集合职责。
 - 核心 owner storage 若暂时仍用 `Vec`/`Box<[Option<_>]>` 等 Rust backing storage 表达，必须说明它是否初始化期固定容量、是否在 commit 前完成容量预检、是否可能在热路径扩容，以及退出到 seL4-style CTE array、typed object memory、TCB link 或 ready queue array 的条件。
 - 边界返回值可以使用动态集合，但只能携带已经提交或已验证事实的快照；返回集合的分配失败不得发生在 owner state 已部分修改之后。需要在修改 owner state 后生成大集合时，应先预收集/预检、改成 iterator/cursor，或把该路径标为模型/诊断辅助而非长期 kernel 主路径。
+- 在 `kernel`/`ostd` 主路径里，`Vec::push`、`resize_with`、iterator `collect` 和类似隐式扩容 API 必须被视为潜在失败点。只有容量已在 decode/preflight 边界通过 `try_reserve`、slot/window 检查或固定数组容量证明过，且调用点注释或封装名称说明不会扩容时，才允许使用；否则该路径必须返回可恢复错误或改成固定容量/游标式结构。
 - 每个非平凡 kernel 语义实现或重构都应能指出本地 seL4 或 rust-sel4 reference 的对应路径；没有读取或无法映射 reference 时，应把 baseline drift 标为 residual risk，而不是凭概括性记忆放行。
 
 ## Kernel 错误模型

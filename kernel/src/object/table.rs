@@ -189,7 +189,7 @@ impl ObjectTable {
 
     pub fn with_capacity(capacity: usize) -> Self {
         let mut objects = Vec::with_capacity(capacity);
-        objects.resize_with(capacity, || None);
+        fill_reserved_object_slots(&mut objects, capacity);
         Self {
             objects: objects.into_boxed_slice(),
         }
@@ -622,6 +622,14 @@ impl ObjectTable {
             actual,
         }
     }
+}
+
+fn fill_reserved_object_slots(objects: &mut Vec<Option<ObjectSlot>>, capacity: usize) {
+    assert!(
+        objects.capacity() >= capacity,
+        "ObjectTable::with_capacity allocates fixed backing before filling object slots"
+    );
+    objects.resize_with(capacity, || None);
 }
 
 #[cfg(test)]

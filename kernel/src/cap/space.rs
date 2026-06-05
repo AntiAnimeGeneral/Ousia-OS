@@ -380,6 +380,7 @@ struct RetypeCommitEntry {
     destination: ResolvedCte,
     object: ObjectId,
     capability: Capability,
+    payload: KernelObjectPayload,
     kind: RetypedObjectKind,
 }
 
@@ -410,6 +411,14 @@ impl RetypeCommitPlan {
             retyped_objects,
         })
     }
+
+    fn push_reserved_entry(&mut self, entry: RetypeCommitEntry) {
+        push_reserved(
+            &mut self.entries,
+            entry,
+            "retype commit plan pre-reserves every destination",
+        );
+    }
 }
 
 impl RevocationPlan {
@@ -422,6 +431,40 @@ impl RevocationPlan {
 
     fn free_list_reservations(&self) -> usize {
         self.delete_ctes.len().saturating_mul(2)
+    }
+
+    fn push_reserved_delete_cte(&mut self, cte: CteRef) {
+        push_reserved(
+            &mut self.delete_ctes,
+            cte,
+            "revoke plan reserves one delete CTE per descendant",
+        );
+    }
+}
+
+impl RetypeResult {
+    fn push_reserved_descriptor(&mut self, descriptor: CapabilityDescriptor) {
+        push_reserved(
+            &mut self.descriptors,
+            descriptor,
+            "retype result reserves one descriptor per commit entry",
+        );
+    }
+
+    fn push_reserved_object(&mut self, object: ObjectId) {
+        push_reserved(
+            &mut self.objects,
+            object,
+            "retype result reserves one object id per commit entry",
+        );
+    }
+
+    fn push_reserved_retyped_object(&mut self, object: RetypedObject) {
+        push_reserved(
+            &mut self.retyped_objects,
+            object,
+            "retype result reserves one typed-object record per commit entry",
+        );
     }
 }
 
@@ -781,7 +824,7 @@ impl CapabilitySpace {
         }
 
         validate_capability_rights(&capability)?;
-        Ok(self.insert_validated_initial_capability(capability))
+        self.insert_validated_initial_capability(capability)
     }
 
     pub fn insert_initial_cnode_capability(
@@ -810,14 +853,19 @@ impl CapabilitySpace {
     ) -> Result<CapabilityDescriptor, CapError> {
         let capability = Capability::Reply(capability);
         validate_capability_rights(&capability)?;
-        Ok(self.insert_validated_initial_capability(capability))
+        self.insert_validated_initial_capability(capability)
     }
 
     fn insert_validated_initial_capability(
         &mut self,
         capability: Capability,
-    ) -> CapabilityDescriptor {
+    ) -> Result<CapabilityDescriptor, CapError> {
         let kind = capability_kind(&capability);
+        let object = ObjectId(self.next_object);
+        self.objects.try_reserve_object(object)?;
+        if matches!(kind, ObjectKind::Tcb) {
+            self.slots.try_reserve_slot(self.next_internal_slot_id()?)?;
+        }
         let (object, generation) = self.alloc_object(kind);
         if let Some(cnode) = self.initial_cnode {
             return self
@@ -838,10 +886,16 @@ impl CapabilitySpace {
         validate_slot_window_bounds(window_start, slot_count)?;
         let window_start = self.available_cnode_window_start(window_start, slot_count)?;
         let descriptor_slot = self.cnode_root_descriptor_slot(window_start, slot_count)?;
-        let cnode_slots = CNodeSlots::from_window(window_start, slot_count);
+        let object = ObjectId(self.next_object);
+        self.objects.try_reserve_object(object)?;
+        self.slots.try_reserve_slot(descriptor_slot)?;
+        self.slots
+            .try_reserve_slot(slot_in_window(window_start, slot_count - 1))?;
+        let cnode_slots = CNodeSlots::from_window(window_start, slot_count)?;
         let (object, generation) =
             self.alloc_object_with_payload(KernelObjectPayload::CNode { slots: cnode_slots });
-        let descriptor = self.insert_root_slot_at(descriptor_slot, object, capability, generation);
+        let descriptor =
+            self.insert_root_slot_at(descriptor_slot, object, capability, generation)?;
         self.initial_cnode = Some(object);
         Ok(descriptor)
     }
@@ -962,27 +1016,32 @@ impl CapabilitySpace {
         let source = self.resolve_descriptor_ref(source)?;
         let (allocation, destinations) =
             self.validate_retype_untyped_into(source, &target, destination)?;
-        let mut next_slot = self.next_slot_after_retype_destinations(destination)?;
+        let next_slot = self.next_slot_after_retype_destinations(destination)?;
         // Commit-plan collection: all destination lookup and untyped capacity
         // checks have completed, and no owner state has been mutated yet.
         let mut entries = Vec::new();
-        for (offset, destination) in destinations.into_iter().enumerate() {
-            let window_start = self.planned_retype_window_start(&target, &mut next_slot)?;
-            let capability = target.clone().into_capability();
-            entries.push(RetypeCommitEntry {
-                destination,
-                object: ObjectId(self.next_object + offset as u64),
-                capability,
-                kind: self.planned_retype_kind(&target, window_start),
-            });
-        }
-
-        Ok(RetypeCommitPlan {
+        entries.try_reserve(destinations.len())?;
+        let mut plan = RetypeCommitPlan {
             source,
             allocation,
             entries,
             next_slot,
-        })
+        };
+        for (offset, destination) in destinations.into_iter().enumerate() {
+            let window_start = self.planned_retype_window_start(&target, &mut plan.next_slot)?;
+            let payload =
+                self.planned_retype_payload(&target, window_start, &mut plan.next_slot)?;
+            let capability = target.clone().into_capability();
+            plan.push_reserved_entry(RetypeCommitEntry {
+                destination,
+                object: ObjectId(self.next_object + offset as u64),
+                capability,
+                payload,
+                kind: self.planned_retype_kind(&target, window_start),
+            });
+        }
+
+        Ok(plan)
     }
 
     pub fn validate_reply_capability(
@@ -1093,6 +1152,7 @@ impl CapabilitySpace {
     ) -> Result<CapabilityDescriptor, CapError> {
         self.validate_reply_capability(slot.object, &capability)?;
         self.validate_reply_capability_slot(slot)?;
+        self.free_slots.try_reserve(2)?;
         self.delete_cte(ResolvedCapabilitySlot {
             descriptor: CapabilityDescriptor {
                 slot: slot.destination.slot,
@@ -1177,13 +1237,17 @@ impl CapabilitySpace {
         if let Some(destination) = destination {
             self.validate_empty_cte(destination)?;
         }
-        self.validated_resolved_slot(source)?;
+        let moved_parent = self.validated_resolved_slot(source)?.0.parent;
 
         let destination = match destination {
             Some(destination) => destination,
             None => self.alloc_empty_cte(),
         };
         self.reserve_empty_cte_for_insert(destination)?;
+        self.free_slots.try_reserve(1)?;
+        if let Some(parent) = moved_parent.and_then(|parent| self.slot_mut_by_ref(parent)) {
+            parent.children.try_reserve(1)?;
+        }
         let destination_generation = self.slot_generation_for_cte(destination);
         self.detach_reused_cte(destination);
 
@@ -1350,6 +1414,7 @@ impl CapabilitySpace {
         resolved: ResolvedCapabilitySlot,
     ) -> Result<CapabilityDeletion, CapError> {
         self.validated_resolved_slot(resolved)?;
+        self.free_slots.try_reserve(2)?;
         let final_object = self
             .is_final_capability(resolved.cte)
             .then(|| {
@@ -1365,6 +1430,7 @@ impl CapabilitySpace {
 
     pub fn consume_reply_cap(&mut self, descriptor: CapabilityDescriptor) -> Result<(), CapError> {
         self.validate_consumable_reply_cap(descriptor)?;
+        self.free_slots.try_reserve(2)?;
         self.delete_slot(descriptor.slot);
         Ok(())
     }
@@ -1447,7 +1513,7 @@ impl CapabilitySpace {
                 push_unique_object(&mut plan.revoked_objects, next_slot.object);
             }
 
-            plan.delete_ctes.push(next_cte);
+            plan.push_reserved_delete_cte(next_cte);
             next = next_slot.mdb.next;
         }
         plan.revoked_objects.sort_by_key(|object| object.raw());
@@ -1458,9 +1524,7 @@ impl CapabilitySpace {
     pub fn object_has_live_cap(&self, object: ObjectId) -> bool {
         self.root_live_slots()
             .any(|(_, slot)| slot.alive && slot.object == object)
-            || self
-                .object_owned_live_slots()
-                .any(|(_, slot)| slot.alive && slot.object == object)
+            || self.object_owned_live_slots_for_object(object)
     }
 
     fn is_final_capability(&self, cte: CteRef) -> bool {
@@ -1538,6 +1602,9 @@ impl CapabilitySpace {
             .live_slot_entries()
             .filter_map(|(slot_id, slot)| (slot.object == object).then_some(slot_id))
             .collect();
+        self.free_slots
+            .try_reserve(slots_to_remove.len().saturating_mul(2))
+            .expect("test destroy_object reserves free-list entries before deleting slots");
         for slot in slots_to_remove {
             self.delete_slot(slot);
         }
@@ -1608,18 +1675,72 @@ impl CapabilitySpace {
         self.root_live_slots().chain(self.object_owned_live_slots())
     }
 
+    fn object_owned_live_slots_for_object(&self, object: ObjectId) -> bool {
+        self.objects
+            .objects
+            .iter()
+            .filter_map(Option::as_ref)
+            .any(|kernel_object| match &kernel_object.payload {
+                KernelObjectPayload::CNode { slots } => slots
+                    .live_entries()
+                    .any(|(_, slot)| slot.alive && slot.object == object),
+                KernelObjectPayload::Tcb { slots } => slots
+                    .live_entries()
+                    .any(|(_, slot)| slot.alive && slot.object == object),
+                KernelObjectPayload::Endpoint
+                | KernelObjectPayload::Frame
+                | KernelObjectPayload::Untyped
+                | KernelObjectPayload::Notification
+                | KernelObjectPayload::Reply => false,
+            })
+    }
+
+    #[cfg(test)]
     fn object_owned_live_slots(&self) -> impl Iterator<Item = (SlotId, &CapabilitySlot)> {
         // Temporary iterator backing for the executable model. It avoids exposing
         // object-storage internals to callers; final CTE-array traversal should
         // replace this dynamic aggregation.
         let mut live = Vec::new();
+        let live_count: usize = self
+            .objects
+            .objects
+            .iter()
+            .filter_map(Option::as_ref)
+            .map(|object| match &object.payload {
+                KernelObjectPayload::CNode { slots } => slots.live_entries().count(),
+                KernelObjectPayload::Tcb { slots } => slots.live_entries().count(),
+                KernelObjectPayload::Endpoint
+                | KernelObjectPayload::Frame
+                | KernelObjectPayload::Untyped
+                | KernelObjectPayload::Notification
+                | KernelObjectPayload::Reply => 0,
+            })
+            .sum();
+        live.try_reserve(live_count)
+            .expect("object-owned live slot iterator reserves diagnostic aggregation before push");
         for object in self.objects.objects.iter() {
             let Some(object) = object.as_ref() else {
                 continue;
             };
             match &object.payload {
-                KernelObjectPayload::CNode { slots } => live.extend(slots.live_entries()),
-                KernelObjectPayload::Tcb { slots } => live.extend(slots.live_entries()),
+                KernelObjectPayload::CNode { slots } => {
+                    for entry in slots.live_entries() {
+                        push_reserved(
+                            &mut live,
+                            entry,
+                            "object-owned live slot iterator reserves every diagnostic entry",
+                        );
+                    }
+                }
+                KernelObjectPayload::Tcb { slots } => {
+                    for entry in slots.live_entries() {
+                        push_reserved(
+                            &mut live,
+                            entry,
+                            "object-owned live slot iterator reserves every diagnostic entry",
+                        );
+                    }
+                }
                 KernelObjectPayload::Endpoint
                 | KernelObjectPayload::Frame
                 | KernelObjectPayload::Untyped
@@ -1728,6 +1849,10 @@ impl CapabilitySpace {
             None => self.alloc_empty_cte(),
         };
         self.reserve_empty_cte_for_insert(destination)?;
+        self.slot_mut_by_ref(parent.cte)
+            .expect("validated parent slot must remain in CSpace during derivation preflight")
+            .children
+            .try_reserve(1)?;
         let slot_generation = self.slot_generation_for_cte(destination);
         self.detach_reused_cte(destination);
         let mdb = self.cte_insert_mdb(parent.cte, destination.cte, &capability, &parent_capability);
@@ -1768,9 +1893,14 @@ impl CapabilitySpace {
         validate_slot_window_bounds(destination.start, destination.count)?;
         destination_window_end(destination)?;
         let mut destinations = Vec::new();
+        destinations.try_reserve(destination.count)?;
         for offset in 0..destination.count {
             let slot = slot_in_window(destination.start, offset);
-            destinations.push(self.empty_cte_for_slot(slot)?);
+            push_reserved(
+                &mut destinations,
+                self.empty_cte_for_slot(slot)?,
+                "retype destination vector reserves the validated window length",
+            );
         }
         let allocation =
             self.validate_retype_untyped_capacity(source, target, destination.count)?;
@@ -1803,6 +1933,7 @@ impl CapabilitySpace {
 
     fn reserve_empty_cte_for_insert(&mut self, cte: ResolvedCte) -> Result<(), CapError> {
         self.validate_empty_cte(cte)?;
+        self.slots.try_reserve_slot(cte.slot)?;
         self.free_slots.retain(|free_slot| *free_slot != cte.slot);
         if cte.slot.raw() >= self.next_slot {
             self.next_slot = cte.slot.raw() + 1;
@@ -1866,7 +1997,7 @@ impl CapabilitySpace {
             .expect("validated parent untyped allocation must remain in CSpace")
             .watermark = plan.allocation.next_watermark;
         for entry in plan.entries {
-            let object_generation = self.alloc_planned_retyped_object(entry.object, entry.kind);
+            let object_generation = self.alloc_planned_retyped_object(entry.object, entry.payload);
             if let Capability::Untyped(capability) = &entry.capability {
                 self.untyped_allocations.insert(
                     entry.object,
@@ -1905,12 +2036,12 @@ impl CapabilitySpace {
                 .children
                 .insert(entry.destination.cte);
 
-            result.descriptors.push(CapabilityDescriptor {
+            result.push_reserved_descriptor(CapabilityDescriptor {
                 slot: entry.destination.slot,
                 slot_generation,
             });
-            result.objects.push(entry.object);
-            result.retyped_objects.push(RetypedObject {
+            result.push_reserved_object(entry.object);
+            result.push_reserved_retyped_object(RetypedObject {
                 object: entry.object,
                 kind: entry.kind,
             });
@@ -1925,7 +2056,6 @@ impl CapabilitySpace {
     fn reserve_retype_commit_storage(&mut self, plan: &RetypeCommitPlan) -> Result<(), CapError> {
         let mut max_object = None;
         let mut max_slot = None;
-        let mut next_internal_slot = self.next_slot.max(plan.next_slot);
         for entry in &plan.entries {
             max_object =
                 Some(max_object.map_or(entry.object, |object: ObjectId| object.max(entry.object)));
@@ -1946,9 +2076,8 @@ impl CapabilitySpace {
                         .max(slot_in_window(window_start, cnode_slot_count(radix) - 1)),
                 );
             }
-            if let RetypedObjectKind::Tcb = entry.kind {
-                max_slot = Some(max_slot.unwrap().max(SlotId(next_internal_slot)));
-                next_internal_slot += 1;
+            if let KernelObjectPayload::Tcb { slots } = &entry.payload {
+                max_slot = Some(max_slot.unwrap().max(slots.reply.handle));
             }
         }
         if let Some(object) = max_object {
@@ -2164,10 +2293,13 @@ impl CapabilitySpace {
         (object, generation)
     }
 
-    fn alloc_planned_retyped_object(&mut self, object: ObjectId, kind: RetypedObjectKind) -> u64 {
+    fn alloc_planned_retyped_object(
+        &mut self,
+        object: ObjectId,
+        payload: KernelObjectPayload,
+    ) -> u64 {
         self.next_object += 1;
         let generation = 1;
-        let payload = self.payload_for_retyped_kind(kind);
         self.objects.insert(
             object,
             KernelObject {
@@ -2190,12 +2322,33 @@ impl CapabilitySpace {
         }
     }
 
-    fn payload_for_retyped_kind(&mut self, kind: RetypedObjectKind) -> KernelObjectPayload {
-        match kind {
-            RetypedObjectKind::Tcb => KernelObjectPayload::Tcb {
-                slots: TcbSlots::new(self.alloc_internal_slot_id()),
-            },
-            _ => KernelObjectPayload::from_retyped_kind(kind),
+    fn planned_retype_payload(
+        &self,
+        target: &RetypeTarget,
+        window_start: Option<SlotId>,
+        next_slot: &mut u64,
+    ) -> Result<KernelObjectPayload, CapError> {
+        match target {
+            RetypeTarget::Tcb { .. } => {
+                let slot = SlotId(*next_slot);
+                *next_slot = next_slot
+                    .checked_add(1)
+                    .ok_or(CapError::SlotWindowOverflow {
+                        start: slot,
+                        count: 1,
+                    })?;
+                Ok(KernelObjectPayload::Tcb {
+                    slots: TcbSlots::new(slot),
+                })
+            }
+            RetypeTarget::CNode { radix } => {
+                let window_start =
+                    window_start.expect("planned CNode retype must reserve a window");
+                Ok(KernelObjectPayload::CNode {
+                    slots: CNodeSlots::from_window(window_start, cnode_slot_count(*radix))?,
+                })
+            }
+            _ => Ok(KernelObjectPayload::from_retype_target(target)),
         }
     }
 
@@ -2239,7 +2392,7 @@ impl CapabilitySpace {
         object: ObjectId,
         capability: Capability,
         generation: u64,
-    ) -> CapabilityDescriptor {
+    ) -> Result<CapabilityDescriptor, CapError> {
         let slot = self.alloc_slot_id();
         self.insert_root_slot_at(slot, object, capability, generation)
     }
@@ -2250,11 +2403,15 @@ impl CapabilitySpace {
         object: ObjectId,
         capability: Capability,
         generation: u64,
-    ) -> CapabilityDescriptor {
+    ) -> Result<CapabilityDescriptor, CapError> {
         let untyped_size = match &capability {
             Capability::Untyped(capability) => Some(capability.size_bits),
             _ => None,
         };
+        self.slots.try_reserve_slot(slot)?;
+        if untyped_size.is_some() {
+            self.untyped_allocations.try_reserve_object(object)?;
+        }
         let slot_generation = self.slot_generation_for_insert(slot);
         self.detach_reused_slot(slot);
         self.slots.insert(
@@ -2285,10 +2442,10 @@ impl CapabilitySpace {
             );
         }
 
-        CapabilityDescriptor {
+        Ok(CapabilityDescriptor {
             slot,
             slot_generation,
-        }
+        })
     }
 
     fn insert_initial_capability_into_cnode(
@@ -2297,7 +2454,7 @@ impl CapabilitySpace {
         object: ObjectId,
         capability: Capability,
         generation: u64,
-    ) -> CapabilityDescriptor {
+    ) -> Result<CapabilityDescriptor, CapError> {
         let location = self
             .first_empty_cnode_location(cnode)
             .expect("initial CNode must have an empty slot for bootstrap capabilities");
@@ -2308,6 +2465,10 @@ impl CapabilitySpace {
         };
         let rights = capability_rights(&capability);
         let slot_generation = self.slot_generation_for_insert(slot);
+        if let Some(size_bits) = untyped_size {
+            self.untyped_allocations.try_reserve_object(object)?;
+            let _ = size_bits;
+        }
         self.cnode_slot_insert(
             location,
             CapabilitySlot {
@@ -2332,10 +2493,10 @@ impl CapabilitySpace {
             );
         }
 
-        CapabilityDescriptor {
+        Ok(CapabilityDescriptor {
             slot,
             slot_generation,
-        }
+        })
     }
 
     fn first_empty_cnode_location(&self, object: ObjectId) -> Option<CteLocation> {
@@ -2434,6 +2595,23 @@ impl CapabilitySpace {
             {
                 return slot;
             }
+        }
+    }
+
+    fn next_internal_slot_id(&self) -> Result<SlotId, CapError> {
+        let mut raw = self.next_slot;
+        loop {
+            let slot = SlotId(raw);
+            if !self.slots.has_root_entry(slot)
+                && self.slots.cnode_location(slot).is_none()
+                && self.slots.tcb_location(slot).is_none()
+            {
+                return Ok(slot);
+            }
+            raw = raw.checked_add(1).ok_or(CapError::SlotWindowOverflow {
+                start: SlotId(self.next_slot),
+                count: usize::MAX,
+            })?;
         }
     }
 
@@ -2633,7 +2811,11 @@ impl CapabilitySpace {
 
     fn push_free_slot_once(&mut self, slot: SlotId) {
         if !self.free_slots.contains(&slot) {
-            self.free_slots.push(slot);
+            push_reserved(
+                &mut self.free_slots,
+                slot,
+                "free-list insertion is reserved before CTE mutation commits",
+            );
         }
     }
 
@@ -2731,21 +2913,15 @@ impl KernelObjectPayload {
         }
     }
 
-    fn from_retyped_kind(kind: RetypedObjectKind) -> Self {
-        match kind {
-            RetypedObjectKind::Endpoint => Self::Endpoint,
-            RetypedObjectKind::Frame => Self::Frame,
-            RetypedObjectKind::CNode {
-                radix,
-                window_start,
-            } => Self::CNode {
-                slots: CNodeSlots::from_window(window_start, cnode_slot_count(radix)),
-            },
-            RetypedObjectKind::Untyped => Self::Untyped,
-            RetypedObjectKind::Tcb => {
-                unreachable!("TCB objects require explicit CTE slot metadata")
+    fn from_retype_target(target: &RetypeTarget) -> Self {
+        match target {
+            RetypeTarget::Endpoint => Self::Endpoint,
+            RetypeTarget::Frame { .. } => Self::Frame,
+            RetypeTarget::Untyped { .. } => Self::Untyped,
+            RetypeTarget::Notification => Self::Notification,
+            RetypeTarget::CNode { .. } | RetypeTarget::Tcb { .. } => {
+                unreachable!("CNode and TCB retype payloads require planned slot metadata")
             }
-            RetypedObjectKind::Notification => Self::Notification,
         }
     }
 
@@ -2763,14 +2939,20 @@ impl KernelObjectPayload {
 }
 
 impl CNodeSlots {
-    fn from_window(window_start: SlotId, count: usize) -> Self {
-        let slots = (0..count)
-            .map(|offset| CNodeSlotEntry {
-                handle: slot_in_window(window_start, offset),
-                slot: None,
-            })
-            .collect();
-        Self { slots }
+    fn from_window(window_start: SlotId, count: usize) -> Result<Self, CapError> {
+        let mut slots = Vec::new();
+        slots.try_reserve(count)?;
+        for offset in 0..count {
+            push_reserved(
+                &mut slots,
+                CNodeSlotEntry {
+                    handle: slot_in_window(window_start, offset),
+                    slot: None,
+                },
+                "CNodeSlots::from_window reserves the full validated window before filling it",
+            );
+        }
+        Ok(Self { slots })
     }
 
     fn handle(&self, offset: u64) -> Option<SlotId> {
@@ -2876,7 +3058,11 @@ impl ChildSlots {
 
     fn insert(&mut self, cte: CteRef) {
         if !self.slots.contains(&cte) {
-            self.slots.push(cte);
+            push_reserved(
+                &mut self.slots,
+                cte,
+                "capability child link insertion is pre-reserved by caller",
+            );
         }
     }
 
@@ -2942,7 +3128,7 @@ impl CteSlots {
     fn insert_cnode_location(&mut self, slot: SlotId, location: CteLocation) {
         let index = slot_index(slot);
         if self.cnode_locations.len() <= index {
-            self.cnode_locations.resize_with(index + 1, || None);
+            extend_reserved_with_none(&mut self.cnode_locations, index, "CNode location insertion");
         }
         self.cnode_locations[index] = Some(location);
     }
@@ -2956,7 +3142,7 @@ impl CteSlots {
     fn insert_tcb_location(&mut self, slot: SlotId, location: CteLocation) {
         let index = slot_index(slot);
         if self.tcb_locations.len() <= index {
-            self.tcb_locations.resize_with(index + 1, || None);
+            extend_reserved_with_none(&mut self.tcb_locations, index, "TCB location insertion");
         }
         self.tcb_locations[index] = Some(location);
     }
@@ -2964,7 +3150,7 @@ impl CteSlots {
     fn ensure_slot(&mut self, slot: SlotId) {
         let index = slot_index(slot);
         if self.root_slots.len() <= index {
-            self.root_slots.resize_with(index + 1, || None);
+            extend_reserved_with_none(&mut self.root_slots, index, "root CTE insertion");
         }
     }
 
@@ -2999,7 +3185,7 @@ impl ObjectStorage {
     fn insert(&mut self, object: ObjectId, value: KernelObject) {
         let index = object_index(object);
         if self.objects.len() <= index {
-            self.objects.resize_with(index + 1, || None);
+            extend_reserved_with_none(&mut self.objects, index, "object storage insertion");
         }
         self.objects[index] = Some(value);
     }
@@ -3025,7 +3211,7 @@ impl UntypedStorage {
     fn insert(&mut self, object: ObjectId, value: UntypedAllocation) {
         let index = object_index(object);
         if self.allocations.len() <= index {
-            self.allocations.resize_with(index + 1, || None);
+            extend_reserved_with_none(&mut self.allocations, index, "untyped allocation insertion");
         }
         self.allocations[index] = Some(value);
     }
@@ -3052,10 +3238,30 @@ fn reserve_index<T>(items: &mut Vec<T>, index: usize) -> Result<(), CapError> {
     Ok(())
 }
 
+fn extend_reserved_with_none<T>(items: &mut Vec<Option<T>>, index: usize, context: &str) {
+    assert!(
+        index < items.capacity(),
+        "{context} must reserve indexed storage before extending Vec length"
+    );
+    items.resize_with(index + 1, || None);
+}
+
 fn push_unique_object(objects: &mut Vec<ObjectId>, object: ObjectId) {
     if !objects.contains(&object) {
-        objects.push(object);
+        push_reserved(
+            objects,
+            object,
+            "revoke plan reserves unique object snapshots per descendant",
+        );
     }
+}
+
+fn push_reserved<T>(items: &mut Vec<T>, value: T, invariant: &str) {
+    assert!(
+        items.len() < items.capacity(),
+        "{invariant}; Vec::push must not allocate in this kernel path"
+    );
+    items.push(value);
 }
 
 impl UntypedAllocation {

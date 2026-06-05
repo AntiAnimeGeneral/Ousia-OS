@@ -111,7 +111,9 @@ impl SchedulerError {
             Self::ThreadNotRunnable { .. }
             | Self::ThreadAlreadyScheduled { .. }
             | Self::CpuAlreadyHasCurrent { .. } => KernelErrorCode::IllegalOperation,
-            Self::ReadyQueueFull { .. } => KernelErrorCode::NotEnoughMemory,
+            Self::ReadyQueueFull { .. } | Self::RunQueueCapacityExhausted { .. } => {
+                KernelErrorCode::NotEnoughMemory
+            }
         }
     }
 }
