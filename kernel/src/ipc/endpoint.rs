@@ -1,5 +1,3 @@
-use alloc::vec::Vec;
-
 use super::message::IpcPayload;
 use crate::thread::tcb::{CpuId, ThreadId};
 
@@ -122,12 +120,6 @@ struct EndpointWaitQueue {
     head: Option<ThreadId>,
     tail: Option<ThreadId>,
     len: usize,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct EndpointCancellation {
-    pub senders: Vec<QueuedSender>,
-    pub receivers: Vec<QueuedReceiver>,
 }
 
 impl QueuedReceiver {
@@ -443,14 +435,10 @@ impl Endpoint {
         removed
     }
 
-    pub fn cancel_all(&mut self) -> EndpointCancellation {
+    pub fn cancel_all(&mut self) {
         self.senders.clear();
         self.receivers.clear();
         self.state = EndpointState::Idle;
-        EndpointCancellation {
-            senders: Vec::new(),
-            receivers: Vec::new(),
-        }
     }
 
     pub fn cancel_thread(&mut self, thread: ThreadId) -> bool {

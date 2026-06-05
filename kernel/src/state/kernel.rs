@@ -463,32 +463,35 @@ impl KernelState {
     }
 
     fn finalise_endpoint(&mut self, object: ObjectId) {
-        let waiters = {
+        while let Some((thread, cpu)) = {
             let endpoint = self
                 .objects
                 .endpoint_mut(object)
                 .expect("endpoint finalisation must target an endpoint object");
-            self.threads.drain_endpoint_waiters(endpoint)
-        };
-        for (thread, cpu) in waiters {
+            self.threads.drain_next_endpoint_waiter(endpoint)
+        } {
             self.restart_thread(thread, cpu);
         }
         self.objects.remove_finalised(object);
     }
 
     fn finalise_notification(&mut self, object: ObjectId) {
-        let (waiters, cancellation) = {
+        while let Some((thread, cpu)) = {
             let notification = self
                 .objects
                 .notification_mut(object)
                 .expect("notification finalisation must target a notification object");
-            let waiters = self.threads.drain_notification_waiters(notification);
-            let cancellation = notification.cancel_all();
-            (waiters, cancellation)
-        };
-        for (thread, cpu) in waiters {
+            self.threads.drain_next_notification_waiter(notification)
+        } {
             self.restart_thread(thread, cpu);
         }
+        let cancellation = {
+            let notification = self
+                .objects
+                .notification_mut(object)
+                .expect("notification finalisation must target a notification object");
+            notification.cancel_all()
+        };
         if let Some(bound) = cancellation.bound_tcb {
             self.threads.unbind_notification(bound.thread());
         }
@@ -1148,6 +1151,76 @@ mod tests {
                 .unwrap()
                 .queued_senders(),
             0
+        );
+    }
+
+    #[test]
+    fn finalise_endpoint_restarts_all_blocked_senders_without_waiter_collection() {
+        // Goal: endpoint finalisation drains every queued sender through the one-at-a-time path.
+        // Scope: KernelState endpoint finalisation over multiple TCB-owned wait links.
+        // Semantics: queued senders restart on their original CPUs before the endpoint object is removed.
+        let mut cspace = CapabilitySpace::new();
+        let endpoint_descriptor = cspace
+            .insert_initial_capability(Capability::Endpoint(EndpointCap {
+                badge: 7,
+                rights: Rights::WRITE,
+            }))
+            .unwrap();
+        let endpoint_object = cspace.object_of(endpoint_descriptor).unwrap();
+        let mut objects = ObjectTable::new();
+        objects
+            .insert_endpoint(endpoint_object, Endpoint::new())
+            .unwrap();
+        let mut threads = ThreadTable::new();
+        let first = runnable_tcb(1, cpu(0));
+        let second = runnable_tcb(2, cpu(1));
+        insert_test_thread(&mut threads, first.clone());
+        insert_test_thread(&mut threads, second.clone());
+        let mut scheduler = Scheduler::new(&[cpu(0), cpu(1)]).unwrap();
+        scheduler.enqueue(&first).unwrap();
+        scheduler.enqueue(&second).unwrap();
+        scheduler.schedule_next(cpu(0)).unwrap();
+        scheduler.schedule_next(cpu(1)).unwrap();
+        let mut state = KernelState::from_parts(cspace, objects, threads, scheduler);
+
+        state
+            .execute_invocation(
+                InvocationContext::new(thread(1), cpu(0)),
+                endpoint_descriptor,
+                Invocation::EndpointSend {
+                    message_words: 0,
+                    op: EndpointSendOp::Send,
+                },
+            )
+            .unwrap();
+        state
+            .execute_invocation(
+                InvocationContext::new(thread(2), cpu(1)),
+                endpoint_descriptor,
+                Invocation::EndpointSend {
+                    message_words: 0,
+                    op: EndpointSendOp::Send,
+                },
+            )
+            .unwrap();
+
+        state.finalise_endpoint(endpoint_object);
+
+        assert_eq!(state.threads.state(thread(1)), Some(ThreadState::Restart));
+        assert_eq!(state.threads.state(thread(2)), Some(ThreadState::Restart));
+        assert_eq!(
+            state.scheduler.placement(thread(1)),
+            Some(crate::scheduler::ThreadPlacement::Ready { cpu: cpu(0) })
+        );
+        assert_eq!(
+            state.scheduler.placement(thread(2)),
+            Some(crate::scheduler::ThreadPlacement::Ready { cpu: cpu(1) })
+        );
+        assert_eq!(
+            state.objects.get(endpoint_object),
+            Err(ObjectTableError::ObjectNotFound {
+                object: endpoint_object,
+            })
         );
     }
 

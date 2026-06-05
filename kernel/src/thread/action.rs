@@ -1,4 +1,4 @@
-use alloc::{boxed::Box, vec, vec::Vec};
+use alloc::{boxed::Box, vec};
 
 use crate::{
     cap::ObjectId,
@@ -374,27 +374,29 @@ impl ThreadTable {
         true
     }
 
-    pub fn drain_endpoint_waiters(&mut self, endpoint: &mut Endpoint) -> Vec<(ThreadId, CpuId)> {
-        let mut waiters = Vec::new();
-        while let Some(sender) = endpoint.sender_head() {
+    pub fn drain_next_endpoint_waiter(
+        &mut self,
+        endpoint: &mut Endpoint,
+    ) -> Option<(ThreadId, CpuId)> {
+        if let Some(sender) = endpoint.sender_head() {
             let cpu = match self.state(sender) {
                 Some(ThreadState::BlockedOnSend { sender_cpu, .. }) => sender_cpu,
                 _ => self.affinity(sender).unwrap_or(CpuId::new(0)),
             };
             self.pop_endpoint_sender(endpoint)
                 .expect("endpoint sender drain must consume existing queue head");
-            waiters.push((sender, cpu));
+            return Some((sender, cpu));
         }
-        while let Some(receiver) = endpoint.receiver_head() {
+        if let Some(receiver) = endpoint.receiver_head() {
             let cpu = match self.state(receiver) {
                 Some(ThreadState::BlockedOnReceive { receiver_cpu, .. }) => receiver_cpu,
                 _ => self.affinity(receiver).unwrap_or(CpuId::new(0)),
             };
             self.pop_endpoint_receiver(endpoint)
                 .expect("endpoint receiver drain must consume existing queue head");
-            waiters.push((receiver, cpu));
+            return Some((receiver, cpu));
         }
-        waiters
+        None
     }
 
     fn append_notification_waiter(&mut self, notification: &mut Notification, thread: ThreadId) {
@@ -497,21 +499,20 @@ impl ThreadTable {
         true
     }
 
-    pub fn drain_notification_waiters(
+    pub fn drain_next_notification_waiter(
         &mut self,
         notification: &mut Notification,
-    ) -> Vec<(ThreadId, CpuId)> {
-        let mut waiters = Vec::new();
-        while let Some(waiter) = notification.next_waiter().map(|waiter| waiter.thread()) {
+    ) -> Option<(ThreadId, CpuId)> {
+        if let Some(waiter) = notification.next_waiter().map(|waiter| waiter.thread()) {
             let cpu = match self.state(waiter) {
                 Some(ThreadState::BlockedOnNotification { receiver_cpu, .. }) => receiver_cpu,
                 _ => self.affinity(waiter).unwrap_or(CpuId::new(0)),
             };
             self.pop_notification_waiter(notification)
                 .expect("notification waiter drain must consume existing queue head");
-            waiters.push((waiter, cpu));
+            return Some((waiter, cpu));
         }
-        waiters
+        None
     }
 }
 
