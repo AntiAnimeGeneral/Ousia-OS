@@ -136,7 +136,7 @@ impl HandleTable {
             object: object.id,
             object_generation: object.generation,
             entry_generation: generation,
-            kind: object.kind,
+            kind: object.kind(),
             rights,
         });
         Ok(HandleValue::new(index as u64, generation))

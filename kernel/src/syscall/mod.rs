@@ -10,6 +10,10 @@ pub enum Syscall {
         kind: ObjectKind,
         rights: HandleRights,
     },
+    CreateMemoryObject {
+        size_bytes: u64,
+        rights: HandleRights,
+    },
     DuplicateHandle {
         source: HandleValue,
         rights: HandleRights,
@@ -67,6 +71,11 @@ impl Kernel {
         match syscall {
             Syscall::CreateObject { kind, rights } => {
                 let handle = process.create_object_handle(&mut self.objects, kind, rights)?;
+                Ok(SyscallOutcome::Handle { handle })
+            }
+            Syscall::CreateMemoryObject { size_bytes, rights } => {
+                let handle =
+                    process.create_memory_object_handle(&mut self.objects, size_bytes, rights)?;
                 Ok(SyscallOutcome::Handle { handle })
             }
             Syscall::DuplicateHandle { source, rights } => {

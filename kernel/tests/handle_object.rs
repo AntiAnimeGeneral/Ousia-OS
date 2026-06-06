@@ -29,7 +29,7 @@ fn bootstrap_process_installs_live_process_handle() {
         )
         .unwrap();
 
-    assert_eq!(view.object.kind, ObjectKind::Process);
+    assert_eq!(view.object.kind(), ObjectKind::Process);
     assert_eq!(view.object.state, ObjectState::Live);
     assert!(view.entry.rights.contains(HandleRights::MANAGE));
 }

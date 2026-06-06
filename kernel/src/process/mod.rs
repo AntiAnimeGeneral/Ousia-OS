@@ -3,7 +3,7 @@ use alloc::vec::Vec;
 use crate::{
     error::{KernelError, KernelResult},
     handle::{HandleRights, HandleTable, HandleValue},
-    object::{ObjectKind, ObjectManager},
+    object::{ObjectKind, ObjectManager, ObjectSnapshot},
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Ord, PartialOrd)]
@@ -92,13 +92,33 @@ impl Process {
         kind: ObjectKind,
         rights: HandleRights,
     ) -> KernelResult<HandleValue> {
+        self.create_preflighted_object_handle(objects, rights, |objects| objects.create(kind))
+    }
+
+    pub fn create_memory_object_handle(
+        &mut self,
+        objects: &mut ObjectManager,
+        size_bytes: u64,
+        rights: HandleRights,
+    ) -> KernelResult<HandleValue> {
+        self.create_preflighted_object_handle(objects, rights, |objects| {
+            objects.create_memory_object(size_bytes)
+        })
+    }
+
+    fn create_preflighted_object_handle(
+        &mut self,
+        objects: &mut ObjectManager,
+        rights: HandleRights,
+        create: impl FnOnce(&mut ObjectManager) -> KernelResult<ObjectSnapshot>,
+    ) -> KernelResult<HandleValue> {
         let mut reservation = self.budget.reserve_object()?;
         if self.handles.live_count() == self.handles.capacity() {
             self.budget.release_object();
             return Err(KernelError::NoCapacity);
         }
 
-        let object = match objects.create(kind) {
+        let object = match create(objects) {
             Ok(object) => object,
             Err(error) => {
                 self.budget.release_object();

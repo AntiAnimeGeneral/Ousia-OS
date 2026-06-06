@@ -45,6 +45,73 @@ pub enum ObjectKind {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ThreadLifecycle {
+    Initial,
+    Runnable,
+    Blocked,
+    Exited,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum EventState {
+    Unsignaled,
+    Signaled,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ProcessObject;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ChannelEndpointObject {
+    pub peer: Option<ObjectId>,
+    pub queued_messages: usize,
+    pub max_messages: usize,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct EventObject {
+    pub state: EventState,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct MemoryObject {
+    pub size_bytes: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct AddressSpaceObject {
+    pub mapping_count: usize,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ThreadObject {
+    pub lifecycle: ThreadLifecycle,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ObjectPayload {
+    Process(ProcessObject),
+    ChannelEndpoint(ChannelEndpointObject),
+    Event(EventObject),
+    MemoryObject(MemoryObject),
+    AddressSpace(AddressSpaceObject),
+    Thread(ThreadObject),
+}
+
+impl ObjectPayload {
+    pub const fn kind(self) -> ObjectKind {
+        match self {
+            Self::Process(_) => ObjectKind::Process,
+            Self::ChannelEndpoint(_) => ObjectKind::ChannelEndpoint,
+            Self::Event(_) => ObjectKind::Event,
+            Self::MemoryObject(_) => ObjectKind::MemoryObject,
+            Self::AddressSpace(_) => ObjectKind::AddressSpace,
+            Self::Thread(_) => ObjectKind::Thread,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ObjectState {
     Live,
     Dead,
@@ -53,7 +120,7 @@ pub enum ObjectState {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ObjectEntry {
     pub id: ObjectId,
-    pub kind: ObjectKind,
+    pub payload: ObjectPayload,
     pub generation: ObjectGeneration,
     pub state: ObjectState,
     pub handle_count: usize,
@@ -62,10 +129,16 @@ pub struct ObjectEntry {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ObjectSnapshot {
     pub id: ObjectId,
-    pub kind: ObjectKind,
+    pub payload: ObjectPayload,
     pub generation: ObjectGeneration,
     pub state: ObjectState,
     pub handle_count: usize,
+}
+
+impl ObjectSnapshot {
+    pub const fn kind(self) -> ObjectKind {
+        self.payload.kind()
+    }
 }
 
 pub struct ObjectManager {
@@ -104,6 +177,39 @@ impl ObjectManager {
     }
 
     pub fn create(&mut self, kind: ObjectKind) -> KernelResult<ObjectSnapshot> {
+        self.create_payload(match kind {
+            ObjectKind::Process => ObjectPayload::Process(ProcessObject),
+            ObjectKind::ChannelEndpoint => ObjectPayload::ChannelEndpoint(ChannelEndpointObject {
+                peer: None,
+                queued_messages: 0,
+                max_messages: 0,
+            }),
+            ObjectKind::Event => ObjectPayload::Event(EventObject {
+                state: EventState::Unsignaled,
+            }),
+            ObjectKind::MemoryObject => ObjectPayload::MemoryObject(MemoryObject { size_bytes: 0 }),
+            ObjectKind::AddressSpace => {
+                ObjectPayload::AddressSpace(AddressSpaceObject { mapping_count: 0 })
+            }
+            ObjectKind::Thread => ObjectPayload::Thread(ThreadObject {
+                lifecycle: ThreadLifecycle::Initial,
+            }),
+        })
+    }
+
+    pub fn create_memory_object(&mut self, size_bytes: u64) -> KernelResult<ObjectSnapshot> {
+        self.create_payload(ObjectPayload::MemoryObject(MemoryObject { size_bytes }))
+    }
+
+    pub fn create_channel_endpoint(&mut self, max_messages: usize) -> KernelResult<ObjectSnapshot> {
+        self.create_payload(ObjectPayload::ChannelEndpoint(ChannelEndpointObject {
+            peer: None,
+            queued_messages: 0,
+            max_messages,
+        }))
+    }
+
+    fn create_payload(&mut self, payload: ObjectPayload) -> KernelResult<ObjectSnapshot> {
         let index = self
             .entries
             .iter()
@@ -113,7 +219,7 @@ impl ObjectManager {
         let generation = self.generations[index];
         let entry = ObjectEntry {
             id,
-            kind,
+            payload,
             generation,
             state: ObjectState::Live,
             handle_count: 0,
@@ -140,10 +246,46 @@ impl ObjectManager {
         if entry.generation != generation {
             return Err(KernelError::StaleHandle);
         }
-        if entry.kind != kind {
+        if entry.payload.kind() != kind {
             return Err(KernelError::WrongObjectType);
         }
         Ok(ObjectSnapshot::from(*entry))
+    }
+
+    pub fn event(&self, id: ObjectId, generation: ObjectGeneration) -> KernelResult<EventObject> {
+        match self.live_payload(id, generation)? {
+            ObjectPayload::Event(event) => Ok(event),
+            _ => Err(KernelError::WrongObjectType),
+        }
+    }
+
+    pub fn signal_event(&mut self, id: ObjectId, generation: ObjectGeneration) -> KernelResult<()> {
+        let payload = self.live_payload_mut(id, generation)?;
+        let ObjectPayload::Event(event) = payload else {
+            return Err(KernelError::WrongObjectType);
+        };
+        event.state = EventState::Signaled;
+        Ok(())
+    }
+
+    pub fn clear_event(&mut self, id: ObjectId, generation: ObjectGeneration) -> KernelResult<()> {
+        let payload = self.live_payload_mut(id, generation)?;
+        let ObjectPayload::Event(event) = payload else {
+            return Err(KernelError::WrongObjectType);
+        };
+        event.state = EventState::Unsignaled;
+        Ok(())
+    }
+
+    pub fn memory_object(
+        &self,
+        id: ObjectId,
+        generation: ObjectGeneration,
+    ) -> KernelResult<MemoryObject> {
+        match self.live_payload(id, generation)? {
+            ObjectPayload::MemoryObject(memory) => Ok(memory),
+            _ => Err(KernelError::WrongObjectType),
+        }
     }
 
     pub fn add_handle(&mut self, id: ObjectId, generation: ObjectGeneration) -> KernelResult<()> {
@@ -195,6 +337,36 @@ impl ObjectManager {
         self.entries[index].as_mut().ok_or(KernelError::DeadObject)
     }
 
+    fn live_payload(
+        &self,
+        id: ObjectId,
+        generation: ObjectGeneration,
+    ) -> KernelResult<ObjectPayload> {
+        let entry = self.entry(id)?;
+        if entry.state == ObjectState::Dead {
+            return Err(KernelError::DeadObject);
+        }
+        if entry.generation != generation {
+            return Err(KernelError::StaleHandle);
+        }
+        Ok(entry.payload)
+    }
+
+    fn live_payload_mut(
+        &mut self,
+        id: ObjectId,
+        generation: ObjectGeneration,
+    ) -> KernelResult<&mut ObjectPayload> {
+        let entry = self.entry_mut(id)?;
+        if entry.state == ObjectState::Dead {
+            return Err(KernelError::DeadObject);
+        }
+        if entry.generation != generation {
+            return Err(KernelError::StaleHandle);
+        }
+        Ok(&mut entry.payload)
+    }
+
     fn index(&self, id: ObjectId) -> KernelResult<usize> {
         let index = id.raw() as usize;
         if index >= self.capacity {
@@ -208,7 +380,7 @@ impl From<ObjectEntry> for ObjectSnapshot {
     fn from(entry: ObjectEntry) -> Self {
         Self {
             id: entry.id,
-            kind: entry.kind,
+            payload: entry.payload,
             generation: entry.generation,
             state: entry.state,
             handle_count: entry.handle_count,
