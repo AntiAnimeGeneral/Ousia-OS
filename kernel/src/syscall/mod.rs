@@ -16,6 +16,22 @@ pub enum Syscall {
         size_bytes: u64,
         rights: HandleRights,
     },
+    CreateAddressSpace {
+        rights: HandleRights,
+    },
+    MapMemoryObject {
+        address_space: HandleValue,
+        memory: HandleValue,
+        base: u64,
+        size_bytes: u64,
+        memory_offset: u64,
+        rights: HandleRights,
+    },
+    UnmapAddressRange {
+        address_space: HandleValue,
+        base: u64,
+        size_bytes: u64,
+    },
     CreateChannelPair {
         max_messages: usize,
         rights: HandleRights,
@@ -108,6 +124,37 @@ impl Kernel {
                 let handle =
                     process.create_memory_object_handle(&mut self.objects, size_bytes, rights)?;
                 Ok(SyscallOutcome::Handle { handle })
+            }
+            Syscall::CreateAddressSpace { rights } => {
+                let handle = process.create_address_space_handle(&mut self.objects, rights)?;
+                Ok(SyscallOutcome::Handle { handle })
+            }
+            Syscall::MapMemoryObject {
+                address_space,
+                memory,
+                base,
+                size_bytes,
+                memory_offset,
+                rights,
+            } => {
+                process.map_memory_object(
+                    &mut self.objects,
+                    address_space,
+                    memory,
+                    base,
+                    size_bytes,
+                    memory_offset,
+                    rights,
+                )?;
+                Ok(SyscallOutcome::Closed)
+            }
+            Syscall::UnmapAddressRange {
+                address_space,
+                base,
+                size_bytes,
+            } => {
+                process.unmap_address_range(&mut self.objects, address_space, base, size_bytes)?;
+                Ok(SyscallOutcome::Closed)
             }
             Syscall::CreateChannelPair {
                 max_messages,

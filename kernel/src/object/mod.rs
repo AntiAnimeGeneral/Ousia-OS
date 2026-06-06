@@ -1,10 +1,14 @@
 use alloc::vec::Vec;
 
-use crate::error::{KernelError, KernelResult};
+use crate::{
+    error::{KernelError, KernelResult},
+    handle::HandleRights,
+};
 
 pub const MAX_CHANNEL_MESSAGES: usize = 4;
 pub const MAX_CHANNEL_MESSAGE_BYTES: usize = 64;
 pub const MAX_CHANNEL_MESSAGE_HANDLES: usize = 4;
+pub const MAX_ADDRESS_SPACE_MAPPINGS: usize = 8;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Ord, PartialOrd)]
 pub struct ObjectId(u64);
@@ -147,6 +151,37 @@ pub struct MemoryObject {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct AddressSpaceObject {
     pub mapping_count: usize,
+    mappings: [Option<VmMapping>; MAX_ADDRESS_SPACE_MAPPINGS],
+}
+
+impl AddressSpaceObject {
+    const fn new() -> Self {
+        Self {
+            mapping_count: 0,
+            mappings: [None; MAX_ADDRESS_SPACE_MAPPINGS],
+        }
+    }
+
+    pub fn mappings(&self) -> impl Iterator<Item = VmMapping> + '_ {
+        self.mappings.iter().filter_map(|mapping| *mapping)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct VmMapping {
+    pub base: u64,
+    pub size_bytes: u64,
+    pub memory: ObjectRef,
+    pub memory_offset: u64,
+    pub rights: HandleRights,
+}
+
+impl VmMapping {
+    pub fn end(self) -> u64 {
+        self.base
+            .checked_add(self.size_bytes)
+            .expect("vm mapping end was checked before commit")
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -256,9 +291,7 @@ impl ObjectManager {
                 state: EventState::Unsignaled,
             }),
             ObjectKind::MemoryObject => ObjectPayload::MemoryObject(MemoryObject { size_bytes: 0 }),
-            ObjectKind::AddressSpace => {
-                ObjectPayload::AddressSpace(AddressSpaceObject { mapping_count: 0 })
-            }
+            ObjectKind::AddressSpace => ObjectPayload::AddressSpace(AddressSpaceObject::new()),
             ObjectKind::Thread => ObjectPayload::Thread(ThreadObject {
                 lifecycle: ThreadLifecycle::Initial,
             }),
@@ -397,6 +430,99 @@ impl ObjectManager {
             ObjectPayload::MemoryObject(memory) => Ok(memory),
             _ => Err(KernelError::WrongObjectType),
         }
+    }
+
+    pub fn address_space(
+        &self,
+        id: ObjectId,
+        generation: ObjectGeneration,
+    ) -> KernelResult<AddressSpaceObject> {
+        match self.live_payload(id, generation)? {
+            ObjectPayload::AddressSpace(address_space) => Ok(address_space),
+            _ => Err(KernelError::WrongObjectType),
+        }
+    }
+
+    pub fn map_memory_object(
+        &mut self,
+        address_space: ObjectRef,
+        memory: ObjectRef,
+        base: u64,
+        size_bytes: u64,
+        memory_offset: u64,
+        rights: HandleRights,
+    ) -> KernelResult<()> {
+        let mapping_rights = HandleRights::READ | HandleRights::WRITE | HandleRights::EXECUTE;
+        if rights.is_empty() || !mapping_rights.contains(rights) {
+            return Err(KernelError::InvalidArgument);
+        }
+        if size_bytes == 0 {
+            return Err(KernelError::InvalidArgument);
+        }
+        let end = base
+            .checked_add(size_bytes)
+            .ok_or(KernelError::InvalidArgument)?;
+        let memory_end = memory_offset
+            .checked_add(size_bytes)
+            .ok_or(KernelError::InvalidArgument)?;
+        let memory_object = self.memory_object(memory.id, memory.generation)?;
+        if memory_end > memory_object.size_bytes {
+            return Err(KernelError::InvalidArgument);
+        }
+
+        let payload = self.live_payload_mut(address_space.id, address_space.generation)?;
+        let ObjectPayload::AddressSpace(address_space) = payload else {
+            return Err(KernelError::WrongObjectType);
+        };
+        if address_space.mapping_count == MAX_ADDRESS_SPACE_MAPPINGS {
+            return Err(KernelError::NoCapacity);
+        }
+        if address_space
+            .mappings()
+            .any(|mapping| ranges_overlap(base, end, mapping))
+        {
+            return Err(KernelError::InvalidArgument);
+        }
+        let index = address_space
+            .mappings
+            .iter()
+            .position(Option::is_none)
+            .ok_or(KernelError::NoCapacity)?;
+        address_space.mappings[index] = Some(VmMapping {
+            base,
+            size_bytes,
+            memory,
+            memory_offset,
+            rights,
+        });
+        address_space.mapping_count += 1;
+        Ok(())
+    }
+
+    pub fn unmap_address_range(
+        &mut self,
+        address_space: ObjectRef,
+        base: u64,
+        size_bytes: u64,
+    ) -> KernelResult<()> {
+        if size_bytes == 0 {
+            return Err(KernelError::InvalidArgument);
+        }
+        let end = base
+            .checked_add(size_bytes)
+            .ok_or(KernelError::InvalidArgument)?;
+        let payload = self.live_payload_mut(address_space.id, address_space.generation)?;
+        let ObjectPayload::AddressSpace(address_space) = payload else {
+            return Err(KernelError::WrongObjectType);
+        };
+        let Some(index) = address_space.mappings.iter().position(|mapping| {
+            mapping.is_some_and(|mapping| mapping.base == base && mapping.end() == end)
+        }) else {
+            return Err(KernelError::InvalidArgument);
+        };
+        address_space.mappings[index] = None;
+        address_space.mapping_count -= 1;
+        Ok(())
     }
 
     pub fn channel_endpoint(
@@ -616,4 +742,8 @@ impl From<ObjectEntry> for ObjectSnapshot {
             handle_count: entry.handle_count,
         }
     }
+}
+
+fn ranges_overlap(base: u64, end: u64, mapping: VmMapping) -> bool {
+    base < mapping.end() && mapping.base < end
 }

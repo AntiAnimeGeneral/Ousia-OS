@@ -4,7 +4,8 @@ use crate::{
     error::{KernelError, KernelResult},
     handle::{HandleRights, HandleTable, HandleValue},
     object::{
-        ChannelMessage, MAX_CHANNEL_MESSAGE_BYTES, ObjectKind, ObjectManager, ObjectSnapshot,
+        ChannelMessage, MAX_CHANNEL_MESSAGE_BYTES, ObjectKind, ObjectManager, ObjectRef,
+        ObjectSnapshot,
     },
 };
 
@@ -106,6 +107,74 @@ impl Process {
         self.create_preflighted_object_handle(objects, rights, |objects| {
             objects.create_memory_object(size_bytes)
         })
+    }
+
+    pub fn create_address_space_handle(
+        &mut self,
+        objects: &mut ObjectManager,
+        rights: HandleRights,
+    ) -> KernelResult<HandleValue> {
+        self.create_preflighted_object_handle(objects, rights, |objects| {
+            objects.create(ObjectKind::AddressSpace)
+        })
+    }
+
+    pub fn map_memory_object(
+        &mut self,
+        objects: &mut ObjectManager,
+        address_space: HandleValue,
+        memory: HandleValue,
+        base: u64,
+        size_bytes: u64,
+        memory_offset: u64,
+        rights: HandleRights,
+    ) -> KernelResult<()> {
+        let address_space = self.handles.lookup(
+            objects,
+            address_space,
+            ObjectKind::AddressSpace,
+            HandleRights::MANAGE,
+        )?;
+        let memory = self
+            .handles
+            .lookup(objects, memory, ObjectKind::MemoryObject, rights)?;
+        objects.map_memory_object(
+            ObjectRef {
+                id: address_space.object.id,
+                generation: address_space.object.generation,
+            },
+            ObjectRef {
+                id: memory.object.id,
+                generation: memory.object.generation,
+            },
+            base,
+            size_bytes,
+            memory_offset,
+            rights,
+        )
+    }
+
+    pub fn unmap_address_range(
+        &mut self,
+        objects: &mut ObjectManager,
+        address_space: HandleValue,
+        base: u64,
+        size_bytes: u64,
+    ) -> KernelResult<()> {
+        let address_space = self.handles.lookup(
+            objects,
+            address_space,
+            ObjectKind::AddressSpace,
+            HandleRights::MANAGE,
+        )?;
+        objects.unmap_address_range(
+            ObjectRef {
+                id: address_space.object.id,
+                generation: address_space.object.generation,
+            },
+            base,
+            size_bytes,
+        )
     }
 
     pub fn create_channel_pair_handles(
