@@ -2,6 +2,8 @@
 
 > Proposal packet。本文用于交接给 implementation agent 执行。通过 review 和实施后，稳定结论应回写到 [00-ousia-kernel-architecture.md](../implementation/00-ousia-kernel-architecture.md)、相关 `core/**` owning 文档或代码 rustdoc；本文本身不作为长期规范源。
 
+> Implementation status：本文的 greenfield 方向已经开始落地。当前 `kernel/src` 实现树只保留 Ousia-native `error`、`handle`、`object`、`process` 和 `syscall` 主线；旧 CSpace/Untyped/invocation/Endpoint/Reply/TCB/Scheduler prototype 源码已移出实现树。后续以 owning implementation 文档和当前源码为准，不再把旧文件布局视为迁移约束。
+
 ## 用户目标
 
 用户明确指出严格 seL4 baseline 路线走偏：Ousia 需要高级、易用、可组合的内核设计，内核内部需要能自然承载 VM、VFS/Object Namespace、allocator、Object Store metadata 和 driver/resource handles。当前任务要求“提案激进一点，不要妥协，就给一个最激进的推倒重来都可以的方案”。
@@ -17,17 +19,17 @@
 
 ## 背景与约束
 
-当前 `kernel` 已经拆成 `cap`、`object`、`invocation`、`ipc`、`notification`、`reply`、`thread`、`scheduler` 和 `state` 等模块。它证明了若干重要语义：rights 只能收缩、slot/object generation 可以拒绝 stale descriptor、retype/cnode 操作能做 preflight 后 commit、Endpoint/Notification/Reply/TCB/Scheduler 有可测试状态机，失败路径能保护部分 owner state 不被提交。
+重构前的 `kernel` 曾经拆成 `cap`、`object`、`invocation`、`ipc`、`notification`、`reply`、`thread`、`scheduler` 和 `state` 等模块。它证明了若干重要语义：rights 只能收缩、slot/object generation 可以拒绝 stale descriptor、retype/cnode 操作能做 preflight 后 commit、Endpoint/Notification/Reply/TCB/Scheduler 有可测试状态机，失败路径能保护部分 owner state 不被提交。
 
-但当前结构仍以 seL4-style prototype 为中心：
+这些删除前的结构以 seL4-style prototype 为中心：
 
 - `kernel/src/cap/space.rs` 暴露 `CapabilitySpace`、`SlotId`、`CNodePath`、`UntypedCap`、`RetypeTarget`、MDB-like lineage 和 CNode window 语义。
 - `kernel/src/invocation/mod.rs` 的 `Invocation` 仍以 Endpoint/CNode/Untyped/TCB/Notification/Reply 操作为主要 syscall 形态。
 - `kernel/src/object/table.rs` 的 `ObjectTable` 是独立 runtime namespace，和 capability owner、process owner、VM owner 尚未统一。
 - `kernel/src/state/kernel.rs` 作为跨 owner 编排者，先从 `CapabilitySpace` 授权，再分散修改 `ObjectTable`、`ThreadTable`、`Scheduler`、Endpoint/Notification/Reply runtime state。
-- `kernel/tests/**` 仍大量围绕 CNode path、Untyped retype、seL4-like endpoint/reply semantics 写 host integration。
+- `kernel/tests/**` 曾大量围绕 CNode path、Untyped retype、seL4-like endpoint/reply semantics 写 host integration。
 
-这些形态不再是稳定约束，也不是必须迁移的中间层。它们属于 prototype evidence：可以帮助识别哪些不变量值得重新实现，但不能继续定义 Ousia public API、Phase 1 模块边界、测试结构或代码组织。
+这些形态不再是稳定约束，也不是必须迁移的中间层。它们属于历史 prototype evidence：可以帮助识别哪些不变量值得重新实现，但不能继续定义 Ousia public API、Phase 1 模块边界、测试结构或代码组织。当前实现树已经删除这些旧模块，接手实现时不要按旧路径寻找兼容入口。
 
 动态分配失败必须作为内核设计的一等错误边界处理，不能用“推倒重来”降低正确性要求。Zircon 在这一点上不是假设内核分配永远成功：对象创建和 VM 路径大量使用 `fbl::AllocChecker`、`ZX_ERR_NO_MEMORY` 和 `zx::error(ZX_ERR_NO_MEMORY)` 显式返回失败。Ousia 可以比 Zircon 更激进地重建结构，但不能比 Zircon 更随意地处理分配失败。
 

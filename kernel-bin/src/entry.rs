@@ -1,16 +1,18 @@
 use core::panic::PanicInfo;
 
-use kernel::cap::{Capability, CapabilitySpace, EndpointCap, ObjectId, Rights};
-use kernel::invocation::{EndpointSendOp, Invocation, InvocationOutcome, invoke};
-use kernel::state::KernelState;
-use kernel::thread::tcb::{CpuId, Tcb, ThreadId};
+extern crate alloc;
+
+use kernel::{
+    handle::{HandleRights, HandleValue},
+    object::ObjectKind,
+    syscall::{Kernel, Syscall, SyscallContext, SyscallOutcome},
+};
 use ostd::boot::{early_println, wait_forever};
 
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_main() -> ! {
     ostd::mm::heap::init_early_heap();
-    run_alloc_smoke();
-    run_multicore_kernel_state_smoke();
+    run_ousia_native_kernel_smoke();
     early_println(boot_message());
     trigger_exception_smoke_if_requested();
     wait_forever()
@@ -33,66 +35,101 @@ fn boot_message() -> &'static str {
     }
 }
 
-fn run_alloc_smoke() {
-    let mut cspace = CapabilitySpace::new();
-    let root = match cspace.insert_initial_capability(Capability::Endpoint(EndpointCap {
-        badge: 1,
-        rights: Rights::READ | Rights::WRITE | Rights::GRANT,
-    })) {
-        Ok(root) => root,
-        Err(_) => panic!("initial capability insertion failed during alloc smoke"),
-    };
-    let child = match cspace.derive(root, Rights::READ) {
-        Ok(child) => child,
-        Err(_) => panic!("capability derivation failed during alloc smoke"),
-    };
+fn run_ousia_native_kernel_smoke() {
+    let mut kernel = Kernel::new(16, 1).expect("kernel smoke state should initialize");
+    let process = kernel
+        .create_bootstrap_process(16, 16)
+        .expect("bootstrap process should initialize");
+    let context = SyscallContext::new(process);
 
-    if cspace.lookup(child).is_err() {
-        panic!("capability lookup failed during alloc smoke");
+    let event = handle(
+        kernel
+            .execute(
+                context,
+                Syscall::CreateObject {
+                    kind: ObjectKind::Event,
+                    rights: HandleRights::READ | HandleRights::WRITE,
+                },
+            )
+            .expect("event creation should succeed during kernel smoke"),
+    );
+    kernel
+        .lookup_handle(process, event, ObjectKind::Event, HandleRights::READ)
+        .expect("event handle should be readable during kernel smoke");
+
+    let SyscallOutcome::HandlePair { first, second } = kernel
+        .execute(
+            context,
+            Syscall::CreateChannelPair {
+                max_messages: 1,
+                rights: HandleRights::READ | HandleRights::WRITE | HandleRights::TRANSFER,
+            },
+        )
+        .expect("channel pair creation should succeed during kernel smoke")
+    else {
+        panic!("channel pair syscall returned wrong outcome during kernel smoke");
+    };
+    kernel
+        .execute(
+            context,
+            Syscall::ChannelSend {
+                channel: first,
+                bytes: alloc::vec![1, 2, 3],
+                handles: alloc::vec![],
+            },
+        )
+        .expect("channel send should succeed during kernel smoke");
+    let SyscallOutcome::Message { byte_len, .. } = kernel
+        .execute(context, Syscall::ChannelRecv { channel: second })
+        .expect("channel recv should succeed during kernel smoke")
+    else {
+        panic!("channel recv syscall returned wrong outcome during kernel smoke");
+    };
+    if byte_len != 3 {
+        panic!("channel recv byte length mismatch during kernel smoke");
     }
 
-    match invoke(
-        &cspace,
-        root,
-        Invocation::EndpointSend {
-            message_words: 1,
-            op: EndpointSendOp::Send,
-        },
-    ) {
-        Ok(InvocationOutcome::SendIpcAuthorized(authorized)) if authorized.badge == 1 => {}
-        Ok(_) | Err(_) => panic!("capability invocation failed during alloc smoke"),
-    }
+    let memory = handle(
+        kernel
+            .execute(
+                context,
+                Syscall::CreateMemoryObject {
+                    size_bytes: 0x2000,
+                    rights: HandleRights::READ,
+                },
+            )
+            .expect("memory object creation should succeed during kernel smoke"),
+    );
+    let address_space = handle(
+        kernel
+            .execute(
+                context,
+                Syscall::CreateAddressSpace {
+                    rights: HandleRights::MANAGE,
+                },
+            )
+            .expect("address space creation should succeed during kernel smoke"),
+    );
+    kernel
+        .execute(
+            context,
+            Syscall::MapMemoryObject {
+                address_space,
+                memory,
+                base: 0x1000,
+                size_bytes: 0x1000,
+                memory_offset: 0,
+                rights: HandleRights::READ,
+            },
+        )
+        .expect("address space mapping should succeed during kernel smoke");
 }
 
-fn run_multicore_kernel_state_smoke() {
-    let cpu0 = CpuId::new(0);
-    let cpu1 = CpuId::new(1);
-    let thread = ThreadId::new(1);
-    let tcb_object = ObjectId::new(1);
-
-    let mut state = match KernelState::new(&[cpu0, cpu1]) {
-        Ok(state) => state,
-        Err(_) => panic!("kernel state creation failed during multicore smoke"),
+fn handle(outcome: SyscallOutcome) -> HandleValue {
+    let SyscallOutcome::Handle { handle } = outcome else {
+        panic!("handle syscall returned wrong outcome during kernel smoke");
     };
-
-    if state.objects.insert_tcb(tcb_object).is_err() {
-        panic!("TCB object insertion failed during multicore smoke");
-    }
-    if state
-        .insert_thread_object(tcb_object, Tcb::new(thread, cpu1))
-        .is_err()
-    {
-        panic!("thread insertion failed during multicore smoke");
-    }
-    if state.objects.tcb_thread(tcb_object) != Ok(thread) {
-        panic!("TCB object binding failed during multicore smoke");
-    }
-    if state.threads.affinity(thread) != Some(cpu1) {
-        panic!("thread affinity mismatch during multicore smoke");
-    }
-    if state.scheduler.placement(thread).is_some() {
-        panic!("inactive thread was scheduled during multicore smoke");
-    }
+    handle
 }
 
 #[cfg(feature = "exception-smoke")]
