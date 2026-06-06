@@ -1,7 +1,9 @@
+use alloc::vec::Vec;
+
 use crate::{
     error::KernelResult,
     handle::{HandleRights, HandleValue, HandleView},
-    object::{ObjectKind, ObjectManager},
+    object::{MAX_CHANNEL_MESSAGE_BYTES, ObjectKind, ObjectManager},
     process::{ProcessId, ProcessTable},
 };
 
@@ -14,6 +16,18 @@ pub enum Syscall {
         size_bytes: u64,
         rights: HandleRights,
     },
+    CreateChannelPair {
+        max_messages: usize,
+        rights: HandleRights,
+    },
+    ChannelSend {
+        channel: HandleValue,
+        bytes: Vec<u8>,
+        handles: Vec<HandleValue>,
+    },
+    ChannelRecv {
+        channel: HandleValue,
+    },
     DuplicateHandle {
         source: HandleValue,
         rights: HandleRights,
@@ -21,12 +35,29 @@ pub enum Syscall {
     CloseHandle {
         handle: HandleValue,
     },
+    RevokeDescendants {
+        root: HandleValue,
+    },
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum SyscallOutcome {
-    Handle { handle: HandleValue },
+    Handle {
+        handle: HandleValue,
+    },
+    HandlePair {
+        first: HandleValue,
+        second: HandleValue,
+    },
+    Message {
+        bytes: [u8; MAX_CHANNEL_MESSAGE_BYTES],
+        byte_len: usize,
+        handles: Vec<HandleValue>,
+    },
     Closed,
+    Revoked {
+        count: usize,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -78,6 +109,30 @@ impl Kernel {
                     process.create_memory_object_handle(&mut self.objects, size_bytes, rights)?;
                 Ok(SyscallOutcome::Handle { handle })
             }
+            Syscall::CreateChannelPair {
+                max_messages,
+                rights,
+            } => {
+                let (first, second) =
+                    process.create_channel_pair_handles(&mut self.objects, max_messages, rights)?;
+                Ok(SyscallOutcome::HandlePair { first, second })
+            }
+            Syscall::ChannelSend {
+                channel,
+                bytes,
+                handles,
+            } => {
+                process.send_channel_message(&mut self.objects, channel, &bytes, &handles)?;
+                Ok(SyscallOutcome::Closed)
+            }
+            Syscall::ChannelRecv { channel } => {
+                let message = process.recv_channel_message(&mut self.objects, channel)?;
+                Ok(SyscallOutcome::Message {
+                    bytes: message.bytes,
+                    byte_len: message.byte_len,
+                    handles: message.handles,
+                })
+            }
             Syscall::DuplicateHandle { source, rights } => {
                 let handle = process
                     .handles
@@ -87,6 +142,12 @@ impl Kernel {
             Syscall::CloseHandle { handle } => {
                 process.handles.close(&mut self.objects, handle)?;
                 Ok(SyscallOutcome::Closed)
+            }
+            Syscall::RevokeDescendants { root } => {
+                let count = process
+                    .handles
+                    .revoke_descendants(&mut self.objects, root)?;
+                Ok(SyscallOutcome::Revoked { count })
             }
         }
     }

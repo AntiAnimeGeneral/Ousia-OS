@@ -339,3 +339,64 @@ fn close_dead_object_fails_without_mutating_handle_slot() {
         Err(KernelError::DeadObject)
     );
 }
+
+#[test]
+fn revoke_descendants_removes_derived_handles_but_keeps_root() {
+    // Goal: process-local revoke removes derived authority without deleting the root handle.
+    // Scope: host integration through duplicate lineage and RevokeDescendants.
+    // Semantics: descendants lose access, root authority and object handle count remain valid.
+    let mut kernel = Kernel::new(4, 1).unwrap();
+    let process = kernel.create_bootstrap_process(4, 4).unwrap();
+    let context = SyscallContext::new(process);
+    let root = handle(
+        kernel
+            .execute(
+                context,
+                Syscall::CreateObject {
+                    kind: ObjectKind::Event,
+                    rights: HandleRights::READ | HandleRights::WRITE | HandleRights::DUPLICATE,
+                },
+            )
+            .unwrap(),
+    );
+    let child = handle(
+        kernel
+            .execute(
+                context,
+                Syscall::DuplicateHandle {
+                    source: root,
+                    rights: HandleRights::READ | HandleRights::DUPLICATE,
+                },
+            )
+            .unwrap(),
+    );
+    let grandchild = handle(
+        kernel
+            .execute(
+                context,
+                Syscall::DuplicateHandle {
+                    source: child,
+                    rights: HandleRights::READ,
+                },
+            )
+            .unwrap(),
+    );
+
+    assert_eq!(
+        kernel.execute(context, Syscall::RevokeDescendants { root }),
+        Ok(SyscallOutcome::Revoked { count: 2 })
+    );
+
+    let root_view = kernel
+        .lookup_handle(process, root, ObjectKind::Event, HandleRights::READ)
+        .unwrap();
+    assert_eq!(root_view.object.handle_count, 1);
+    assert_eq!(
+        kernel.lookup_handle(process, child, ObjectKind::Event, HandleRights::READ),
+        Err(KernelError::InvalidHandle)
+    );
+    assert_eq!(
+        kernel.lookup_handle(process, grandchild, ObjectKind::Event, HandleRights::READ),
+        Err(KernelError::InvalidHandle)
+    );
+}

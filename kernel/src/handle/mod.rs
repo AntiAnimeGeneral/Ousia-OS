@@ -74,8 +74,16 @@ pub struct HandleTableEntry {
     pub object: ObjectId,
     pub object_generation: ObjectGeneration,
     pub entry_generation: HandleGeneration,
+    pub parent: Option<HandleLineage>,
     pub kind: ObjectKind,
     pub rights: HandleRights,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct HandleLineage {
+    pub handle: HandleValue,
+    pub object: ObjectId,
+    pub object_generation: ObjectGeneration,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -136,6 +144,7 @@ impl HandleTable {
             object: object.id,
             object_generation: object.generation,
             entry_generation: generation,
+            parent: None,
             kind: object.kind(),
             rights,
         });
@@ -162,6 +171,10 @@ impl HandleTable {
         })
     }
 
+    pub fn peek_kind(&self, handle: HandleValue) -> KernelResult<ObjectKind> {
+        Ok(self.valid_entry(handle)?.kind)
+    }
+
     pub fn duplicate(
         &mut self,
         objects: &mut ObjectManager,
@@ -180,18 +193,86 @@ impl HandleTable {
             source_entry.object_generation,
             source_entry.kind,
         )?;
-        self.install(objects, object, requested_rights)
+        let derived = self.install(objects, object, requested_rights)?;
+        let derived_index = self.index(derived)?;
+        let Some(entry) = self.slots[derived_index].entry.as_mut() else {
+            unreachable!("install returned a live handle slot");
+        };
+        entry.parent = Some(HandleLineage {
+            handle: source,
+            object: source_entry.object,
+            object_generation: source_entry.object_generation,
+        });
+        Ok(derived)
+    }
+
+    pub fn revoke_descendants(
+        &mut self,
+        objects: &mut ObjectManager,
+        root: HandleValue,
+    ) -> KernelResult<usize> {
+        let root_entry = self.valid_entry(root)?;
+        let mut descendants = Vec::new();
+        descendants
+            .try_reserve_exact(self.live_count())
+            .map_err(|_| KernelError::NoMemory)?;
+        for (index, slot) in self.slots.iter().enumerate() {
+            let Some(entry) = slot.entry else {
+                continue;
+            };
+            if entry.entry_generation == root.generation() && index as u64 == root.index() {
+                continue;
+            }
+            if self.descends_from(entry, root, root_entry) {
+                descendants.push(HandleValue::new(index as u64, entry.entry_generation));
+            }
+        }
+
+        let removed = descendants.len();
+        for handle in descendants {
+            self.close(objects, handle)?;
+        }
+        Ok(removed)
     }
 
     pub fn close(&mut self, objects: &mut ObjectManager, handle: HandleValue) -> KernelResult<()> {
-        let index = self.index(handle)?;
         let entry = self.valid_entry(handle)?;
         objects.remove_handle(entry.object, entry.object_generation)?;
+        self.remove_entry(handle)?;
+        Ok(())
+    }
+
+    pub fn remove_for_transfer(
+        &mut self,
+        objects: &ObjectManager,
+        handle: HandleValue,
+    ) -> KernelResult<HandleTableEntry> {
+        let entry = self.valid_entry(handle)?;
+        if !entry.rights.contains(HandleRights::TRANSFER) {
+            return Err(KernelError::MissingRights);
+        }
+        objects.validate(entry.object, entry.object_generation, entry.kind)?;
+        self.remove_entry(handle)
+    }
+
+    pub fn install_entry(&mut self, entry: HandleTableEntry) -> KernelResult<HandleValue> {
+        let index = self.free_index()?;
+        let generation = self.slots[index].generation;
+        self.slots[index].entry = Some(HandleTableEntry {
+            entry_generation: generation,
+            ..entry
+        });
+        Ok(HandleValue::new(index as u64, generation))
+    }
+
+    fn remove_entry(&mut self, handle: HandleValue) -> KernelResult<HandleTableEntry> {
+        let index = self.index(handle)?;
+        let entry = self.valid_entry(handle)?;
         let Some(_) = self.slots[index].entry.take() else {
             unreachable!("valid_entry established a live handle slot");
         };
         self.slots[index].generation = self.slots[index].generation.next();
-        Ok(())
+        Ok(entry)
     }
 
     fn free_index(&self) -> KernelResult<usize> {
@@ -211,6 +292,27 @@ impl HandleTable {
             return Err(KernelError::StaleHandle);
         }
         Ok(entry)
+    }
+
+    fn descends_from(
+        &self,
+        mut entry: HandleTableEntry,
+        root: HandleValue,
+        root_entry: HandleTableEntry,
+    ) -> bool {
+        while let Some(parent) = entry.parent {
+            if parent.handle == root
+                && parent.object == root_entry.object
+                && parent.object_generation == root_entry.object_generation
+            {
+                return true;
+            }
+            let Ok(parent_entry) = self.valid_entry(parent.handle) else {
+                return false;
+            };
+            entry = parent_entry;
+        }
+        false
     }
 
     fn slot(&self, handle: HandleValue) -> KernelResult<&HandleSlot> {

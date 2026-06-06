@@ -2,6 +2,10 @@ use alloc::vec::Vec;
 
 use crate::error::{KernelError, KernelResult};
 
+pub const MAX_CHANNEL_MESSAGES: usize = 4;
+pub const MAX_CHANNEL_MESSAGE_BYTES: usize = 64;
+pub const MAX_CHANNEL_MESSAGE_HANDLES: usize = 4;
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Ord, PartialOrd)]
 pub struct ObjectId(u64);
 
@@ -63,9 +67,71 @@ pub struct ProcessObject;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ChannelEndpointObject {
-    pub peer: Option<ObjectId>,
+    pub peer: Option<ObjectRef>,
     pub queued_messages: usize,
     pub max_messages: usize,
+    pub peer_closed: bool,
+    messages: [Option<ChannelMessage>; MAX_CHANNEL_MESSAGES],
+}
+
+impl ChannelEndpointObject {
+    fn new(max_messages: usize) -> KernelResult<Self> {
+        if max_messages > MAX_CHANNEL_MESSAGES {
+            return Err(KernelError::NoCapacity);
+        }
+        Ok(Self {
+            peer: None,
+            queued_messages: 0,
+            max_messages,
+            peer_closed: false,
+            messages: [None; MAX_CHANNEL_MESSAGES],
+        })
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ObjectRef {
+    pub id: ObjectId,
+    pub generation: ObjectGeneration,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ChannelMessage {
+    pub bytes: [u8; MAX_CHANNEL_MESSAGE_BYTES],
+    pub byte_len: usize,
+    pub handles: [Option<crate::handle::HandleTableEntry>; MAX_CHANNEL_MESSAGE_HANDLES],
+    pub handle_count: usize,
+}
+
+impl ChannelMessage {
+    pub fn new(bytes: &[u8], handles: &[crate::handle::HandleTableEntry]) -> KernelResult<Self> {
+        if bytes.len() > MAX_CHANNEL_MESSAGE_BYTES || handles.len() > MAX_CHANNEL_MESSAGE_HANDLES {
+            return Err(KernelError::NoCapacity);
+        }
+
+        let mut message = Self {
+            bytes: [0; MAX_CHANNEL_MESSAGE_BYTES],
+            byte_len: bytes.len(),
+            handles: [None; MAX_CHANNEL_MESSAGE_HANDLES],
+            handle_count: handles.len(),
+        };
+        message.bytes[..bytes.len()].copy_from_slice(bytes);
+        for (index, handle) in handles.iter().copied().enumerate() {
+            message.handles[index] = Some(handle);
+        }
+        Ok(message)
+    }
+
+    pub fn bytes(&self) -> &[u8] {
+        &self.bytes[..self.byte_len]
+    }
+
+    pub fn handle_entries(&self) -> impl Iterator<Item = crate::handle::HandleTableEntry> + '_ {
+        self.handles
+            .iter()
+            .take(self.handle_count)
+            .filter_map(|entry| *entry)
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -183,6 +249,8 @@ impl ObjectManager {
                 peer: None,
                 queued_messages: 0,
                 max_messages: 0,
+                peer_closed: false,
+                messages: [None; MAX_CHANNEL_MESSAGES],
             }),
             ObjectKind::Event => ObjectPayload::Event(EventObject {
                 state: EventState::Unsignaled,
@@ -202,11 +270,54 @@ impl ObjectManager {
     }
 
     pub fn create_channel_endpoint(&mut self, max_messages: usize) -> KernelResult<ObjectSnapshot> {
-        self.create_payload(ObjectPayload::ChannelEndpoint(ChannelEndpointObject {
-            peer: None,
-            queued_messages: 0,
+        self.create_payload(ObjectPayload::ChannelEndpoint(ChannelEndpointObject::new(
             max_messages,
-        }))
+        )?))
+    }
+
+    pub fn create_channel_pair(
+        &mut self,
+        max_messages: usize,
+    ) -> KernelResult<(ObjectSnapshot, ObjectSnapshot)> {
+        let first = self.create_channel_endpoint(max_messages)?;
+        let second = match self.create_channel_endpoint(max_messages) {
+            Ok(second) => second,
+            Err(error) => {
+                let _ = self.destroy(first.id, first.generation);
+                return Err(error);
+            }
+        };
+        if let Err(error) = self.link_channel_pair(first, second) {
+            let _ = self.destroy(first.id, first.generation);
+            let _ = self.destroy(second.id, second.generation);
+            return Err(error);
+        }
+        Ok((self.snapshot(first.id)?, self.snapshot(second.id)?))
+    }
+
+    fn link_channel_pair(
+        &mut self,
+        first: ObjectSnapshot,
+        second: ObjectSnapshot,
+    ) -> KernelResult<()> {
+        let first_payload = self.live_payload_mut(first.id, first.generation)?;
+        let ObjectPayload::ChannelEndpoint(first_endpoint) = first_payload else {
+            return Err(KernelError::WrongObjectType);
+        };
+        first_endpoint.peer = Some(ObjectRef {
+            id: second.id,
+            generation: second.generation,
+        });
+
+        let second_payload = self.live_payload_mut(second.id, second.generation)?;
+        let ObjectPayload::ChannelEndpoint(second_endpoint) = second_payload else {
+            return Err(KernelError::WrongObjectType);
+        };
+        second_endpoint.peer = Some(ObjectRef {
+            id: first.id,
+            generation: first.generation,
+        });
+        Ok(())
     }
 
     fn create_payload(&mut self, payload: ObjectPayload) -> KernelResult<ObjectSnapshot> {
@@ -288,6 +399,108 @@ impl ObjectManager {
         }
     }
 
+    pub fn channel_endpoint(
+        &self,
+        id: ObjectId,
+        generation: ObjectGeneration,
+    ) -> KernelResult<ChannelEndpointObject> {
+        match self.live_payload(id, generation)? {
+            ObjectPayload::ChannelEndpoint(endpoint) => Ok(endpoint),
+            _ => Err(KernelError::WrongObjectType),
+        }
+    }
+
+    pub fn channel_peer(
+        &self,
+        id: ObjectId,
+        generation: ObjectGeneration,
+    ) -> KernelResult<ObjectSnapshot> {
+        let endpoint = self.channel_endpoint(id, generation)?;
+        if endpoint.peer_closed {
+            return Err(KernelError::PeerClosed);
+        }
+        let peer = endpoint.peer.ok_or(KernelError::PeerClosed)?;
+        self.validate(peer.id, peer.generation, ObjectKind::ChannelEndpoint)
+    }
+
+    pub fn ensure_channel_can_enqueue(
+        &self,
+        id: ObjectId,
+        generation: ObjectGeneration,
+    ) -> KernelResult<()> {
+        let endpoint = self.channel_endpoint(id, generation)?;
+        if endpoint.peer_closed {
+            return Err(KernelError::PeerClosed);
+        }
+        if endpoint.queued_messages == endpoint.max_messages {
+            return Err(KernelError::NoCapacity);
+        }
+        Ok(())
+    }
+
+    pub fn enqueue_channel_message(
+        &mut self,
+        id: ObjectId,
+        generation: ObjectGeneration,
+        message: ChannelMessage,
+    ) -> KernelResult<()> {
+        let payload = self.live_payload_mut(id, generation)?;
+        let ObjectPayload::ChannelEndpoint(endpoint) = payload else {
+            return Err(KernelError::WrongObjectType);
+        };
+        if endpoint.peer_closed {
+            return Err(KernelError::PeerClosed);
+        }
+        if endpoint.queued_messages == endpoint.max_messages {
+            return Err(KernelError::NoCapacity);
+        }
+        let index = endpoint
+            .messages
+            .iter()
+            .position(Option::is_none)
+            .ok_or(KernelError::NoCapacity)?;
+        endpoint.messages[index] = Some(message);
+        endpoint.queued_messages += 1;
+        Ok(())
+    }
+
+    pub fn next_channel_message_handle_count(
+        &self,
+        id: ObjectId,
+        generation: ObjectGeneration,
+    ) -> KernelResult<usize> {
+        let endpoint = self.channel_endpoint(id, generation)?;
+        if let Some(message) = endpoint.messages.iter().flatten().next() {
+            Ok(message.handle_count)
+        } else if endpoint.peer_closed {
+            Err(KernelError::PeerClosed)
+        } else {
+            Err(KernelError::WouldBlock)
+        }
+    }
+
+    pub fn dequeue_channel_message(
+        &mut self,
+        id: ObjectId,
+        generation: ObjectGeneration,
+    ) -> KernelResult<ChannelMessage> {
+        let payload = self.live_payload_mut(id, generation)?;
+        let ObjectPayload::ChannelEndpoint(endpoint) = payload else {
+            return Err(KernelError::WrongObjectType);
+        };
+        let Some(index) = endpoint.messages.iter().position(Option::is_some) else {
+            return if endpoint.peer_closed {
+                Err(KernelError::PeerClosed)
+            } else {
+                Err(KernelError::WouldBlock)
+            };
+        };
+        endpoint.queued_messages -= 1;
+        Ok(endpoint.messages[index]
+            .take()
+            .expect("message slot was selected as occupied"))
+    }
+
     pub fn add_handle(&mut self, id: ObjectId, generation: ObjectGeneration) -> KernelResult<()> {
         let entry = self.entry_mut(id)?;
         if entry.state == ObjectState::Dead {
@@ -320,6 +533,23 @@ impl ObjectManager {
         };
         if entry.generation != generation {
             return Err(KernelError::StaleHandle);
+        }
+
+        if let ObjectPayload::ChannelEndpoint(endpoint) = entry.payload {
+            if endpoint.queued_messages > 0 {
+                return Err(KernelError::WouldBlock);
+            }
+            if let Some(peer) = endpoint.peer {
+                if let Ok(peer_entry) = self.entry_mut(peer.id) {
+                    if peer_entry.generation == peer.generation {
+                        if let ObjectPayload::ChannelEndpoint(peer_endpoint) =
+                            &mut peer_entry.payload
+                        {
+                            peer_endpoint.peer_closed = true;
+                        }
+                    }
+                }
+            }
         }
 
         self.entries[index] = None;

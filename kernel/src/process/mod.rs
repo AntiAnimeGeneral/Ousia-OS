@@ -3,7 +3,9 @@ use alloc::vec::Vec;
 use crate::{
     error::{KernelError, KernelResult},
     handle::{HandleRights, HandleTable, HandleValue},
-    object::{ObjectKind, ObjectManager, ObjectSnapshot},
+    object::{
+        ChannelMessage, MAX_CHANNEL_MESSAGE_BYTES, ObjectKind, ObjectManager, ObjectSnapshot,
+    },
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Ord, PartialOrd)]
@@ -106,6 +108,146 @@ impl Process {
         })
     }
 
+    pub fn create_channel_pair_handles(
+        &mut self,
+        objects: &mut ObjectManager,
+        max_messages: usize,
+        rights: HandleRights,
+    ) -> KernelResult<(HandleValue, HandleValue)> {
+        let mut first_reservation = self.budget.reserve_object()?;
+        let mut second_reservation = match self.budget.reserve_object() {
+            Ok(reservation) => reservation,
+            Err(error) => {
+                self.budget.release_object();
+                return Err(error);
+            }
+        };
+        if self.handles.capacity() - self.handles.live_count() < 2 {
+            self.budget.release_object();
+            self.budget.release_object();
+            return Err(KernelError::NoCapacity);
+        }
+
+        let (first, second) = match objects.create_channel_pair(max_messages) {
+            Ok(pair) => pair,
+            Err(error) => {
+                self.budget.release_object();
+                self.budget.release_object();
+                return Err(error);
+            }
+        };
+        let first_handle = match self.handles.install(objects, first, rights) {
+            Ok(handle) => handle,
+            Err(error) => {
+                let _ = objects.destroy(first.id, first.generation);
+                let _ = objects.destroy(second.id, second.generation);
+                self.budget.release_object();
+                self.budget.release_object();
+                return Err(error);
+            }
+        };
+        let second_handle = match self.handles.install(objects, second, rights) {
+            Ok(handle) => handle,
+            Err(error) => {
+                let _ = self.handles.close(objects, first_handle);
+                let _ = objects.destroy(first.id, first.generation);
+                let _ = objects.destroy(second.id, second.generation);
+                self.budget.release_object();
+                self.budget.release_object();
+                return Err(error);
+            }
+        };
+        first_reservation.commit();
+        second_reservation.commit();
+        Ok((first_handle, second_handle))
+    }
+
+    pub fn send_channel_message(
+        &mut self,
+        objects: &mut ObjectManager,
+        channel: HandleValue,
+        bytes: &[u8],
+        handles: &[HandleValue],
+    ) -> KernelResult<()> {
+        let channel_view = self.handles.lookup(
+            objects,
+            channel,
+            ObjectKind::ChannelEndpoint,
+            HandleRights::WRITE,
+        )?;
+        let peer = objects.channel_peer(channel_view.object.id, channel_view.object.generation)?;
+        objects.ensure_channel_can_enqueue(peer.id, peer.generation)?;
+
+        let mut entries = Vec::new();
+        entries
+            .try_reserve_exact(handles.len())
+            .map_err(|_| KernelError::NoMemory)?;
+        for (index, handle) in handles.iter().enumerate() {
+            if handles[..index].contains(handle) {
+                return Err(KernelError::InvalidArgument);
+            }
+            let kind = self.handles.peek_kind(*handle)?;
+            let entry = self
+                .handles
+                .lookup(objects, *handle, kind, HandleRights::TRANSFER)?;
+            entries.push(entry.entry);
+        }
+        let message = ChannelMessage::new(bytes, &entries)?;
+
+        let mut moved = Vec::new();
+        moved
+            .try_reserve_exact(handles.len())
+            .map_err(|_| KernelError::NoMemory)?;
+        for handle in handles {
+            moved.push(self.handles.remove_for_transfer(objects, *handle)?);
+        }
+        if let Err(error) = objects.enqueue_channel_message(peer.id, peer.generation, message) {
+            for entry in moved {
+                let _ = self.handles.install_entry(entry);
+            }
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    pub fn recv_channel_message(
+        &mut self,
+        objects: &mut ObjectManager,
+        channel: HandleValue,
+    ) -> KernelResult<ReceivedMessage> {
+        let channel_view = self.handles.lookup(
+            objects,
+            channel,
+            ObjectKind::ChannelEndpoint,
+            HandleRights::READ,
+        )?;
+        let handle_count = objects.next_channel_message_handle_count(
+            channel_view.object.id,
+            channel_view.object.generation,
+        )?;
+        if self.handles.capacity() - self.handles.live_count() < handle_count {
+            return Err(KernelError::NoCapacity);
+        }
+        let message = objects
+            .dequeue_channel_message(channel_view.object.id, channel_view.object.generation)?;
+        let mut handles = Vec::new();
+        handles
+            .try_reserve_exact(message.handle_count)
+            .map_err(|_| KernelError::NoMemory)?;
+        for entry in message.handle_entries() {
+            let handle = self
+                .handles
+                .install_entry(entry)
+                .expect("recv preflight reserved enough handle slots for transferred handles");
+            handles.push(handle);
+        }
+        Ok(ReceivedMessage {
+            bytes: message.bytes,
+            byte_len: message.byte_len,
+            handles,
+        })
+    }
+
     fn create_preflighted_object_handle(
         &mut self,
         objects: &mut ObjectManager,
@@ -135,6 +277,18 @@ impl Process {
         };
         reservation.commit();
         Ok(handle)
+    }
+}
+
+pub struct ReceivedMessage {
+    pub bytes: [u8; MAX_CHANNEL_MESSAGE_BYTES],
+    pub byte_len: usize,
+    pub handles: Vec<HandleValue>,
+}
+
+impl ReceivedMessage {
+    pub fn bytes(&self) -> &[u8] {
+        &self.bytes[..self.byte_len]
     }
 }
 
