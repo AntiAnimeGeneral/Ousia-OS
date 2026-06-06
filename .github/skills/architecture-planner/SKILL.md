@@ -69,7 +69,7 @@ argument-hint: "mode, target, scope, user goal, inputs, validation expectations,
 5. 涉及项目专用语义或外部 baseline 时，读取 reference 索引和对应正文，并在 plan 中列出正文、具体文件或符号。
 6. 至少比较两个方案：保守局部演进、边界修正、抽象提取、成熟库/现有模块复用、文档归属调整，或暂不改动。
 7. 输出符合本 skill 输出要求的 architecture plan / proposal packet。
-8. 给出 `设计提案 + diff` review focus 和 implementation handoff 条件。
+8. 给出 `设计提案 + diff` review focus；如需进入实施，按 workflow handoff packet 说明 implementation handoff 条件，不在本 skill 中另定义交接协议。
 
 ## Target 特化
 

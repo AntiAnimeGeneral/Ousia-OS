@@ -1,12 +1,12 @@
 ---
 name: doc-validation
-description: "Use when: validating documentation trees, Markdown links, numbered document conventions, Deno doc checker changes, workflow instructions, skills, or before final reporting after documentation edits. Runs documentation checks based on changed files."
+description: "Use when: running documentation validation selected by the project workflow: Markdown links, numbered document conventions, Deno doc checker changes, workflow instructions, skills, or final reporting after documentation edits."
 argument-hint: "changed files or validation goal"
 ---
 
 # Documentation Validation
 
-Use this skill to choose and run validation for Markdown documentation projects. The goal is to run checks that match the files actually changed, fix deterministic failures, and report the result clearly.
+Use this skill to run the documentation checks selected by the project workflow. The goal is to execute the relevant Deno checks, fix deterministic failures, and report the result clearly. Validation selection remains owned by [.github/instructions/ousia-workflow.instructions.md](../../instructions/ousia-workflow.instructions.md); this skill owns the checker commands and checker implementation boundaries.
 
 Run Deno tasks from the skill directory so the checker uses the bundled scripts with a project-owned documentation config:
 
@@ -23,26 +23,18 @@ deno task --cwd .github/skills/doc-validation check:docs --config ../../../desig
 ## Procedure
 
 1. Inspect the changed files with `git diff --name-only` and, when needed, `git diff --cached --name-only`.
-2. Classify the changes:
-   - `design/**/*.md`: design documentation.
-   - `design/check-docs.config.json`: documentation project validation config.
-   - `.github/skills/doc-validation/scripts/**/*.ts`: documentation checker implementation or tests.
-   - `.github/instructions/**/*.instructions.md` or `.github/skills/**/SKILL.md`: agent customization workflow files.
-   - `.github/skills/_shared/reference/**/*.md`: reference corpus entries.
-   - `kernel/**/*.rs`, `**/Cargo.toml`, or `Cargo.lock`: Rust code or Cargo metadata.
-3. Run only the checks relevant to those changed files.
+2. Use the completion-check matrix in [.github/instructions/ousia-workflow.instructions.md](../../instructions/ousia-workflow.instructions.md) to decide which documentation checks apply to those changed files.
+3. Run only the selected checks.
 4. If a deterministic check fails, fix the cause and rerun the affected check.
 5. In the final response, list the changed surfaces and every check that was run with its result.
 
-## Checks
+## Common Commands
 
-| Changed files                                                                      | Required checks                                                                                                                                                                                                                                                                                                                                                                 |
-| ---------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `design/**/*.md`                                                                   | `deno task --cwd .github/skills/doc-validation check:docs --config ../../../design/check-docs.config.json`                                                                                                                                                                                                                                                                      |
-| `.github/skills/doc-validation/scripts/**/*.ts` or `design/check-docs.config.json` | `deno task --cwd .github/skills/doc-validation fmt:docs-checker --check`, `deno task --cwd .github/skills/doc-validation check:types`, `deno task --cwd .github/skills/doc-validation lint:docs-checker`, `deno task --cwd .github/skills/doc-validation test:docs`, `deno task --cwd .github/skills/doc-validation check:docs --config ../../../design/check-docs.config.json` |
-| `.github/instructions/**/*.instructions.md`, `.github/skills/**/SKILL.md`          | Check YAML frontmatter, ensure `description` is meaningful, then run `deno task --cwd .github/skills/doc-validation check:docs --config ../../../design/check-docs.config.json` if design links or docs changed                                                                                                                                                                 |
-| `.github/skills/_shared/reference/**/*.md`                                         | `deno task --cwd .github/skills/doc-validation check:docs --config ../../../design/check-docs.config.json`, plus confirm the reference index routes to existing entries                                                                                                                                                                                                         |
-| Rust source or Cargo metadata                                                      | `cargo fmt --check`, `cargo check`, and targeted tests when behavior changed or tests exist                                                                                                                                                                                                                                                                                     |
+- `deno task --cwd .github/skills/doc-validation fmt:docs-checker --check`
+- `deno task --cwd .github/skills/doc-validation check:types`
+- `deno task --cwd .github/skills/doc-validation lint:docs-checker`
+- `deno task --cwd .github/skills/doc-validation test:docs`
+- `deno task --cwd .github/skills/doc-validation check:docs --config ../../../design/check-docs.config.json`
 
 ## Documentation Hygiene
 
