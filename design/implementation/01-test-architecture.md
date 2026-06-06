@@ -31,7 +31,9 @@ Host unit tests 验证单一 owner 内部语义，例如权限判断、状态 en
 
 ### Host Integration Tests
 
-Host integration tests 验证宿主 Rust test harness 下的跨 owner 协作，例如 `KernelState::execute_invocation`、CSpace/ObjectTable/ThreadTable/Scheduler 事务、失败无副作用和边界错误映射。
+Host integration tests 验证宿主 Rust test harness 下的跨 owner 协作。当前 Ousia-native 主线通过 `syscall::Kernel`、`ProcessTable`、`ObjectManager` 和 process-local `HandleTable` 触发行为，重点约束 handle/object/process/syscall boundary、失败无副作用和稳定错误类别。
+
+旧 `KernelState::execute_invocation`、CSpace/ObjectTable/ThreadTable/Scheduler executor tests 已退出主线测试约束；它们只作为 prototype evidence，不作为新测试 helper 或兼容契约。
 
 位置：`kernel/tests/**`。
 
