@@ -18,6 +18,7 @@ Ousia OS is a Rust microkernel prototype. AArch64 and amd64 are both first-class
 - `x86_64-unknown-none` target for amd64 checks
 - `llvm-tools-preview` component
 - QEMU for AArch64 (`qemu-system-aarch64`)
+- Jujutsu (`jj`) for local change management; Git remains the remote and PR interface
 
 Install the Rust pieces if needed:
 
@@ -25,6 +26,35 @@ Install the Rust pieces if needed:
 rustup target add aarch64-unknown-none
 rustup target add x86_64-unknown-none
 rustup component add llvm-tools-preview
+```
+
+## Version control
+
+This repository uses a colocated Jujutsu workspace on top of the existing Git repository. Git remains the compatibility boundary for GitHub, CI, release tags, and pull request review. Use `jj` for local AI-driven development, history editing, and stacked changes before exporting reviewed commits through Git.
+
+Initialize a fresh clone with:
+
+```bash
+jj git init --colocate
+jj bookmark track master --remote=origin
+```
+
+Recommended local flow:
+
+```bash
+jj status
+jj new
+jj describe
+jj split
+jj squash
+jj git push
+```
+
+For parallel AI tasks, prefer jj workspaces over Git worktrees so each task has an isolated working copy while sharing the same repository history:
+
+```bash
+jj workspace add ../Ousia-OS-task-name
+jj workspace list
 ```
 
 ## Build and run

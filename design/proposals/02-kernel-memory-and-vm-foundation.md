@@ -112,16 +112,16 @@ Asterinas 研究线补充了另一类参考：不是用户可见对象 API，而
 
 ### 模块边界
 
-| 模块 | 职责 | 不应拥有 |
-| ---- | ---- | -------- |
-| `ostd::mm::boot` 或现有 `frame` 子模块 | boot memory map normalization、reserved range subtraction、early frame allocation | runtime frame ownership、process quota、VM policy |
-| `kernel::memory::frame` | runtime frame metadata、free lists、frame allocation/free、pin/mapping count hooks | page-table policy、VFS page cache policy |
-| `kernel::memory::heap` | kernel heap/slab/fixed pool/zone owner、fallible allocation API | object lifecycle、syscall error mapping |
-| `kernel::memory::reservation` | reservation token、rollback, commit consumption, allocation context | subsystem-specific state transition |
-| `kernel::vm::memory_object` | MemoryObject size、backing kind、mapping policy、page/cache hook | handle rights table、path namespace policy |
-| `kernel::vm::address_space` | AddressSpace、VMAR/VMA range owner、mapping metadata、page-table boundary | process handle table、scheduler queue |
-| `kernel::vm::fault` | fault descriptor、future pager/provider handoff、cancel/error skeleton | filesystem provider implementation |
-| `kernel::resource` | process/capsule budget, quota accounting, resource limits | physical allocator internal free list |
+| 模块                                   | 职责                                                                               | 不应拥有                                          |
+| -------------------------------------- | ---------------------------------------------------------------------------------- | ------------------------------------------------- |
+| `ostd::mm::boot` 或现有 `frame` 子模块 | boot memory map normalization、reserved range subtraction、early frame allocation  | runtime frame ownership、process quota、VM policy |
+| `kernel::memory::frame`                | runtime frame metadata、free lists、frame allocation/free、pin/mapping count hooks | page-table policy、VFS page cache policy          |
+| `kernel::memory::heap`                 | kernel heap/slab/fixed pool/zone owner、fallible allocation API                    | object lifecycle、syscall error mapping           |
+| `kernel::memory::reservation`          | reservation token、rollback, commit consumption, allocation context                | subsystem-specific state transition               |
+| `kernel::vm::memory_object`            | MemoryObject size、backing kind、mapping policy、page/cache hook                   | handle rights table、path namespace policy        |
+| `kernel::vm::address_space`            | AddressSpace、VMAR/VMA range owner、mapping metadata、page-table boundary          | process handle table、scheduler queue             |
+| `kernel::vm::fault`                    | fault descriptor、future pager/provider handoff、cancel/error skeleton             | filesystem provider implementation                |
+| `kernel::resource`                     | process/capsule budget, quota accounting, resource limits                          | physical allocator internal free list             |
 
 ### 依赖方向
 
@@ -235,14 +235,14 @@ Failure ordering: validate cheap descriptor shape first, then handle/type/rights
 
 Required initial matrix rows:
 
-| Dynamic state | Owner | Error category | Reservation evidence |
-| ------------- | ----- | -------------- | -------------------- |
-| object entry | `ObjectManager` through memory reservation | `NO_MEMORY` / `NO_CAPACITY` / `QUOTA_EXCEEDED` | object creation failure leaves no object entry and no handle |
-| handle slot | `Process` / `HandleTable` through memory reservation | `NO_CAPACITY` / `QUOTA_EXCEEDED` | install/transfer failure leaves source and destination handle tables unchanged |
-| channel queue entry and message buffer | `ipc` / channel object through memory reservation | `NO_MEMORY` / `NO_CAPACITY` / `QUOTA_EXCEEDED` | send failure leaves sender handles, receiver queue and peer state unchanged |
-| VM mapping node | `vm::AddressSpace` through memory reservation | `NO_MEMORY` / `NO_CAPACITY` / `QUOTA_EXCEEDED` | map failure leaves VMA metadata and page-table placeholder unchanged |
-| frame allocation | `memory::frame` through frame reservation | `NO_MEMORY` / `QUOTA_EXCEEDED` | failed frame reservation leaves frame metadata unchanged |
-| page-table metadata | `vm::AddressSpace` + OSTD page-table boundary | `NO_MEMORY` / `NO_CAPACITY` | failed map leaves page-table placeholder and TLB state unchanged |
+| Dynamic state                          | Owner                                                | Error category                                 | Reservation evidence                                                           |
+| -------------------------------------- | ---------------------------------------------------- | ---------------------------------------------- | ------------------------------------------------------------------------------ |
+| object entry                           | `ObjectManager` through memory reservation           | `NO_MEMORY` / `NO_CAPACITY` / `QUOTA_EXCEEDED` | object creation failure leaves no object entry and no handle                   |
+| handle slot                            | `Process` / `HandleTable` through memory reservation | `NO_CAPACITY` / `QUOTA_EXCEEDED`               | install/transfer failure leaves source and destination handle tables unchanged |
+| channel queue entry and message buffer | `ipc` / channel object through memory reservation    | `NO_MEMORY` / `NO_CAPACITY` / `QUOTA_EXCEEDED` | send failure leaves sender handles, receiver queue and peer state unchanged    |
+| VM mapping node                        | `vm::AddressSpace` through memory reservation        | `NO_MEMORY` / `NO_CAPACITY` / `QUOTA_EXCEEDED` | map failure leaves VMA metadata and page-table placeholder unchanged           |
+| frame allocation                       | `memory::frame` through frame reservation            | `NO_MEMORY` / `QUOTA_EXCEEDED`                 | failed frame reservation leaves frame metadata unchanged                       |
+| page-table metadata                    | `vm::AddressSpace` + OSTD page-table boundary        | `NO_MEMORY` / `NO_CAPACITY`                    | failed map leaves page-table placeholder and TLB state unchanged               |
 
 ### Slice 3：Kernel heap/slab/fixed-pool boundary
 
@@ -324,10 +324,10 @@ Rollback is slice-based. If a memory slice fails review or tests, revert that sl
 - `kernel/src/object/mod.rs`, `kernel/src/syscall/mod.rs`, `kernel/tests/vm.rs`: current MemoryObject/AddressSpace metadata skeleton and host VM behavior tests.
 - Zircon evidence already captured in [01-ousia-native-kernel-refactor.md](./01-ousia-native-kernel-refactor.md): `AllocChecker` / `ZX_ERR_NO_MEMORY` create paths and VM page-list rollback.
 - Asterinas research line:
-	- CortenMM: transactional memory management with strong synchronization correctness guarantees; use as pressure for Ousia `VmCommitPlan`, demand paging and future CoW boundaries.
-	- Converos: practical model checking for Rust OS kernel concurrency; use as validation reference for small critical state machines.
-	- RusyFuzz: unhandled-exception guided fuzzing for Rust OS kernels; use as fuzzing reference for recoverable kernel boundaries that must not panic.
-	- MlsDisk: layered secure logging for trusted block storage in TEEs; record for future secure storage proposals, not this VM foundation scope.
+  - CortenMM: transactional memory management with strong synchronization correctness guarantees; use as pressure for Ousia `VmCommitPlan`, demand paging and future CoW boundaries.
+  - Converos: practical model checking for Rust OS kernel concurrency; use as validation reference for small critical state machines.
+  - RusyFuzz: unhandled-exception guided fuzzing for Rust OS kernels; use as fuzzing reference for recoverable kernel boundaries that must not panic.
+  - MlsDisk: layered secure logging for trusted block storage in TEEs; record for future secure storage proposals, not this VM foundation scope.
 
 ## Open Questions
 
