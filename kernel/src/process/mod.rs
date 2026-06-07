@@ -7,6 +7,7 @@ use crate::{
         ChannelMessage, MAX_CHANNEL_MESSAGE_BYTES, ObjectKind, ObjectManager, ObjectPayload,
         ObjectRef,
     },
+    vm::{MappingPolicy, MemoryObject},
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Ord, PartialOrd)]
@@ -111,7 +112,12 @@ impl Process {
         self.create_preflighted_object_handle(
             objects,
             rights,
-            ObjectPayload::MemoryObject(crate::object::MemoryObject { size_bytes }),
+            ObjectPayload::MemoryObject(MemoryObject::anonymous(
+                size_bytes,
+                MappingPolicy::new(
+                    HandleRights::READ | HandleRights::WRITE | HandleRights::EXECUTE,
+                ),
+            )),
         )
     }
 

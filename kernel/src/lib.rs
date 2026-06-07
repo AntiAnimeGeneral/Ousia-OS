@@ -8,3 +8,4 @@ pub mod memory;
 pub mod object;
 pub mod process;
 pub mod syscall;
+pub mod vm;

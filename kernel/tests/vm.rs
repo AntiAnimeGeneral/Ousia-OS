@@ -1,8 +1,9 @@
 use kernel::{
     error::KernelError,
     handle::{HandleRights, HandleValue},
-    object::{ObjectKind, ObjectPayload},
+    object::{ObjectKind, ObjectPayload, ObjectRef},
     syscall::{Kernel, Syscall, SyscallContext, SyscallOutcome},
+    vm::{AddressSpaceObject, MappingPolicy, MemoryBacking, MemoryObject, VmMapDescriptor},
 };
 
 fn handle(outcome: SyscallOutcome) -> HandleValue {
@@ -101,6 +102,118 @@ fn map_memory_object_records_address_space_mapping() {
     assert_eq!(mappings[0].memory.generation, memory_view.object.generation);
     assert_eq!(mappings[0].memory_offset, 0x1000);
     assert_eq!(mappings[0].rights, HandleRights::READ);
+}
+
+#[test]
+fn memory_object_records_anonymous_backing_policy() {
+    // Goal: MemoryObject owns backing identity and mapping policy, not physical frames.
+    // Scope: host integration through CreateMemoryObject and handle lookup.
+    // Semantics: an anonymous memory object records size, backing kind, and maximum mapping rights.
+    let mut kernel = Kernel::new(4, 1).unwrap();
+    let process = kernel.create_bootstrap_process(4, 4).unwrap();
+    let context = SyscallContext::new(process);
+    let memory = create_memory(&mut kernel, context, HandleRights::READ);
+
+    let memory_view = kernel
+        .lookup_handle(
+            process,
+            memory,
+            ObjectKind::MemoryObject,
+            HandleRights::READ,
+        )
+        .unwrap();
+    let ObjectPayload::MemoryObject(memory_payload) = memory_view.object.payload else {
+        panic!("expected memory object payload");
+    };
+
+    assert_eq!(memory_payload.size_bytes, 0x4000);
+    assert_eq!(memory_payload.backing, MemoryBacking::Anonymous);
+    assert!(
+        memory_payload
+            .mapping_policy
+            .max_rights
+            .contains(HandleRights::READ)
+    );
+    assert!(
+        memory_payload
+            .mapping_policy
+            .max_rights
+            .contains(HandleRights::WRITE)
+    );
+    assert!(
+        memory_payload
+            .mapping_policy
+            .max_rights
+            .contains(HandleRights::EXECUTE)
+    );
+}
+
+#[test]
+fn vm_prepare_map_does_not_publish_mapping_until_commit() {
+    // Goal: VM mapping follows a plan-before-publish transaction boundary.
+    // Scope: direct AddressSpaceObject prepare_map and commit_map calls.
+    // Semantics: prepare_map reserves a mapping slot without mutating AddressSpace metadata.
+    let mut address_space = AddressSpaceObject::new();
+    let memory = ObjectRef {
+        id: kernel::object::ObjectId::new(7),
+        generation: kernel::object::ObjectGeneration::INITIAL,
+    };
+    let memory_object = MemoryObject::anonymous(
+        0x4000,
+        MappingPolicy::new(HandleRights::READ | HandleRights::WRITE),
+    );
+
+    let plan = address_space
+        .prepare_map(
+            memory,
+            memory_object,
+            VmMapDescriptor {
+                base: 0x1000,
+                size_bytes: 0x1000,
+                memory_offset: 0,
+                rights: HandleRights::READ,
+            },
+        )
+        .unwrap();
+
+    assert_eq!(address_space.mapping_count, 0);
+    assert!(address_space.mappings().next().is_none());
+
+    assert_eq!(address_space.commit_map(plan), Ok(()));
+    assert_eq!(address_space.mapping_count, 1);
+    let mapping = address_space.mappings().next().unwrap();
+    assert_eq!(mapping.base, 0x1000);
+    assert_eq!(mapping.memory, memory);
+}
+
+#[test]
+fn vm_prepare_map_failure_leaves_address_space_unchanged() {
+    // Goal: VM validation failures happen before AddressSpace owner mutation.
+    // Scope: direct prepare_map with a MemoryObject range overflow.
+    // Semantics: InvalidArgument leaves the mapping set empty.
+    let address_space = AddressSpaceObject::new();
+    let memory = ObjectRef {
+        id: kernel::object::ObjectId::new(8),
+        generation: kernel::object::ObjectGeneration::INITIAL,
+    };
+    let memory_object = MemoryObject::anonymous(0x1000, MappingPolicy::new(HandleRights::READ));
+
+    assert_eq!(
+        address_space.prepare_map(
+            memory,
+            memory_object,
+            VmMapDescriptor {
+                base: 0,
+                size_bytes: 0x2000,
+                memory_offset: 0,
+                rights: HandleRights::READ,
+            },
+        ),
+        Err(KernelError::InvalidArgument)
+    );
+
+    assert_eq!(address_space.mapping_count, 0);
+    assert!(address_space.mappings().next().is_none());
 }
 
 #[test]

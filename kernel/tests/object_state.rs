@@ -3,6 +3,7 @@ use kernel::{
     handle::{HandleRights, HandleValue},
     object::{EventState, ObjectKind, ObjectPayload},
     syscall::{Kernel, Syscall, SyscallContext, SyscallOutcome},
+    vm::{MappingPolicy, MemoryObject},
 };
 
 fn handle(outcome: SyscallOutcome) -> HandleValue {
@@ -109,9 +110,9 @@ fn wrong_object_operation_does_not_mutate_payload() {
 
 #[test]
 fn memory_object_creation_records_size_in_payload() {
-    // Goal: MemoryObject skeleton carries meaningful owner state, not just a kind tag.
+    // Goal: VM MemoryObject carries meaningful owner state, not just a kind tag.
     // Scope: host integration through Syscall::CreateMemoryObject and handle lookup.
-    // Semantics: size metadata is owned by ObjectManager and visible through object snapshot.
+    // Semantics: size metadata is owned by the VM payload and visible through object snapshot.
     let mut kernel = Kernel::new(4, 1).unwrap();
     let process = kernel.create_bootstrap_process(4, 3).unwrap();
     let memory = handle(
@@ -138,7 +139,10 @@ fn memory_object_creation_records_size_in_payload() {
     assert_eq!(view.object.kind(), ObjectKind::MemoryObject);
     assert_eq!(
         view.object.payload,
-        ObjectPayload::MemoryObject(kernel::object::MemoryObject { size_bytes: 8192 })
+        ObjectPayload::MemoryObject(MemoryObject::anonymous(
+            8192,
+            MappingPolicy::new(HandleRights::READ | HandleRights::WRITE | HandleRights::EXECUTE),
+        ))
     );
     assert_eq!(
         kernel
