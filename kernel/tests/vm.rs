@@ -95,7 +95,7 @@ fn map_memory_object_records_address_space_mapping() {
     };
     let mappings = address_space_payload.mappings().collect::<Vec<_>>();
     assert_eq!(address_space_payload.mapping_count, 1);
-    assert_eq!(address_space_payload.pending_tlb_shootdowns.count(), 1);
+    assert_eq!(address_space_payload.pending_tlb_invalidations.count(), 1);
     assert_eq!(mappings.len(), 1);
     assert_eq!(mappings[0].base, 0x1000);
     assert_eq!(mappings[0].size_bytes, 0x2000);
@@ -178,11 +178,11 @@ fn vm_prepare_map_does_not_publish_mapping_until_commit() {
 
     assert_eq!(reservation.page_table().range.base, 0x1000);
     assert_eq!(reservation.page_table().range.size_bytes, 0x1000);
-    assert_eq!(reservation.tlb_shootdown().range.base, 0x1000);
+    assert_eq!(reservation.tlb_invalidation().range.base, 0x1000);
 
     reservation.commit();
     assert_eq!(address_space.mapping_count, 1);
-    assert_eq!(address_space.pending_tlb_shootdowns.count(), 1);
+    assert_eq!(address_space.pending_tlb_invalidations.count(), 1);
     let mapping = address_space.mappings().next().unwrap();
     assert_eq!(mapping.base, 0x1000);
     assert_eq!(mapping.memory, memory);
@@ -213,7 +213,7 @@ fn dropping_vm_map_reservation_leaves_address_space_unchanged() {
     drop(reservation);
 
     assert_eq!(address_space.mapping_count, 0);
-    assert_eq!(address_space.pending_tlb_shootdowns.count(), 0);
+    assert_eq!(address_space.pending_tlb_invalidations.count(), 0);
     assert!(address_space.mappings().next().is_none());
 }
 
@@ -240,11 +240,11 @@ fn dropping_vm_unmap_reservation_leaves_address_space_unchanged() {
         .commit();
 
     let reservation = address_space.prepare_unmap(0x2000, 0x1000).unwrap();
-    assert_eq!(reservation.tlb_shootdown().range.base, 0x2000);
+    assert_eq!(reservation.tlb_invalidation().range.base, 0x2000);
     drop(reservation);
 
     assert_eq!(address_space.mapping_count, 1);
-    assert_eq!(address_space.pending_tlb_shootdowns.count(), 1);
+    assert_eq!(address_space.pending_tlb_invalidations.count(), 1);
     let mapping = address_space.mappings().next().unwrap();
     assert_eq!(mapping.base, 0x2000);
 }
@@ -274,7 +274,7 @@ fn vm_prepare_map_failure_leaves_address_space_unchanged() {
     assert!(matches!(result, Err(KernelError::InvalidArgument)));
 
     assert_eq!(address_space.mapping_count, 0);
-    assert_eq!(address_space.pending_tlb_shootdowns.count(), 0);
+    assert_eq!(address_space.pending_tlb_invalidations.count(), 0);
     assert!(address_space.mappings().next().is_none());
 }
 
@@ -513,7 +513,7 @@ fn unmap_removes_exact_mapping_only() {
         panic!("expected address space payload");
     };
     assert_eq!(address_space_payload.mapping_count, 0);
-    assert_eq!(address_space_payload.pending_tlb_shootdowns.count(), 2);
+    assert_eq!(address_space_payload.pending_tlb_invalidations.count(), 2);
 }
 
 #[test]
@@ -615,7 +615,7 @@ fn pending_tlb_capacity_failure_leaves_address_space_unchanged() {
             .commit();
     }
     assert_eq!(address_space.mapping_count, 2);
-    assert_eq!(address_space.pending_tlb_shootdowns.count(), 8);
+    assert_eq!(address_space.pending_tlb_invalidations.count(), 8);
     assert_mapping_bases(&address_space, &[0, 0x1000]);
 
     let map_result = address_space.prepare_map(
@@ -630,13 +630,13 @@ fn pending_tlb_capacity_failure_leaves_address_space_unchanged() {
     );
     assert!(matches!(map_result, Err(KernelError::NoCapacity)));
     assert_eq!(address_space.mapping_count, 2);
-    assert_eq!(address_space.pending_tlb_shootdowns.count(), 8);
+    assert_eq!(address_space.pending_tlb_invalidations.count(), 8);
     assert_mapping_bases(&address_space, &[0, 0x1000]);
 
     let unmap_result = address_space.prepare_unmap(0, 0x1000);
     assert!(matches!(unmap_result, Err(KernelError::NoCapacity)));
     assert_eq!(address_space.mapping_count, 2);
-    assert_eq!(address_space.pending_tlb_shootdowns.count(), 8);
+    assert_eq!(address_space.pending_tlb_invalidations.count(), 8);
     assert_mapping_bases(&address_space, &[0, 0x1000]);
 }
 

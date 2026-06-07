@@ -29,7 +29,7 @@
 - early heap 是 smoke/bring-up 设施，不是 kernel object allocator。
 - kernel object/handle/process table 仍主要依赖 fixed capacity `Vec` 初始化和局部 preflight helper，没有统一 allocation context / reservation token。
 - `MemoryObject` 只有 size，尚未连接 physical frame metadata、page cache、pager-backed state 或 page table commit。
-- `AddressSpaceObject` 只有固定 mapping slots，尚未建立 VMA/VMAR owner、page-table owner、TLB shootdown 或 fault routing。
+- `AddressSpaceObject` 只有固定 mapping slots，尚未建立 VMA/VMAR owner、page-table owner、TLB invalidation boundary 或 fault routing。
 - 当前 VM tests 已覆盖 mapping overlap、bounds、rights 和 no partial metadata mutation，但还不能证明 page allocation、metadata allocation 或 page table mutation 失败无副作用。
 
 Zircon 参考说明这条 foundation 是必须的：Zircon 有 PMM、kernel heap、VM object/VMAR/address-space、page-list/page-table metadata，并在 object/VM create path 用 `AllocChecker`、`ZX_ERR_NO_MEMORY` 和局部回滚显式处理分配失败。Ousia 不能在更高级的 native API 下弱化这条纪律。
@@ -48,7 +48,7 @@ Asterinas 研究线补充了另一类参考：不是用户可见对象 API，而
 3. 明确 `NO_MEMORY`、`NO_CAPACITY`、`QUOTA_EXCEEDED` 的边界和测试入口。
 4. 建立最小 VM foundation：`MemoryObject`、`AddressSpace`、VMA/VMAR mapping metadata、page-table boundary、fault routing skeleton。
 5. 让 existing handle/object/process/syscall skeleton 消费 reservation，而不是直接使用临时 `Vec`/fixed table 作为最终资源模型。
-6. 从第一版就按 multi-core-only 设计 allocator locks、per-CPU cache placeholder、TLB shootdown boundary 和 page-table mutation serialization。
+6. 从第一版就按 multi-core-only 设计 allocator locks、per-CPU cache placeholder、TLB invalidation boundary 和 page-table mutation serialization。
 7. 让 VM 主路径具备 CortenMM 式事务形态：descriptor decode、rights/lifetime validation、resource reservation、commit plan construction 和 state publication 必须分阶段，且 commit 阶段不再发现可恢复分配失败。
 
 ## 非目标
@@ -165,7 +165,7 @@ VM operations must be expressed as transactions rather than scattered side effec
 
 1. Decode user/kernel descriptor and normalize ranges.
 2. Validate object type, rights, lifetime, mapping policy and alignment.
-3. Reserve every dynamic resource: VMA node, page-table metadata, frame/page materialization, TLB shootdown record and quota.
+3. Reserve every dynamic resource: VMA node, page-table metadata, frame/page materialization, TLB invalidation intent and quota.
 4. Build an exclusive VM reservation token such as `VmMapReservation` or `VmUnmapReservation` containing the publication intent.
 5. Consume the reservation in one publication path.
 6. Drop uncommitted reservations without mutating AddressSpace, MemoryObject, frame metadata or page-table placeholder.
@@ -191,12 +191,12 @@ Do not add future backing taxonomy before the backing owner exists. A single var
 - mapping rights
 - MemoryObject reference + generation snapshot
 - offset and size
-- page table commit plan placeholder
-- TLB shootdown placeholder
+- OSTD page-table update intent
+- OSTD TLB invalidation intent and pending-work storage
 
 VMA is the policy/source-of-truth for virtual ranges; page table is committed hardware state. They must not compete as two mapping truth sources.
 
-The current fixed mapping slots, page-table range marker and fixed pending TLB work storage are incomplete final-boundary scaffolding, not stable abstractions. They must stay marked with adjacent TODOs that name the missing final owner, the semantics callers cannot rely on and the tests required to exit the scaffold. Do not make them look more complete by adding single-variant operation enums, future-only fields or compatibility facades.
+The current fixed mapping slots, OSTD page-table update intent and fixed pending TLB invalidation storage are incomplete final-boundary scaffolding, not stable abstractions. They must stay marked with adjacent TODOs that name the missing final owner, the semantics callers cannot rely on and the tests required to exit the scaffold. Do not make them look more complete by adding single-variant operation enums, future-only fields or compatibility facades.
 
 ## Error Boundary
 
@@ -285,7 +285,7 @@ Required initial matrix rows:
 - Allocation failure injection tests where each reservation step can fail independently.
 - Mapping tests asserting AddressSpace mapping metadata, frame metadata and page-table placeholder remain unchanged after failure.
 - Transaction tests for VM reservations: validation, reservation failure or dropped uncommitted tokens must leave every owner unchanged; commit success must have one visible publication point.
-- Multi-core boundary tests can start as model assertions: page-table mutation records pending TLB shootdown rather than silently assuming single-core.
+- Multi-core boundary tests can start as model assertions: page-table mutation records pending TLB invalidation work rather than silently assuming single-core.
 - Converos-style model candidates: frame metadata lifecycle, reservation token lifecycle, channel call wait/wake, handle revoke lineage and VM fault commit. These should stay small enough for TLA+/PlusCal or Verus-style specifications before implementation grows concurrent shortcuts.
 - RusyFuzz-style fuzz targets: syscall descriptors, handle values, VM ranges, object ids, IPC message lengths and allocation failure injection should actively search for panic-prone paths such as unchecked indexing, failed `unwrap`/`expect`, arithmetic overflow and impossible-state assertions reachable from external input.
 - QEMU smoke only when boot/OSTD/platform path changes.

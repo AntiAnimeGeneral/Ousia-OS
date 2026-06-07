@@ -119,6 +119,7 @@ name = "kernel"
 version = "0.0.1"
 dependencies = [
  "bitflags",
+ "ostd",
  "rstest",
 ]
 

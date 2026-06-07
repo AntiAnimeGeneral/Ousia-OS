@@ -3,9 +3,10 @@ use crate::{
     handle::HandleRights,
     object::ObjectRef,
 };
+use ostd::mm::page_table::{PageTableUpdateIntent, TlbInvalidationIntent, VirtualRange};
 
 pub const MAX_ADDRESS_SPACE_MAPPINGS: usize = 8;
-pub const MAX_PENDING_TLB_SHOOTDOWNS: usize = 8;
+pub const MAX_PENDING_TLB_INVALIDATIONS: usize = 8;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct MappingPolicy {
@@ -50,7 +51,7 @@ impl MemoryObject {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct AddressSpaceObject {
     pub mapping_count: usize,
-    pub pending_tlb_shootdowns: PendingTlbShootdowns,
+    pub pending_tlb_invalidations: PendingTlbInvalidations,
     // TODO(vm-range-owner): replace this fixed metadata slot set with the final
     // AddressSpace range owner. The final shape must reserve mapping metadata and
     // page-table resources before publication; callers must not rely on slot order
@@ -63,7 +64,7 @@ impl AddressSpaceObject {
     pub const fn new() -> Self {
         Self {
             mapping_count: 0,
-            pending_tlb_shootdowns: PendingTlbShootdowns::empty(),
+            pending_tlb_invalidations: PendingTlbInvalidations::empty(),
             mappings: [None; MAX_ADDRESS_SPACE_MAPPINGS],
         }
     }
@@ -95,23 +96,15 @@ impl AddressSpaceObject {
             .iter()
             .position(Option::is_none)
             .ok_or(KernelError::NoCapacity)?;
-        let tlb_shootdown = TlbShootdownPlan {
-            range: VmRange {
-                base: descriptor.base,
-                size_bytes: descriptor.size_bytes,
-            },
-        };
-        let tlb_slot = self.pending_tlb_shootdowns.reserve(tlb_shootdown)?;
+        let range = VirtualRange::new(descriptor.base, descriptor.size_bytes);
+        let tlb_slot = self
+            .pending_tlb_invalidations
+            .reserve(TlbInvalidationIntent::new(range))?;
 
         Ok(VmMapReservation {
             address_space: self,
             mapping_slot: MappingSlotReservation { index },
-            page_table: PageTableCommitPlan {
-                range: VmRange {
-                    base: descriptor.base,
-                    size_bytes: descriptor.size_bytes,
-                },
-            },
+            page_table: PageTableUpdateIntent::new(range),
             tlb_slot,
             mapping: VmMapping {
                 base: descriptor.base,
@@ -139,10 +132,10 @@ impl AddressSpaceObject {
         }) else {
             return Err(KernelError::InvalidArgument);
         };
-        let tlb_shootdown = TlbShootdownPlan {
-            range: VmRange { base, size_bytes },
-        };
-        let tlb_slot = self.pending_tlb_shootdowns.reserve(tlb_shootdown)?;
+        let range = VirtualRange::new(base, size_bytes);
+        let tlb_slot = self
+            .pending_tlb_invalidations
+            .reserve(TlbInvalidationIntent::new(range))?;
 
         Ok(VmUnmapReservation {
             address_space: self,
@@ -204,17 +197,17 @@ impl VmMapDescriptor {
 pub struct VmMapReservation<'a> {
     address_space: &'a mut AddressSpaceObject,
     mapping_slot: MappingSlotReservation,
-    page_table: PageTableCommitPlan,
-    tlb_slot: PendingTlbShootdownReservation,
+    page_table: PageTableUpdateIntent,
+    tlb_slot: PendingTlbInvalidationReservation,
     mapping: VmMapping,
 }
 
 impl VmMapReservation<'_> {
-    pub const fn page_table(&self) -> &PageTableCommitPlan {
+    pub const fn page_table(&self) -> &PageTableUpdateIntent {
         &self.page_table
     }
 
-    pub const fn tlb_shootdown(&self) -> &TlbShootdownPlan {
+    pub const fn tlb_invalidation(&self) -> &TlbInvalidationIntent {
         &self.tlb_slot.plan
     }
 
@@ -227,7 +220,7 @@ impl VmMapReservation<'_> {
         self.address_space.mappings[index] = Some(self.mapping);
         self.address_space.mapping_count += 1;
         self.address_space
-            .pending_tlb_shootdowns
+            .pending_tlb_invalidations
             .commit(self.tlb_slot);
     }
 }
@@ -236,11 +229,11 @@ impl VmMapReservation<'_> {
 pub struct VmUnmapReservation<'a> {
     address_space: &'a mut AddressSpaceObject,
     mapping_slot: MappingSlotReservation,
-    tlb_slot: PendingTlbShootdownReservation,
+    tlb_slot: PendingTlbInvalidationReservation,
 }
 
 impl VmUnmapReservation<'_> {
-    pub const fn tlb_shootdown(&self) -> &TlbShootdownPlan {
+    pub const fn tlb_invalidation(&self) -> &TlbInvalidationIntent {
         &self.tlb_slot.plan
     }
 
@@ -253,53 +246,28 @@ impl VmUnmapReservation<'_> {
         self.address_space.mappings[index] = None;
         self.address_space.mapping_count -= 1;
         self.address_space
-            .pending_tlb_shootdowns
+            .pending_tlb_invalidations
             .commit(self.tlb_slot);
     }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct VmRange {
-    pub base: u64,
-    pub size_bytes: u64,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct PageTableCommitPlan {
-    // TODO(vm-page-table): this records only the range that must eventually be
-    // committed to page tables. It is not proof that hardware mappings, frame
-    // materialization, or page-table metadata reservations exist. Exit when the
-    // reservation token carries the real page-table owner evidence and tests prove
-    // failed page-table preparation leaves AddressSpace state unchanged.
-    pub range: VmRange,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct TlbShootdownPlan {
-    // TODO(vm-tlb-shootdown): this range is a multi-core boundary marker, not a
-    // real shootdown request. The final state needs target CPU/generation tracking
-    // and a consumer that proves flush completion. Exit when map/unmap tests cover
-    // pending work publication and flush consumption.
-    pub range: VmRange,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct PendingTlbShootdowns {
-    // TODO(vm-tlb-shootdown): count is diagnostic scaffolding for the missing
-    // shootdown queue. Do not use it as correctness evidence for TLB completion.
+pub struct PendingTlbInvalidations {
+    // TODO(vm-tlb): count is diagnostic scaffolding for the missing invalidation
+    // queue. Do not use it as correctness evidence for TLB completion.
     // work is fixed pending-work storage, but still lacks target CPU/generation,
-    // consumer, completion, and reclaim semantics; MAX_PENDING_TLB_SHOOTDOWNS is
+    // consumer, completion, and reclaim semantics; MAX_PENDING_TLB_INVALIDATIONS is
     // not a product limit. Replace with the final pending-work owner when map/unmap
     // and flush-consumer tests prove publication, consumption, and completion.
     count: usize,
-    work: [Option<TlbShootdownPlan>; MAX_PENDING_TLB_SHOOTDOWNS],
+    work: [Option<TlbInvalidationIntent>; MAX_PENDING_TLB_INVALIDATIONS],
 }
 
-impl PendingTlbShootdowns {
+impl PendingTlbInvalidations {
     pub const fn empty() -> Self {
         Self {
             count: 0,
-            work: [None; MAX_PENDING_TLB_SHOOTDOWNS],
+            work: [None; MAX_PENDING_TLB_INVALIDATIONS],
         }
     }
 
@@ -307,20 +275,23 @@ impl PendingTlbShootdowns {
         self.count
     }
 
-    fn reserve(&self, plan: TlbShootdownPlan) -> KernelResult<PendingTlbShootdownReservation> {
+    fn reserve(
+        &self,
+        plan: TlbInvalidationIntent,
+    ) -> KernelResult<PendingTlbInvalidationReservation> {
         let index = self
             .work
             .iter()
             .position(Option::is_none)
             .ok_or(KernelError::NoCapacity)?;
-        Ok(PendingTlbShootdownReservation { index, plan })
+        Ok(PendingTlbInvalidationReservation { index, plan })
     }
 
-    fn commit(&mut self, reservation: PendingTlbShootdownReservation) {
+    fn commit(&mut self, reservation: PendingTlbInvalidationReservation) {
         assert!(
-            reservation.index < MAX_PENDING_TLB_SHOOTDOWNS
+            reservation.index < MAX_PENDING_TLB_INVALIDATIONS
                 && self.work[reservation.index].is_none(),
-            "tlb shootdown reservation slot must remain free until commit"
+            "tlb invalidation reservation slot must remain free until commit"
         );
         self.work[reservation.index] = Some(reservation.plan);
         self.count += 1;
@@ -328,9 +299,9 @@ impl PendingTlbShootdowns {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct PendingTlbShootdownReservation {
+struct PendingTlbInvalidationReservation {
     index: usize,
-    plan: TlbShootdownPlan,
+    plan: TlbInvalidationIntent,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

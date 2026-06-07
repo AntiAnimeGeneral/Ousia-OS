@@ -6,6 +6,7 @@ edition.workspace = true
 
 [dependencies]
 bitflags.workspace = true
+ostd.workspace = true
 
 [dev-dependencies]
 rstest.workspace = true
