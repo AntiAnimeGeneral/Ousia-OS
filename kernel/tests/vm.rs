@@ -185,12 +185,42 @@ fn vm_prepare_map_does_not_publish_mapping_until_commit() {
     assert_eq!(plan.page_table().range.size_bytes, 0x1000);
     assert_eq!(plan.tlb_shootdown().range.base, 0x1000);
 
-    assert_eq!(address_space.commit_map(plan), Ok(()));
+    address_space.commit_map(plan);
     assert_eq!(address_space.mapping_count, 1);
     assert_eq!(address_space.pending_tlb_shootdowns.count(), 1);
     let mapping = address_space.mappings().next().unwrap();
     assert_eq!(mapping.base, 0x1000);
     assert_eq!(mapping.memory, memory);
+}
+
+#[test]
+#[should_panic(expected = "vm commit plan slot must remain reserved until commit")]
+fn vm_stale_commit_plan_is_internal_invariant_violation() {
+    // Goal: commit_map is not a recoverable syscall validation boundary.
+    // Scope: direct AddressSpaceObject misuse after two prepared plans target one slot.
+    // Semantics: a stale plan indicates broken internal sequencing, not an external NoCapacity.
+    let mut address_space = AddressSpaceObject::new();
+    let memory = ObjectRef {
+        id: kernel::object::ObjectId::new(9),
+        generation: kernel::object::ObjectGeneration::INITIAL,
+    };
+    let memory_object = MemoryObject::anonymous(0x4000, MappingPolicy::new(HandleRights::READ));
+    let descriptor = VmMapDescriptor {
+        base: 0x1000,
+        size_bytes: 0x1000,
+        memory_offset: 0,
+        rights: HandleRights::READ,
+    };
+
+    let stale_plan = address_space
+        .prepare_map(memory, memory_object, descriptor)
+        .unwrap();
+    let committed_plan = address_space
+        .prepare_map(memory, memory_object, descriptor)
+        .unwrap();
+
+    address_space.commit_map(committed_plan);
+    address_space.commit_map(stale_plan);
 }
 
 #[test]

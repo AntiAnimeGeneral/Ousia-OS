@@ -122,15 +122,15 @@ impl AddressSpaceObject {
         })
     }
 
-    pub fn commit_map(&mut self, plan: VmCommitPlan) -> KernelResult<()> {
+    pub fn commit_map(&mut self, plan: VmCommitPlan) {
         let index = plan.mapping_slot.index;
-        if index >= MAX_ADDRESS_SPACE_MAPPINGS || self.mappings[index].is_some() {
-            return Err(KernelError::NoCapacity);
-        }
+        assert!(
+            index < MAX_ADDRESS_SPACE_MAPPINGS && self.mappings[index].is_none(),
+            "vm commit plan slot must remain reserved until commit"
+        );
         self.mappings[index] = Some(plan.mapping);
         self.mapping_count += 1;
         self.pending_tlb_shootdowns.record(plan.tlb_shootdown);
-        Ok(())
     }
 
     pub fn unmap_exact(&mut self, base: u64, size_bytes: u64) -> KernelResult<()> {

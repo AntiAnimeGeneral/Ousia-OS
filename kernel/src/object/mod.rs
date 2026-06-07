@@ -467,7 +467,8 @@ impl ObjectManager {
             return Err(KernelError::WrongObjectType);
         };
         let plan = address_space.prepare_map(memory, memory_object, descriptor)?;
-        address_space.commit_map(plan)
+        address_space.commit_map(plan);
+        Ok(())
     }
 
     pub fn unmap_address_range(
