@@ -5,6 +5,7 @@ use crate::{
 };
 
 pub const MAX_ADDRESS_SPACE_MAPPINGS: usize = 8;
+pub const MAX_PENDING_TLB_SHOOTDOWNS: usize = 8;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct MappingPolicy {
@@ -94,6 +95,13 @@ impl AddressSpaceObject {
             .iter()
             .position(Option::is_none)
             .ok_or(KernelError::NoCapacity)?;
+        let tlb_shootdown = TlbShootdownPlan {
+            range: VmRange {
+                base: descriptor.base,
+                size_bytes: descriptor.size_bytes,
+            },
+        };
+        let tlb_slot = self.pending_tlb_shootdowns.reserve(tlb_shootdown)?;
 
         Ok(VmMapReservation {
             address_space: self,
@@ -104,12 +112,7 @@ impl AddressSpaceObject {
                     size_bytes: descriptor.size_bytes,
                 },
             },
-            tlb_shootdown: TlbShootdownPlan {
-                range: VmRange {
-                    base: descriptor.base,
-                    size_bytes: descriptor.size_bytes,
-                },
-            },
+            tlb_slot,
             mapping: VmMapping {
                 base: descriptor.base,
                 size_bytes: descriptor.size_bytes,
@@ -120,7 +123,11 @@ impl AddressSpaceObject {
         })
     }
 
-    pub fn unmap_exact(&mut self, base: u64, size_bytes: u64) -> KernelResult<()> {
+    pub fn prepare_unmap(
+        &mut self,
+        base: u64,
+        size_bytes: u64,
+    ) -> KernelResult<VmUnmapReservation<'_>> {
         if size_bytes == 0 {
             return Err(KernelError::InvalidArgument);
         }
@@ -132,12 +139,16 @@ impl AddressSpaceObject {
         }) else {
             return Err(KernelError::InvalidArgument);
         };
-        self.mappings[index] = None;
-        self.mapping_count -= 1;
-        self.pending_tlb_shootdowns.record(TlbShootdownPlan {
+        let tlb_shootdown = TlbShootdownPlan {
             range: VmRange { base, size_bytes },
-        });
-        Ok(())
+        };
+        let tlb_slot = self.pending_tlb_shootdowns.reserve(tlb_shootdown)?;
+
+        Ok(VmUnmapReservation {
+            address_space: self,
+            mapping_slot: MappingSlotReservation { index },
+            tlb_slot,
+        })
     }
 }
 
@@ -194,7 +205,7 @@ pub struct VmMapReservation<'a> {
     address_space: &'a mut AddressSpaceObject,
     mapping_slot: MappingSlotReservation,
     page_table: PageTableCommitPlan,
-    tlb_shootdown: TlbShootdownPlan,
+    tlb_slot: PendingTlbShootdownReservation,
     mapping: VmMapping,
 }
 
@@ -204,7 +215,7 @@ impl VmMapReservation<'_> {
     }
 
     pub const fn tlb_shootdown(&self) -> &TlbShootdownPlan {
-        &self.tlb_shootdown
+        &self.tlb_slot.plan
     }
 
     pub fn commit(self) {
@@ -217,7 +228,33 @@ impl VmMapReservation<'_> {
         self.address_space.mapping_count += 1;
         self.address_space
             .pending_tlb_shootdowns
-            .record(self.tlb_shootdown);
+            .commit(self.tlb_slot);
+    }
+}
+
+#[derive(Debug)]
+pub struct VmUnmapReservation<'a> {
+    address_space: &'a mut AddressSpaceObject,
+    mapping_slot: MappingSlotReservation,
+    tlb_slot: PendingTlbShootdownReservation,
+}
+
+impl VmUnmapReservation<'_> {
+    pub const fn tlb_shootdown(&self) -> &TlbShootdownPlan {
+        &self.tlb_slot.plan
+    }
+
+    pub fn commit(self) {
+        let index = self.mapping_slot.index;
+        assert!(
+            index < MAX_ADDRESS_SPACE_MAPPINGS && self.address_space.mappings[index].is_some(),
+            "vm unmap reservation slot must remain mapped until commit"
+        );
+        self.address_space.mappings[index] = None;
+        self.address_space.mapping_count -= 1;
+        self.address_space
+            .pending_tlb_shootdowns
+            .commit(self.tlb_slot);
     }
 }
 
@@ -250,23 +287,50 @@ pub struct TlbShootdownPlan {
 pub struct PendingTlbShootdowns {
     // TODO(vm-tlb-shootdown): count is diagnostic scaffolding for the missing
     // shootdown queue. Do not use it as correctness evidence for TLB completion.
-    // Replace with the final pending-work owner when map/unmap and flush-consumer
-    // tests prove pending work publication, consumption, and completion semantics.
+    // work is fixed pending-work storage, but still lacks target CPU/generation,
+    // consumer, completion, and reclaim semantics; MAX_PENDING_TLB_SHOOTDOWNS is
+    // not a product limit. Replace with the final pending-work owner when map/unmap
+    // and flush-consumer tests prove publication, consumption, and completion.
     count: usize,
+    work: [Option<TlbShootdownPlan>; MAX_PENDING_TLB_SHOOTDOWNS],
 }
 
 impl PendingTlbShootdowns {
     pub const fn empty() -> Self {
-        Self { count: 0 }
+        Self {
+            count: 0,
+            work: [None; MAX_PENDING_TLB_SHOOTDOWNS],
+        }
     }
 
     pub const fn count(self) -> usize {
         self.count
     }
 
-    fn record(&mut self, _plan: TlbShootdownPlan) {
+    fn reserve(&self, plan: TlbShootdownPlan) -> KernelResult<PendingTlbShootdownReservation> {
+        let index = self
+            .work
+            .iter()
+            .position(Option::is_none)
+            .ok_or(KernelError::NoCapacity)?;
+        Ok(PendingTlbShootdownReservation { index, plan })
+    }
+
+    fn commit(&mut self, reservation: PendingTlbShootdownReservation) {
+        assert!(
+            reservation.index < MAX_PENDING_TLB_SHOOTDOWNS
+                && self.work[reservation.index].is_none(),
+            "tlb shootdown reservation slot must remain free until commit"
+        );
+        self.work[reservation.index] = Some(reservation.plan);
         self.count += 1;
     }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct PendingTlbShootdownReservation {
+    index: usize,
+    plan: TlbShootdownPlan,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

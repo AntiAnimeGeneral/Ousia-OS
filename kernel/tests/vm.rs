@@ -218,6 +218,38 @@ fn dropping_vm_map_reservation_leaves_address_space_unchanged() {
 }
 
 #[test]
+fn dropping_vm_unmap_reservation_leaves_address_space_unchanged() {
+    // Goal: abandoning a prepared VM unmap has no owner-state side effect.
+    // Scope: direct AddressSpaceObject map commit, prepare_unmap, then drop reservation.
+    // Semantics: an uncommitted unmap reservation preserves mapping metadata and TLB work.
+    let mut address_space = AddressSpaceObject::new();
+    let memory = ObjectRef {
+        id: kernel::object::ObjectId::new(10),
+        generation: kernel::object::ObjectGeneration::INITIAL,
+    };
+    let memory_object = MemoryObject::new(0x4000, MappingPolicy::new(HandleRights::READ));
+    let descriptor = VmMapDescriptor {
+        base: 0x2000,
+        size_bytes: 0x1000,
+        memory_offset: 0,
+        rights: HandleRights::READ,
+    };
+    address_space
+        .prepare_map(memory, memory_object, descriptor)
+        .unwrap()
+        .commit();
+
+    let reservation = address_space.prepare_unmap(0x2000, 0x1000).unwrap();
+    assert_eq!(reservation.tlb_shootdown().range.base, 0x2000);
+    drop(reservation);
+
+    assert_eq!(address_space.mapping_count, 1);
+    assert_eq!(address_space.pending_tlb_shootdowns.count(), 1);
+    let mapping = address_space.mappings().next().unwrap();
+    assert_eq!(mapping.base, 0x2000);
+}
+
+#[test]
 fn vm_prepare_map_failure_leaves_address_space_unchanged() {
     // Goal: VM validation failures happen before AddressSpace owner mutation.
     // Scope: direct prepare_map with a MemoryObject range overflow.
@@ -536,6 +568,84 @@ fn mapping_table_capacity_failure_leaves_existing_mappings() {
         Err(KernelError::NoCapacity)
     );
     assert_eq!(mapping_count(&kernel, process, address_space), 8);
+}
+
+#[test]
+fn pending_tlb_capacity_failure_leaves_address_space_unchanged() {
+    // Goal: TLB pending-work capacity is reserved before mapping metadata changes.
+    // Scope: direct AddressSpaceObject map/unmap reservations with fixed pending TLB storage full.
+    // Semantics: NoCapacity leaves mapping metadata unchanged for both map and unmap prepare.
+    let mut address_space = AddressSpaceObject::new();
+    let memory = ObjectRef {
+        id: kernel::object::ObjectId::new(11),
+        generation: kernel::object::ObjectGeneration::INITIAL,
+    };
+    let memory_object = MemoryObject::new(0x9000, MappingPolicy::new(HandleRights::READ));
+
+    for _ in 0..3 {
+        address_space
+            .prepare_map(
+                memory,
+                memory_object,
+                VmMapDescriptor {
+                    base: 0,
+                    size_bytes: 0x1000,
+                    memory_offset: 0,
+                    rights: HandleRights::READ,
+                },
+            )
+            .unwrap()
+            .commit();
+        address_space.prepare_unmap(0, 0x1000).unwrap().commit();
+    }
+
+    for index in 0..2 {
+        address_space
+            .prepare_map(
+                memory,
+                memory_object,
+                VmMapDescriptor {
+                    base: index * 0x1000,
+                    size_bytes: 0x1000,
+                    memory_offset: index * 0x1000,
+                    rights: HandleRights::READ,
+                },
+            )
+            .unwrap()
+            .commit();
+    }
+    assert_eq!(address_space.mapping_count, 2);
+    assert_eq!(address_space.pending_tlb_shootdowns.count(), 8);
+    assert_mapping_bases(&address_space, &[0, 0x1000]);
+
+    let map_result = address_space.prepare_map(
+        memory,
+        memory_object,
+        VmMapDescriptor {
+            base: 0x2000,
+            size_bytes: 0x1000,
+            memory_offset: 0,
+            rights: HandleRights::READ,
+        },
+    );
+    assert!(matches!(map_result, Err(KernelError::NoCapacity)));
+    assert_eq!(address_space.mapping_count, 2);
+    assert_eq!(address_space.pending_tlb_shootdowns.count(), 8);
+    assert_mapping_bases(&address_space, &[0, 0x1000]);
+
+    let unmap_result = address_space.prepare_unmap(0, 0x1000);
+    assert!(matches!(unmap_result, Err(KernelError::NoCapacity)));
+    assert_eq!(address_space.mapping_count, 2);
+    assert_eq!(address_space.pending_tlb_shootdowns.count(), 8);
+    assert_mapping_bases(&address_space, &[0, 0x1000]);
+}
+
+fn assert_mapping_bases(address_space: &AddressSpaceObject, expected: &[u64]) {
+    let mappings = address_space.mappings().collect::<Vec<_>>();
+    assert_eq!(mappings.len(), expected.len());
+    for base in expected {
+        assert!(mappings.iter().any(|mapping| mapping.base == *base));
+    }
 }
 
 fn mapping_count(

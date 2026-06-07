@@ -166,7 +166,7 @@ VM operations must be expressed as transactions rather than scattered side effec
 1. Decode user/kernel descriptor and normalize ranges.
 2. Validate object type, rights, lifetime, mapping policy and alignment.
 3. Reserve every dynamic resource: VMA node, page-table metadata, frame/page materialization, TLB shootdown record and quota.
-4. Build an exclusive `VmMapReservation` token containing all map publication intent.
+4. Build an exclusive VM reservation token such as `VmMapReservation` or `VmUnmapReservation` containing the publication intent.
 5. Consume the reservation in one publication path.
 6. Drop uncommitted reservations without mutating AddressSpace, MemoryObject, frame metadata or page-table placeholder.
 
@@ -196,7 +196,7 @@ Do not add future backing taxonomy before the backing owner exists. A single var
 
 VMA is the policy/source-of-truth for virtual ranges; page table is committed hardware state. They must not compete as two mapping truth sources.
 
-The current fixed mapping slots, page-table range marker and TLB shootdown counter are incomplete final-boundary scaffolding, not stable abstractions. They must stay marked with adjacent TODOs that name the missing final owner, the semantics callers cannot rely on and the tests required to exit the scaffold. Do not make them look more complete by adding single-variant operation enums, future-only fields or compatibility facades.
+The current fixed mapping slots, page-table range marker and fixed pending TLB work storage are incomplete final-boundary scaffolding, not stable abstractions. They must stay marked with adjacent TODOs that name the missing final owner, the semantics callers cannot rely on and the tests required to exit the scaffold. Do not make them look more complete by adding single-variant operation enums, future-only fields or compatibility facades.
 
 ## Error Boundary
 

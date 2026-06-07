@@ -481,7 +481,9 @@ impl ObjectManager {
         let ObjectPayload::AddressSpace(address_space) = payload else {
             return Err(KernelError::WrongObjectType);
         };
-        address_space.unmap_exact(base, size_bytes)
+        let reservation = address_space.prepare_unmap(base, size_bytes)?;
+        reservation.commit();
+        Ok(())
     }
 
     pub fn channel_endpoint(
