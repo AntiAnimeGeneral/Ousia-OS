@@ -259,7 +259,7 @@ impl ObjectManager {
             ObjectKind::Event => ObjectPayload::Event(EventObject {
                 state: EventState::Unsignaled,
             }),
-            ObjectKind::MemoryObject => ObjectPayload::MemoryObject(MemoryObject::anonymous(
+            ObjectKind::MemoryObject => ObjectPayload::MemoryObject(MemoryObject::new(
                 0,
                 MappingPolicy::new(
                     HandleRights::READ | HandleRights::WRITE | HandleRights::EXECUTE,
@@ -273,7 +273,7 @@ impl ObjectManager {
     }
 
     pub fn create_memory_object(&mut self, size_bytes: u64) -> KernelResult<ObjectSnapshot> {
-        self.create_payload(ObjectPayload::MemoryObject(MemoryObject::anonymous(
+        self.create_payload(ObjectPayload::MemoryObject(MemoryObject::new(
             size_bytes,
             MappingPolicy::new(HandleRights::READ | HandleRights::WRITE | HandleRights::EXECUTE),
         )))

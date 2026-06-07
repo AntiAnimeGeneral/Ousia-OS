@@ -112,7 +112,7 @@ impl Process {
         self.create_preflighted_object_handle(
             objects,
             rights,
-            ObjectPayload::MemoryObject(MemoryObject::anonymous(
+            ObjectPayload::MemoryObject(MemoryObject::new(
                 size_bytes,
                 MappingPolicy::new(
                     HandleRights::READ | HandleRights::WRITE | HandleRights::EXECUTE,

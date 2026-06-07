@@ -139,7 +139,7 @@ fn memory_object_creation_records_size_in_payload() {
     assert_eq!(view.object.kind(), ObjectKind::MemoryObject);
     assert_eq!(
         view.object.payload,
-        ObjectPayload::MemoryObject(MemoryObject::anonymous(
+        ObjectPayload::MemoryObject(MemoryObject::new(
             8192,
             MappingPolicy::new(HandleRights::READ | HandleRights::WRITE | HandleRights::EXECUTE),
         ))

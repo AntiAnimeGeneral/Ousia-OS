@@ -73,7 +73,7 @@ Asterinas 研究线补充了另一类参考：不是用户可见对象 API，而
 
 - runtime PMM、frame metadata、kernel heap/slab/fixed pool、reservation token 和 VM range owner 都应新建为长期模块。
 - `AddressSpaceObject` 的 fixed mapping slots 应重建为可 reservation 的 mapping metadata owner；第一版可以 fixed-capacity，但 API 必须表达 future VMA/VMAR owner。
-- `MemoryObject` 应从 size-only object 重建为 memory owner：size、rights-compatible mapping policy、backing kind、page/cache metadata hook、future pager state。
+- `MemoryObject` 应从 size-only object 重建为 memory owner：当前只保留 size 和 rights-compatible mapping policy；backing taxonomy、page/cache metadata hook 和 pager state 只在对应 owner boundary 落地时引入。
 
 ### 应停止模仿
 
@@ -118,7 +118,7 @@ Asterinas 研究线补充了另一类参考：不是用户可见对象 API，而
 | `kernel::memory::frame`                | runtime frame metadata、free lists、frame allocation/free、pin/mapping count hooks | page-table policy、VFS page cache policy          |
 | `kernel::memory::heap`                 | kernel heap/slab/fixed pool/zone owner、fallible allocation API                    | object lifecycle、syscall error mapping           |
 | `kernel::memory::reservation`          | reservation token、rollback, commit consumption, allocation context                | subsystem-specific state transition               |
-| `kernel::vm::memory_object`            | MemoryObject size、backing kind、mapping policy、page/cache hook                   | handle rights table、path namespace policy        |
+| `kernel::vm::memory_object`            | MemoryObject size、mapping policy；future backing/page-cache boundary             | handle rights table、path namespace policy        |
 | `kernel::vm::address_space`            | AddressSpace、VMAR/VMA range owner、mapping metadata、page-table boundary          | process handle table、scheduler queue             |
 | `kernel::vm::fault`                    | fault descriptor、future pager/provider handoff、cancel/error skeleton             | filesystem provider implementation                |
 | `kernel::resource`                     | process/capsule budget, quota accounting, resource limits                          | physical allocator internal free list             |
@@ -177,11 +177,9 @@ This interface is the local Ousia lesson from CortenMM: correctness comes from m
 `MemoryObject` is the kernel-visible memory object, not a frame list exposed to userspace:
 
 - size
-- backing kind: anonymous now; pager-backed later
 - rights-compatible mapping policy
-- page/cache metadata hook
-- optional zero-fill / CoW placeholder
-- future pager fault endpoint
+- future backing/page-cache metadata only when a real pager or page-cache owner exists
+- future zero-fill, CoW and pager fault endpoint only when their state owner exists
 
 ### AddressSpace and Mapping
 
@@ -254,7 +252,7 @@ Required initial matrix rows:
 ### Slice 4：Minimal VM/MemoryObject foundation
 
 - Move current size-only `MemoryObject` and fixed `AddressSpaceObject` mapping set into `kernel::vm` owner modules.
-- Define MemoryObject backing kind and mapping policy.
+- Define MemoryObject size and mapping policy; do not add a backing taxonomy before a real backing owner exists.
 - Define AddressSpace range owner and page-table boundary placeholder.
 - Make `MapMemoryObject` reserve mapping metadata/page-table resources before commit.
 - Introduce an exclusive VM reservation token even if it only covers metadata in the first slice; do not let syscall code mutate AddressSpace, MemoryObject and page-table placeholder directly.

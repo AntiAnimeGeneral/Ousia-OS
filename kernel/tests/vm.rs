@@ -3,7 +3,7 @@ use kernel::{
     handle::{HandleRights, HandleValue},
     object::{ObjectKind, ObjectPayload, ObjectRef},
     syscall::{Kernel, Syscall, SyscallContext, SyscallOutcome},
-    vm::{AddressSpaceObject, MappingPolicy, MemoryBacking, MemoryObject, VmMapDescriptor},
+    vm::{AddressSpaceObject, MappingPolicy, MemoryObject, VmMapDescriptor},
 };
 
 fn handle(outcome: SyscallOutcome) -> HandleValue {
@@ -106,10 +106,10 @@ fn map_memory_object_records_address_space_mapping() {
 }
 
 #[test]
-fn memory_object_records_anonymous_backing_policy() {
-    // Goal: MemoryObject owns backing identity and mapping policy, not physical frames.
+fn memory_object_records_size_and_mapping_policy() {
+    // Goal: MemoryObject owns size and mapping policy, not physical frames.
     // Scope: host integration through CreateMemoryObject and handle lookup.
-    // Semantics: an anonymous memory object records size, backing kind, and maximum mapping rights.
+    // Semantics: a memory object records size and maximum mapping rights.
     let mut kernel = Kernel::new(4, 1).unwrap();
     let process = kernel.create_bootstrap_process(4, 4).unwrap();
     let context = SyscallContext::new(process);
@@ -128,7 +128,6 @@ fn memory_object_records_anonymous_backing_policy() {
     };
 
     assert_eq!(memory_payload.size_bytes, 0x4000);
-    assert_eq!(memory_payload.backing, MemoryBacking::Anonymous);
     assert!(
         memory_payload
             .mapping_policy
@@ -159,7 +158,7 @@ fn vm_prepare_map_does_not_publish_mapping_until_commit() {
         id: kernel::object::ObjectId::new(7),
         generation: kernel::object::ObjectGeneration::INITIAL,
     };
-    let memory_object = MemoryObject::anonymous(
+    let memory_object = MemoryObject::new(
         0x4000,
         MappingPolicy::new(HandleRights::READ | HandleRights::WRITE),
     );
@@ -199,7 +198,7 @@ fn dropping_vm_map_reservation_leaves_address_space_unchanged() {
         id: kernel::object::ObjectId::new(9),
         generation: kernel::object::ObjectGeneration::INITIAL,
     };
-    let memory_object = MemoryObject::anonymous(0x4000, MappingPolicy::new(HandleRights::READ));
+    let memory_object = MemoryObject::new(0x4000, MappingPolicy::new(HandleRights::READ));
     let descriptor = VmMapDescriptor {
         base: 0x1000,
         size_bytes: 0x1000,
@@ -210,10 +209,7 @@ fn dropping_vm_map_reservation_leaves_address_space_unchanged() {
     let reservation = address_space
         .prepare_map(memory, memory_object, descriptor)
         .unwrap();
-    assert_eq!(
-        reservation.page_table().operation,
-        kernel::vm::PageTableOperation::Map
-    );
+    assert_eq!(reservation.page_table().range.base, 0x1000);
     drop(reservation);
 
     assert_eq!(address_space.mapping_count, 0);
@@ -231,7 +227,7 @@ fn vm_prepare_map_failure_leaves_address_space_unchanged() {
         id: kernel::object::ObjectId::new(8),
         generation: kernel::object::ObjectGeneration::INITIAL,
     };
-    let memory_object = MemoryObject::anonymous(0x1000, MappingPolicy::new(HandleRights::READ));
+    let memory_object = MemoryObject::new(0x1000, MappingPolicy::new(HandleRights::READ));
 
     let result = address_space.prepare_map(
         memory,

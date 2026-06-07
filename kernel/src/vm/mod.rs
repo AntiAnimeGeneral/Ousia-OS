@@ -7,11 +7,6 @@ use crate::{
 pub const MAX_ADDRESS_SPACE_MAPPINGS: usize = 8;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum MemoryBacking {
-    Anonymous,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct MappingPolicy {
     pub max_rights: HandleRights,
 }
@@ -25,15 +20,13 @@ impl MappingPolicy {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct MemoryObject {
     pub size_bytes: u64,
-    pub backing: MemoryBacking,
     pub mapping_policy: MappingPolicy,
 }
 
 impl MemoryObject {
-    pub const fn anonymous(size_bytes: u64, mapping_policy: MappingPolicy) -> Self {
+    pub const fn new(size_bytes: u64, mapping_policy: MappingPolicy) -> Self {
         Self {
             size_bytes,
-            backing: MemoryBacking::Anonymous,
             mapping_policy,
         }
     }
@@ -105,7 +98,6 @@ impl AddressSpaceObject {
                     base: descriptor.base,
                     size_bytes: descriptor.size_bytes,
                 },
-                operation: PageTableOperation::Map,
             },
             tlb_shootdown: TlbShootdownPlan {
                 range: VmRange {
@@ -231,14 +223,8 @@ pub struct VmRange {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum PageTableOperation {
-    Map,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PageTableCommitPlan {
     pub range: VmRange,
-    pub operation: PageTableOperation,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
