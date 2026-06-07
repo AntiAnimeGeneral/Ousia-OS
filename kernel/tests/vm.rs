@@ -95,6 +95,7 @@ fn map_memory_object_records_address_space_mapping() {
     };
     let mappings = address_space_payload.mappings().collect::<Vec<_>>();
     assert_eq!(address_space_payload.mapping_count, 1);
+    assert_eq!(address_space_payload.pending_tlb_shootdowns.count(), 1);
     assert_eq!(mappings.len(), 1);
     assert_eq!(mappings[0].base, 0x1000);
     assert_eq!(mappings[0].size_bytes, 0x2000);
@@ -177,10 +178,16 @@ fn vm_prepare_map_does_not_publish_mapping_until_commit() {
         .unwrap();
 
     assert_eq!(address_space.mapping_count, 0);
+    assert_eq!(address_space.pending_tlb_shootdowns.count(), 0);
     assert!(address_space.mappings().next().is_none());
+
+    assert_eq!(plan.page_table().range.base, 0x1000);
+    assert_eq!(plan.page_table().range.size_bytes, 0x1000);
+    assert_eq!(plan.tlb_shootdown().range.base, 0x1000);
 
     assert_eq!(address_space.commit_map(plan), Ok(()));
     assert_eq!(address_space.mapping_count, 1);
+    assert_eq!(address_space.pending_tlb_shootdowns.count(), 1);
     let mapping = address_space.mappings().next().unwrap();
     assert_eq!(mapping.base, 0x1000);
     assert_eq!(mapping.memory, memory);
@@ -213,6 +220,7 @@ fn vm_prepare_map_failure_leaves_address_space_unchanged() {
     );
 
     assert_eq!(address_space.mapping_count, 0);
+    assert_eq!(address_space.pending_tlb_shootdowns.count(), 0);
     assert!(address_space.mappings().next().is_none());
 }
 
@@ -438,7 +446,20 @@ fn unmap_removes_exact_mapping_only() {
         ),
         Ok(SyscallOutcome::Closed)
     );
-    assert_eq!(mapping_count(&kernel, process, address_space), 0);
+    let address_space_view = kernel
+        .lookup_handle(
+            process,
+            address_space,
+            ObjectKind::AddressSpace,
+            HandleRights::MANAGE,
+        )
+        .unwrap();
+    let ObjectPayload::AddressSpace(address_space_payload) = address_space_view.object.payload
+    else {
+        panic!("expected address space payload");
+    };
+    assert_eq!(address_space_payload.mapping_count, 0);
+    assert_eq!(address_space_payload.pending_tlb_shootdowns.count(), 2);
 }
 
 #[test]

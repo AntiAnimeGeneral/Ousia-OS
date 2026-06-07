@@ -56,6 +56,7 @@ impl MemoryObject {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct AddressSpaceObject {
     pub mapping_count: usize,
+    pub pending_tlb_shootdowns: PendingTlbShootdowns,
     mappings: [Option<VmMapping>; MAX_ADDRESS_SPACE_MAPPINGS],
 }
 
@@ -63,6 +64,7 @@ impl AddressSpaceObject {
     pub const fn new() -> Self {
         Self {
             mapping_count: 0,
+            pending_tlb_shootdowns: PendingTlbShootdowns::empty(),
             mappings: [None; MAX_ADDRESS_SPACE_MAPPINGS],
         }
     }
@@ -97,6 +99,19 @@ impl AddressSpaceObject {
 
         Ok(VmCommitPlan {
             mapping_slot: MappingSlotReservation { index },
+            page_table: PageTableCommitPlan {
+                range: VmRange {
+                    base: descriptor.base,
+                    size_bytes: descriptor.size_bytes,
+                },
+                operation: PageTableOperation::Map,
+            },
+            tlb_shootdown: TlbShootdownPlan {
+                range: VmRange {
+                    base: descriptor.base,
+                    size_bytes: descriptor.size_bytes,
+                },
+            },
             mapping: VmMapping {
                 base: descriptor.base,
                 size_bytes: descriptor.size_bytes,
@@ -114,6 +129,7 @@ impl AddressSpaceObject {
         }
         self.mappings[index] = Some(plan.mapping);
         self.mapping_count += 1;
+        self.pending_tlb_shootdowns.record(plan.tlb_shootdown);
         Ok(())
     }
 
@@ -131,6 +147,9 @@ impl AddressSpaceObject {
         };
         self.mappings[index] = None;
         self.mapping_count -= 1;
+        self.pending_tlb_shootdowns.record(TlbShootdownPlan {
+            range: VmRange { base, size_bytes },
+        });
         Ok(())
     }
 }
@@ -186,7 +205,60 @@ impl VmMapDescriptor {
 #[derive(Debug, Eq, PartialEq)]
 pub struct VmCommitPlan {
     mapping_slot: MappingSlotReservation,
+    page_table: PageTableCommitPlan,
+    tlb_shootdown: TlbShootdownPlan,
     mapping: VmMapping,
+}
+
+impl VmCommitPlan {
+    pub const fn page_table(&self) -> &PageTableCommitPlan {
+        &self.page_table
+    }
+
+    pub const fn tlb_shootdown(&self) -> &TlbShootdownPlan {
+        &self.tlb_shootdown
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct VmRange {
+    pub base: u64,
+    pub size_bytes: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PageTableOperation {
+    Map,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PageTableCommitPlan {
+    pub range: VmRange,
+    pub operation: PageTableOperation,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct TlbShootdownPlan {
+    pub range: VmRange,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PendingTlbShootdowns {
+    count: usize,
+}
+
+impl PendingTlbShootdowns {
+    pub const fn empty() -> Self {
+        Self { count: 0 }
+    }
+
+    pub const fn count(self) -> usize {
+        self.count
+    }
+
+    fn record(&mut self, _plan: TlbShootdownPlan) {
+        self.count += 1;
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
