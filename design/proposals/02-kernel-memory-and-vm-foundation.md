@@ -166,8 +166,8 @@ VM operations must be expressed as transactions rather than scattered side effec
 1. Decode user/kernel descriptor and normalize ranges.
 2. Validate object type, rights, lifetime, mapping policy and alignment.
 3. Reserve every dynamic resource: VMA node, page-table metadata, frame/page materialization, TLB shootdown record and quota.
-4. Build a `VmCommitPlan` containing all owner mutations.
-5. Commit the plan in one publication path.
+4. Build an exclusive `VmMapReservation` token containing all map publication intent.
+5. Consume the reservation in one publication path.
 6. Drop uncommitted reservations without mutating AddressSpace, MemoryObject, frame metadata or page-table placeholder.
 
 This interface is the local Ousia lesson from CortenMM: correctness comes from making the synchronization boundary explicit, not from hoping each subsystem's local lock order remains compatible.
@@ -257,7 +257,7 @@ Required initial matrix rows:
 - Define MemoryObject backing kind and mapping policy.
 - Define AddressSpace range owner and page-table boundary placeholder.
 - Make `MapMemoryObject` reserve mapping metadata/page-table resources before commit.
-- Introduce `VmCommitPlan` even if it only covers metadata in the first slice; do not let syscall code mutate AddressSpace, MemoryObject and page-table placeholder directly.
+- Introduce an exclusive VM reservation token even if it only covers metadata in the first slice; do not let syscall code mutate AddressSpace, MemoryObject and page-table placeholder directly.
 - Expand existing `kernel/tests/vm.rs` to cover allocation/reservation failure no partial state.
 
 ### Slice 5：Page fault and pager skeleton
@@ -282,7 +282,7 @@ Required initial matrix rows:
 - Host integration tests through syscall boundary for object creation, handle install, channel transfer and VM mapping failure.
 - Allocation failure injection tests where each reservation step can fail independently.
 - Mapping tests asserting AddressSpace mapping metadata, frame metadata and page-table placeholder remain unchanged after failure.
-- Transaction tests for `VmCommitPlan`: validation or reservation failure must leave every owner unchanged; commit success must have one visible publication point.
+- Transaction tests for VM reservations: validation, reservation failure or dropped uncommitted tokens must leave every owner unchanged; commit success must have one visible publication point.
 - Multi-core boundary tests can start as model assertions: page-table mutation records pending TLB shootdown rather than silently assuming single-core.
 - Converos-style model candidates: frame metadata lifecycle, reservation token lifecycle, channel call wait/wake, handle revoke lineage and VM fault commit. These should stay small enough for TLA+/PlusCal or Verus-style specifications before implementation grows concurrent shortcuts.
 - RusyFuzz-style fuzz targets: syscall descriptors, handle values, VM ranges, object ids, IPC message lengths and allocation failure injection should actively search for panic-prone paths such as unchecked indexing, failed `unwrap`/`expect`, arithmetic overflow and impossible-state assertions reachable from external input.
@@ -324,7 +324,7 @@ Rollback is slice-based. If a memory slice fails review or tests, revert that sl
 - `kernel/src/object/mod.rs`, `kernel/src/syscall/mod.rs`, `kernel/tests/vm.rs`: current MemoryObject/AddressSpace metadata skeleton and host VM behavior tests.
 - Zircon evidence already captured in [01-ousia-native-kernel-refactor.md](./01-ousia-native-kernel-refactor.md): `AllocChecker` / `ZX_ERR_NO_MEMORY` create paths and VM page-list rollback.
 - Asterinas research line:
-  - CortenMM: transactional memory management with strong synchronization correctness guarantees; use as pressure for Ousia `VmCommitPlan`, demand paging and future CoW boundaries.
+  - CortenMM: transactional memory management with strong synchronization correctness guarantees; use as pressure for Ousia VM reservation tokens, demand paging and future CoW boundaries.
   - Converos: practical model checking for Rust OS kernel concurrency; use as validation reference for small critical state machines.
   - RusyFuzz: unhandled-exception guided fuzzing for Rust OS kernels; use as fuzzing reference for recoverable kernel boundaries that must not panic.
   - MlsDisk: layered secure logging for trusted block storage in TEEs; record for future secure storage proposals, not this VM foundation scope.
@@ -344,7 +344,7 @@ Rollback is slice-based. If a memory slice fails review or tests, revert that sl
 - Without scheduler/thread fault handling, page fault skeleton cannot prove wake/cancel semantics.
 - A too-generic allocator abstraction could hide hot-path costs; review must require capacity source and allocation complexity evidence.
 - A too-local allocator implementation could force later VFS/driver/IPC rewrites; review must require shared reservation API before subsystem-specific growth.
-- Copying CortenMM terms without the transaction boundary would create false confidence. Review must ask where the commit plan is built, which owner publishes state, and which tests prove failed plans leave no partial state.
+- Copying CortenMM terms without the transaction boundary would create false confidence. Review must ask where the reservation token is built, which owner publishes state, and which tests prove failed or dropped reservations leave no partial state.
 
 ## Review Focus
 

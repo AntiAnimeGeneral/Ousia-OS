@@ -466,8 +466,8 @@ impl ObjectManager {
         let ObjectPayload::AddressSpace(address_space) = payload else {
             return Err(KernelError::WrongObjectType);
         };
-        let plan = address_space.prepare_map(memory, memory_object, descriptor)?;
-        address_space.commit_map(plan);
+        let reservation = address_space.prepare_map(memory, memory_object, descriptor)?;
+        reservation.commit();
         Ok(())
     }
 

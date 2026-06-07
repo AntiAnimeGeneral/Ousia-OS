@@ -74,11 +74,11 @@ impl AddressSpaceObject {
     }
 
     pub fn prepare_map(
-        &self,
+        &mut self,
         memory: ObjectRef,
         memory_object: MemoryObject,
         descriptor: VmMapDescriptor,
-    ) -> KernelResult<VmCommitPlan> {
+    ) -> KernelResult<VmMapReservation<'_>> {
         descriptor.validate()?;
         memory_object.validate_mapping(descriptor)?;
         let end = descriptor.end()?;
@@ -97,7 +97,8 @@ impl AddressSpaceObject {
             .position(Option::is_none)
             .ok_or(KernelError::NoCapacity)?;
 
-        Ok(VmCommitPlan {
+        Ok(VmMapReservation {
+            address_space: self,
             mapping_slot: MappingSlotReservation { index },
             page_table: PageTableCommitPlan {
                 range: VmRange {
@@ -120,17 +121,6 @@ impl AddressSpaceObject {
                 rights: descriptor.rights,
             },
         })
-    }
-
-    pub fn commit_map(&mut self, plan: VmCommitPlan) {
-        let index = plan.mapping_slot.index;
-        assert!(
-            index < MAX_ADDRESS_SPACE_MAPPINGS && self.mappings[index].is_none(),
-            "vm commit plan slot must remain reserved until commit"
-        );
-        self.mappings[index] = Some(plan.mapping);
-        self.mapping_count += 1;
-        self.pending_tlb_shootdowns.record(plan.tlb_shootdown);
     }
 
     pub fn unmap_exact(&mut self, base: u64, size_bytes: u64) -> KernelResult<()> {
@@ -202,21 +192,35 @@ impl VmMapDescriptor {
     }
 }
 
-#[derive(Debug, Eq, PartialEq)]
-pub struct VmCommitPlan {
+#[derive(Debug)]
+pub struct VmMapReservation<'a> {
+    address_space: &'a mut AddressSpaceObject,
     mapping_slot: MappingSlotReservation,
     page_table: PageTableCommitPlan,
     tlb_shootdown: TlbShootdownPlan,
     mapping: VmMapping,
 }
 
-impl VmCommitPlan {
+impl VmMapReservation<'_> {
     pub const fn page_table(&self) -> &PageTableCommitPlan {
         &self.page_table
     }
 
     pub const fn tlb_shootdown(&self) -> &TlbShootdownPlan {
         &self.tlb_shootdown
+    }
+
+    pub fn commit(self) {
+        let index = self.mapping_slot.index;
+        assert!(
+            index < MAX_ADDRESS_SPACE_MAPPINGS && self.address_space.mappings[index].is_none(),
+            "vm map reservation slot must remain free until commit"
+        );
+        self.address_space.mappings[index] = Some(self.mapping);
+        self.address_space.mapping_count += 1;
+        self.address_space
+            .pending_tlb_shootdowns
+            .record(self.tlb_shootdown);
     }
 }
 

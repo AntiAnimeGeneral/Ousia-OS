@@ -152,8 +152,8 @@ fn memory_object_records_anonymous_backing_policy() {
 #[test]
 fn vm_prepare_map_does_not_publish_mapping_until_commit() {
     // Goal: VM mapping follows a plan-before-publish transaction boundary.
-    // Scope: direct AddressSpaceObject prepare_map and commit_map calls.
-    // Semantics: prepare_map reserves a mapping slot without mutating AddressSpace metadata.
+    // Scope: direct AddressSpaceObject prepare_map and reservation commit calls.
+    // Semantics: prepare_map returns an exclusive reservation without publishing mapping metadata.
     let mut address_space = AddressSpaceObject::new();
     let memory = ObjectRef {
         id: kernel::object::ObjectId::new(7),
@@ -164,7 +164,7 @@ fn vm_prepare_map_does_not_publish_mapping_until_commit() {
         MappingPolicy::new(HandleRights::READ | HandleRights::WRITE),
     );
 
-    let plan = address_space
+    let reservation = address_space
         .prepare_map(
             memory,
             memory_object,
@@ -177,15 +177,11 @@ fn vm_prepare_map_does_not_publish_mapping_until_commit() {
         )
         .unwrap();
 
-    assert_eq!(address_space.mapping_count, 0);
-    assert_eq!(address_space.pending_tlb_shootdowns.count(), 0);
-    assert!(address_space.mappings().next().is_none());
+    assert_eq!(reservation.page_table().range.base, 0x1000);
+    assert_eq!(reservation.page_table().range.size_bytes, 0x1000);
+    assert_eq!(reservation.tlb_shootdown().range.base, 0x1000);
 
-    assert_eq!(plan.page_table().range.base, 0x1000);
-    assert_eq!(plan.page_table().range.size_bytes, 0x1000);
-    assert_eq!(plan.tlb_shootdown().range.base, 0x1000);
-
-    address_space.commit_map(plan);
+    reservation.commit();
     assert_eq!(address_space.mapping_count, 1);
     assert_eq!(address_space.pending_tlb_shootdowns.count(), 1);
     let mapping = address_space.mappings().next().unwrap();
@@ -194,11 +190,10 @@ fn vm_prepare_map_does_not_publish_mapping_until_commit() {
 }
 
 #[test]
-#[should_panic(expected = "vm commit plan slot must remain reserved until commit")]
-fn vm_stale_commit_plan_is_internal_invariant_violation() {
-    // Goal: commit_map is not a recoverable syscall validation boundary.
-    // Scope: direct AddressSpaceObject misuse after two prepared plans target one slot.
-    // Semantics: a stale plan indicates broken internal sequencing, not an external NoCapacity.
+fn dropping_vm_map_reservation_leaves_address_space_unchanged() {
+    // Goal: abandoning a prepared VM map has no owner-state side effect.
+    // Scope: direct AddressSpaceObject prepare_map followed by dropping the reservation.
+    // Semantics: an uncommitted reservation does not publish mapping metadata or TLB work.
     let mut address_space = AddressSpaceObject::new();
     let memory = ObjectRef {
         id: kernel::object::ObjectId::new(9),
@@ -212,15 +207,18 @@ fn vm_stale_commit_plan_is_internal_invariant_violation() {
         rights: HandleRights::READ,
     };
 
-    let stale_plan = address_space
+    let reservation = address_space
         .prepare_map(memory, memory_object, descriptor)
         .unwrap();
-    let committed_plan = address_space
-        .prepare_map(memory, memory_object, descriptor)
-        .unwrap();
+    assert_eq!(
+        reservation.page_table().operation,
+        kernel::vm::PageTableOperation::Map
+    );
+    drop(reservation);
 
-    address_space.commit_map(committed_plan);
-    address_space.commit_map(stale_plan);
+    assert_eq!(address_space.mapping_count, 0);
+    assert_eq!(address_space.pending_tlb_shootdowns.count(), 0);
+    assert!(address_space.mappings().next().is_none());
 }
 
 #[test]
@@ -228,26 +226,24 @@ fn vm_prepare_map_failure_leaves_address_space_unchanged() {
     // Goal: VM validation failures happen before AddressSpace owner mutation.
     // Scope: direct prepare_map with a MemoryObject range overflow.
     // Semantics: InvalidArgument leaves the mapping set empty.
-    let address_space = AddressSpaceObject::new();
+    let mut address_space = AddressSpaceObject::new();
     let memory = ObjectRef {
         id: kernel::object::ObjectId::new(8),
         generation: kernel::object::ObjectGeneration::INITIAL,
     };
     let memory_object = MemoryObject::anonymous(0x1000, MappingPolicy::new(HandleRights::READ));
 
-    assert_eq!(
-        address_space.prepare_map(
-            memory,
-            memory_object,
-            VmMapDescriptor {
-                base: 0,
-                size_bytes: 0x2000,
-                memory_offset: 0,
-                rights: HandleRights::READ,
-            },
-        ),
-        Err(KernelError::InvalidArgument)
+    let result = address_space.prepare_map(
+        memory,
+        memory_object,
+        VmMapDescriptor {
+            base: 0,
+            size_bytes: 0x2000,
+            memory_offset: 0,
+            rights: HandleRights::READ,
+        },
     );
+    assert!(matches!(result, Err(KernelError::InvalidArgument)));
 
     assert_eq!(address_space.mapping_count, 0);
     assert_eq!(address_space.pending_tlb_shootdowns.count(), 0);
