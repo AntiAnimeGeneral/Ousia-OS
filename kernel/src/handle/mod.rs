@@ -94,6 +94,12 @@ pub struct HandleView {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct HandleSlotReservation {
+    index: usize,
+    generation: HandleGeneration,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct HandleSlot {
     entry: Option<HandleTableEntry>,
     generation: HandleGeneration,
@@ -137,18 +143,47 @@ impl HandleTable {
         object: ObjectSnapshot,
         rights: HandleRights,
     ) -> KernelResult<HandleValue> {
+        let reservation = self.reserve_slot()?;
+        self.install_reserved(objects, reservation, object, rights)
+    }
+
+    pub(crate) fn reserve_slot(&self) -> KernelResult<HandleSlotReservation> {
         let index = self.free_index()?;
+        Ok(HandleSlotReservation {
+            index,
+            generation: self.slots[index].generation,
+        })
+    }
+
+    pub(crate) fn install_reserved(
+        &mut self,
+        objects: &mut ObjectManager,
+        reservation: HandleSlotReservation,
+        object: ObjectSnapshot,
+        rights: HandleRights,
+    ) -> KernelResult<HandleValue> {
+        if reservation.index >= self.capacity {
+            return Err(KernelError::InvalidHandle);
+        }
+        if self.slots[reservation.index].entry.is_some()
+            || self.slots[reservation.index].generation != reservation.generation
+        {
+            return Err(KernelError::NoCapacity);
+        }
+
         objects.add_handle(object.id, object.generation)?;
-        let generation = self.slots[index].generation;
-        self.slots[index].entry = Some(HandleTableEntry {
+        self.slots[reservation.index].entry = Some(HandleTableEntry {
             object: object.id,
             object_generation: object.generation,
-            entry_generation: generation,
+            entry_generation: reservation.generation,
             parent: None,
             kind: object.kind(),
             rights,
         });
-        Ok(HandleValue::new(index as u64, generation))
+        Ok(HandleValue::new(
+            reservation.index as u64,
+            reservation.generation,
+        ))
     }
 
     pub fn lookup(

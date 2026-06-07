@@ -4,8 +4,8 @@ use crate::{
     error::{KernelError, KernelResult},
     handle::{HandleRights, HandleTable, HandleValue},
     object::{
-        ChannelMessage, MAX_CHANNEL_MESSAGE_BYTES, ObjectKind, ObjectManager, ObjectRef,
-        ObjectSnapshot,
+        ChannelMessage, MAX_CHANNEL_MESSAGE_BYTES, ObjectKind, ObjectManager, ObjectPayload,
+        ObjectRef,
     },
 };
 
@@ -95,7 +95,11 @@ impl Process {
         kind: ObjectKind,
         rights: HandleRights,
     ) -> KernelResult<HandleValue> {
-        self.create_preflighted_object_handle(objects, rights, |objects| objects.create(kind))
+        self.create_preflighted_object_handle(
+            objects,
+            rights,
+            ObjectManager::payload_for_kind(kind),
+        )
     }
 
     pub fn create_memory_object_handle(
@@ -104,9 +108,11 @@ impl Process {
         size_bytes: u64,
         rights: HandleRights,
     ) -> KernelResult<HandleValue> {
-        self.create_preflighted_object_handle(objects, rights, |objects| {
-            objects.create_memory_object(size_bytes)
-        })
+        self.create_preflighted_object_handle(
+            objects,
+            rights,
+            ObjectPayload::MemoryObject(crate::object::MemoryObject { size_bytes }),
+        )
     }
 
     pub fn create_address_space_handle(
@@ -114,9 +120,11 @@ impl Process {
         objects: &mut ObjectManager,
         rights: HandleRights,
     ) -> KernelResult<HandleValue> {
-        self.create_preflighted_object_handle(objects, rights, |objects| {
-            objects.create(ObjectKind::AddressSpace)
-        })
+        self.create_preflighted_object_handle(
+            objects,
+            rights,
+            ObjectManager::payload_for_kind(ObjectKind::AddressSpace),
+        )
     }
 
     pub fn map_memory_object(
@@ -321,22 +329,35 @@ impl Process {
         &mut self,
         objects: &mut ObjectManager,
         rights: HandleRights,
-        create: impl FnOnce(&mut ObjectManager) -> KernelResult<ObjectSnapshot>,
+        payload: ObjectPayload,
     ) -> KernelResult<HandleValue> {
         let mut reservation = self.budget.reserve_object()?;
-        if self.handles.live_count() == self.handles.capacity() {
-            self.budget.release_object();
-            return Err(KernelError::NoCapacity);
-        }
+        let handle_slot = match self.handles.reserve_slot() {
+            Ok(slot) => slot,
+            Err(error) => {
+                self.budget.release_object();
+                return Err(error);
+            }
+        };
+        let object_entry = match objects.reserve_entry() {
+            Ok(entry) => entry,
+            Err(error) => {
+                self.budget.release_object();
+                return Err(error);
+            }
+        };
 
-        let object = match create(objects) {
+        let object = match objects.commit_reserved(object_entry, payload) {
             Ok(object) => object,
             Err(error) => {
                 self.budget.release_object();
                 return Err(error);
             }
         };
-        let handle = match self.handles.install(objects, object, rights) {
+        let handle = match self
+            .handles
+            .install_reserved(objects, handle_slot, object, rights)
+        {
             Ok(handle) => handle,
             Err(error) => {
                 let _ = objects.destroy(object.id, object.generation);

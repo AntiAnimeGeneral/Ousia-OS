@@ -236,6 +236,12 @@ pub struct ObjectSnapshot {
     pub handle_count: usize,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct ObjectEntryReservation {
+    index: usize,
+    generation: ObjectGeneration,
+}
+
 impl ObjectSnapshot {
     pub const fn kind(self) -> ObjectKind {
         self.payload.kind()
@@ -278,7 +284,11 @@ impl ObjectManager {
     }
 
     pub fn create(&mut self, kind: ObjectKind) -> KernelResult<ObjectSnapshot> {
-        self.create_payload(match kind {
+        self.create_payload(Self::payload_for_kind(kind))
+    }
+
+    pub(crate) fn payload_for_kind(kind: ObjectKind) -> ObjectPayload {
+        match kind {
             ObjectKind::Process => ObjectPayload::Process(ProcessObject),
             ObjectKind::ChannelEndpoint => ObjectPayload::ChannelEndpoint(ChannelEndpointObject {
                 peer: None,
@@ -295,7 +305,7 @@ impl ObjectManager {
             ObjectKind::Thread => ObjectPayload::Thread(ThreadObject {
                 lifecycle: ThreadLifecycle::Initial,
             }),
-        })
+        }
     }
 
     pub fn create_memory_object(&mut self, size_bytes: u64) -> KernelResult<ObjectSnapshot> {
@@ -354,13 +364,38 @@ impl ObjectManager {
     }
 
     fn create_payload(&mut self, payload: ObjectPayload) -> KernelResult<ObjectSnapshot> {
+        let reservation = self.reserve_entry()?;
+        self.commit_reserved(reservation, payload)
+    }
+
+    pub(crate) fn reserve_entry(&self) -> KernelResult<ObjectEntryReservation> {
         let index = self
             .entries
             .iter()
             .position(Option::is_none)
             .ok_or(KernelError::NoCapacity)?;
-        let id = ObjectId::new(index as u64);
-        let generation = self.generations[index];
+        Ok(ObjectEntryReservation {
+            index,
+            generation: self.generations[index],
+        })
+    }
+
+    pub(crate) fn commit_reserved(
+        &mut self,
+        reservation: ObjectEntryReservation,
+        payload: ObjectPayload,
+    ) -> KernelResult<ObjectSnapshot> {
+        if reservation.index >= self.capacity {
+            return Err(KernelError::InvalidHandle);
+        }
+        if self.entries[reservation.index].is_some()
+            || self.generations[reservation.index] != reservation.generation
+        {
+            return Err(KernelError::NoCapacity);
+        }
+
+        let id = ObjectId::new(reservation.index as u64);
+        let generation = reservation.generation;
         let entry = ObjectEntry {
             id,
             payload,
@@ -368,7 +403,7 @@ impl ObjectManager {
             state: ObjectState::Live,
             handle_count: 0,
         };
-        self.entries[index] = Some(entry);
+        self.entries[reservation.index] = Some(entry);
         Ok(ObjectSnapshot::from(entry))
     }
 

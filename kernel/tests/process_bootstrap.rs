@@ -131,6 +131,31 @@ fn memory_object_quota_failure_leaves_object_manager_and_handles_unchanged() {
 }
 
 #[test]
+fn address_space_quota_failure_leaves_object_manager_and_handles_unchanged() {
+    // Goal: AddressSpace creation uses the same process quota preflight as other object creation.
+    // Scope: host integration through Syscall::CreateAddressSpace after bootstrap consumes quota.
+    // Semantics: QuotaExceeded happens before AddressSpace publication or handle installation.
+    let mut kernel = Kernel::new(4, 1).unwrap();
+    let process = kernel.create_bootstrap_process(4, 1).unwrap();
+    let before_objects = kernel.objects.live_count();
+
+    assert_eq!(
+        kernel.execute(
+            SyscallContext::new(process),
+            Syscall::CreateAddressSpace {
+                rights: HandleRights::MANAGE,
+            },
+        ),
+        Err(KernelError::QuotaExceeded)
+    );
+
+    let process_state = kernel.processes.get(process).unwrap();
+    assert_eq!(kernel.objects.live_count(), before_objects);
+    assert_eq!(process_state.handles.live_count(), 1);
+    assert_eq!(process_state.budget.remaining_objects(), 0);
+}
+
+#[test]
 fn memory_object_handle_capacity_failure_leaves_object_manager_unchanged() {
     // Goal: MemoryObject publication is blocked by handle capacity preflight.
     // Scope: host integration through Syscall::CreateMemoryObject with a full handle table.
@@ -151,6 +176,37 @@ fn memory_object_handle_capacity_failure_leaves_object_manager_unchanged() {
             Syscall::CreateMemoryObject {
                 size_bytes: 4096,
                 rights: HandleRights::READ,
+            },
+        ),
+        Err(KernelError::NoCapacity)
+    );
+
+    let process_state = kernel.processes.get(process).unwrap();
+    assert_eq!(kernel.objects.live_count(), before_objects);
+    assert_eq!(process_state.handles.live_count(), 1);
+    assert_eq!(process_state.budget.remaining_objects(), before_quota);
+}
+
+#[test]
+fn address_space_handle_capacity_failure_leaves_object_manager_unchanged() {
+    // Goal: AddressSpace creation consumes the shared object/handle reservation path.
+    // Scope: host integration through Syscall::CreateAddressSpace with a full handle table.
+    // Semantics: NoCapacity leaves object manager, handle table, and quota state unchanged.
+    let mut kernel = Kernel::new(4, 1).unwrap();
+    let process = kernel.create_bootstrap_process(1, 4).unwrap();
+    let before_objects = kernel.objects.live_count();
+    let before_quota = kernel
+        .processes
+        .get(process)
+        .unwrap()
+        .budget
+        .remaining_objects();
+
+    assert_eq!(
+        kernel.execute(
+            SyscallContext::new(process),
+            Syscall::CreateAddressSpace {
+                rights: HandleRights::MANAGE,
             },
         ),
         Err(KernelError::NoCapacity)
