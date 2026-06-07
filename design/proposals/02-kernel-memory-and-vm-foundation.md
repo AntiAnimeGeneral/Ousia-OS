@@ -181,6 +181,8 @@ This interface is the local Ousia lesson from CortenMM: correctness comes from m
 - future backing/page-cache metadata only when a real pager or page-cache owner exists
 - future zero-fill, CoW and pager fault endpoint only when their state owner exists
 
+Do not add future backing taxonomy before the backing owner exists. A single variant backing enum, an unused backing field or an `anonymous` constructor is not a harmless placeholder; it hides the fact that the final owner has not been designed. Until pager/page-cache state exists, MemoryObject exposes only the current facts above.
+
 ### AddressSpace and Mapping
 
 `AddressSpace` owns range metadata:
@@ -193,6 +195,8 @@ This interface is the local Ousia lesson from CortenMM: correctness comes from m
 - TLB shootdown placeholder
 
 VMA is the policy/source-of-truth for virtual ranges; page table is committed hardware state. They must not compete as two mapping truth sources.
+
+The current fixed mapping slots, page-table range marker and TLB shootdown counter are incomplete final-boundary scaffolding, not stable abstractions. They must stay marked with adjacent TODOs that name the missing final owner, the semantics callers cannot rely on and the tests required to exit the scaffold. Do not make them look more complete by adding single-variant operation enums, future-only fields or compatibility facades.
 
 ## Error Boundary
 

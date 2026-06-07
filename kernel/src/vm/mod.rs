@@ -50,6 +50,11 @@ impl MemoryObject {
 pub struct AddressSpaceObject {
     pub mapping_count: usize,
     pub pending_tlb_shootdowns: PendingTlbShootdowns,
+    // TODO(vm-range-owner): replace this fixed metadata slot set with the final
+    // AddressSpace range owner. The final shape must reserve mapping metadata and
+    // page-table resources before publication; callers must not rely on slot order
+    // or on MAX_ADDRESS_SPACE_MAPPINGS as a product limit. Exit when VMAR/VMA owner
+    // tests cover overlap, dropped reservation, unmap, and capacity failure.
     mappings: [Option<VmMapping>; MAX_ADDRESS_SPACE_MAPPINGS],
 }
 
@@ -224,16 +229,29 @@ pub struct VmRange {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PageTableCommitPlan {
+    // TODO(vm-page-table): this records only the range that must eventually be
+    // committed to page tables. It is not proof that hardware mappings, frame
+    // materialization, or page-table metadata reservations exist. Exit when the
+    // reservation token carries the real page-table owner evidence and tests prove
+    // failed page-table preparation leaves AddressSpace state unchanged.
     pub range: VmRange,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct TlbShootdownPlan {
+    // TODO(vm-tlb-shootdown): this range is a multi-core boundary marker, not a
+    // real shootdown request. The final state needs target CPU/generation tracking
+    // and a consumer that proves flush completion. Exit when map/unmap tests cover
+    // pending work publication and flush consumption.
     pub range: VmRange,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PendingTlbShootdowns {
+    // TODO(vm-tlb-shootdown): count is diagnostic scaffolding for the missing
+    // shootdown queue. Do not use it as correctness evidence for TLB completion.
+    // Replace with the final pending-work owner when map/unmap and flush-consumer
+    // tests prove pending work publication, consumption, and completion semantics.
     count: usize,
 }
 
