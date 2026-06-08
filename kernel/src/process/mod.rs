@@ -99,7 +99,7 @@ impl Process {
         self.create_preflighted_object_handle(
             objects,
             rights,
-            ObjectManager::payload_for_kind(kind),
+            ObjectManager::payload_for_kind(kind)?,
         )
     }
 
@@ -117,7 +117,7 @@ impl Process {
                 MappingPolicy::new(
                     HandleRights::READ | HandleRights::WRITE | HandleRights::EXECUTE,
                 ),
-            )),
+            )?),
         )
     }
 
@@ -129,7 +129,7 @@ impl Process {
         self.create_preflighted_object_handle(
             objects,
             rights,
-            ObjectManager::payload_for_kind(ObjectKind::AddressSpace),
+            ObjectManager::payload_for_kind(ObjectKind::AddressSpace)?,
         )
     }
 

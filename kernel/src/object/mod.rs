@@ -243,11 +243,11 @@ impl ObjectManager {
     }
 
     pub fn create(&mut self, kind: ObjectKind) -> KernelResult<ObjectSnapshot> {
-        self.create_payload(Self::payload_for_kind(kind))
+        self.create_payload(Self::payload_for_kind(kind)?)
     }
 
-    pub(crate) fn payload_for_kind(kind: ObjectKind) -> ObjectPayload {
-        match kind {
+    pub(crate) fn payload_for_kind(kind: ObjectKind) -> KernelResult<ObjectPayload> {
+        Ok(match kind {
             ObjectKind::Process => ObjectPayload::Process(ProcessObject),
             ObjectKind::ChannelEndpoint => ObjectPayload::ChannelEndpoint(ChannelEndpointObject {
                 peer: None,
@@ -259,24 +259,19 @@ impl ObjectManager {
             ObjectKind::Event => ObjectPayload::Event(EventObject {
                 state: EventState::Unsignaled,
             }),
-            ObjectKind::MemoryObject => ObjectPayload::MemoryObject(MemoryObject::new(
-                0,
-                MappingPolicy::new(
-                    HandleRights::READ | HandleRights::WRITE | HandleRights::EXECUTE,
-                ),
-            )),
+            ObjectKind::MemoryObject => return Err(KernelError::Unsupported),
             ObjectKind::AddressSpace => ObjectPayload::AddressSpace(AddressSpaceObject::new()),
             ObjectKind::Thread => ObjectPayload::Thread(ThreadObject {
                 lifecycle: ThreadLifecycle::Initial,
             }),
-        }
+        })
     }
 
     pub fn create_memory_object(&mut self, size_bytes: u64) -> KernelResult<ObjectSnapshot> {
         self.create_payload(ObjectPayload::MemoryObject(MemoryObject::new(
             size_bytes,
             MappingPolicy::new(HandleRights::READ | HandleRights::WRITE | HandleRights::EXECUTE),
-        )))
+        )?))
     }
 
     pub fn create_channel_endpoint(&mut self, max_messages: usize) -> KernelResult<ObjectSnapshot> {

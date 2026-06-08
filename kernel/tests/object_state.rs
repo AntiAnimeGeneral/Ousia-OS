@@ -139,10 +139,15 @@ fn memory_object_creation_records_size_in_payload() {
     assert_eq!(view.object.kind(), ObjectKind::MemoryObject);
     assert_eq!(
         view.object.payload,
-        ObjectPayload::MemoryObject(MemoryObject::new(
-            8192,
-            MappingPolicy::new(HandleRights::READ | HandleRights::WRITE | HandleRights::EXECUTE),
-        ))
+        ObjectPayload::MemoryObject(
+            MemoryObject::new(
+                8192,
+                MappingPolicy::new(
+                    HandleRights::READ | HandleRights::WRITE | HandleRights::EXECUTE
+                ),
+            )
+            .unwrap()
+        )
     );
     assert_eq!(
         kernel
@@ -152,4 +157,71 @@ fn memory_object_creation_records_size_in_payload() {
             .size_bytes,
         8192
     );
+}
+
+#[test]
+fn memory_object_creation_rejects_invalid_size_without_publication() {
+    // Goal: MemoryObject size obeys VM page-granularity before object publication.
+    // Scope: host integration through Syscall::CreateMemoryObject.
+    // Semantics: invalid sizes fail before object manager, handle table, or quota state changes.
+    let mut kernel = Kernel::new(4, 1).unwrap();
+    let process = kernel.create_bootstrap_process(4, 3).unwrap();
+    let context = SyscallContext::new(process);
+    let before_objects = kernel.objects.live_count();
+    let before_quota = kernel
+        .processes
+        .get(process)
+        .unwrap()
+        .budget
+        .remaining_objects();
+
+    for size_bytes in [0, 1, 4097] {
+        assert_eq!(
+            kernel.execute(
+                context,
+                Syscall::CreateMemoryObject {
+                    size_bytes,
+                    rights: HandleRights::READ,
+                },
+            ),
+            Err(KernelError::InvalidArgument)
+        );
+        let process_state = kernel.processes.get(process).unwrap();
+        assert_eq!(kernel.objects.live_count(), before_objects);
+        assert_eq!(process_state.handles.live_count(), 1);
+        assert_eq!(process_state.budget.remaining_objects(), before_quota);
+    }
+}
+
+#[test]
+fn generic_memory_object_creation_is_not_supported() {
+    // Goal: MemoryObject creation requires a size descriptor and cannot use generic object create.
+    // Scope: host integration through Syscall::CreateObject with ObjectKind::MemoryObject.
+    // Semantics: Unsupported leaves object manager, handle table, and quota state unchanged.
+    let mut kernel = Kernel::new(4, 1).unwrap();
+    let process = kernel.create_bootstrap_process(4, 3).unwrap();
+    let context = SyscallContext::new(process);
+    let before_objects = kernel.objects.live_count();
+    let before_quota = kernel
+        .processes
+        .get(process)
+        .unwrap()
+        .budget
+        .remaining_objects();
+
+    assert_eq!(
+        kernel.execute(
+            context,
+            Syscall::CreateObject {
+                kind: ObjectKind::MemoryObject,
+                rights: HandleRights::READ,
+            },
+        ),
+        Err(KernelError::Unsupported)
+    );
+
+    let process_state = kernel.processes.get(process).unwrap();
+    assert_eq!(kernel.objects.live_count(), before_objects);
+    assert_eq!(process_state.handles.live_count(), 1);
+    assert_eq!(process_state.budget.remaining_objects(), before_quota);
 }

@@ -26,11 +26,12 @@ pub struct MemoryObject {
 }
 
 impl MemoryObject {
-    pub const fn new(size_bytes: u64, mapping_policy: MappingPolicy) -> Self {
-        Self {
+    pub fn new(size_bytes: u64, mapping_policy: MappingPolicy) -> KernelResult<Self> {
+        VirtualRange::new(0, size_bytes).map_err(|_| KernelError::InvalidArgument)?;
+        Ok(Self {
             size_bytes,
             mapping_policy,
-        }
+        })
     }
 
     pub fn validate_mapping(&self, descriptor: VmMapDescriptor) -> KernelResult<()> {

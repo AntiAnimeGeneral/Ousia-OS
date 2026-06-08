@@ -176,12 +176,14 @@ This interface is the local Ousia lesson from CortenMM: correctness comes from m
 
 `MemoryObject` is the kernel-visible memory object, not a frame list exposed to userspace:
 
-- size
+- page-aligned non-zero size
 - rights-compatible mapping policy
 - future backing/page-cache metadata only when a real pager or page-cache owner exists
 - future zero-fill, CoW and pager fault endpoint only when their state owner exists
 
 Do not add future backing taxonomy before the backing owner exists. A single variant backing enum, an unused backing field or an `anonymous` constructor is not a harmless placeholder; it hides the fact that the final owner has not been designed. Until pager/page-cache state exists, MemoryObject exposes only the current facts above.
+
+MemoryObject creation must go through an explicit size descriptor. Generic `CreateObject(MemoryObject)` must not synthesize a zero-sized placeholder object; without page-aligned non-zero size, the final frame/page backing owner cannot be attached without changing semantics.
 
 ### AddressSpace and Mapping
 

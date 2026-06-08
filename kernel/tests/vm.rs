@@ -161,7 +161,8 @@ fn vm_prepare_map_does_not_publish_mapping_until_commit() {
     let memory_object = MemoryObject::new(
         0x4000,
         MappingPolicy::new(HandleRights::READ | HandleRights::WRITE),
-    );
+    )
+    .unwrap();
 
     let reservation = address_space
         .prepare_map(
@@ -194,7 +195,7 @@ fn dropping_vm_map_reservation_leaves_address_space_unchanged() {
         id: kernel::object::ObjectId::new(9),
         generation: kernel::object::ObjectGeneration::INITIAL,
     };
-    let memory_object = MemoryObject::new(0x4000, MappingPolicy::new(HandleRights::READ));
+    let memory_object = MemoryObject::new(0x4000, MappingPolicy::new(HandleRights::READ)).unwrap();
     let descriptor = VmMapDescriptor {
         base: 0x1000,
         size_bytes: 0x1000,
@@ -222,7 +223,7 @@ fn dropping_vm_unmap_reservation_leaves_address_space_unchanged() {
         id: kernel::object::ObjectId::new(10),
         generation: kernel::object::ObjectGeneration::INITIAL,
     };
-    let memory_object = MemoryObject::new(0x4000, MappingPolicy::new(HandleRights::READ));
+    let memory_object = MemoryObject::new(0x4000, MappingPolicy::new(HandleRights::READ)).unwrap();
     let descriptor = VmMapDescriptor {
         base: 0x2000,
         size_bytes: 0x1000,
@@ -255,7 +256,7 @@ fn vm_prepare_map_failure_leaves_address_space_unchanged() {
         id: kernel::object::ObjectId::new(8),
         generation: kernel::object::ObjectGeneration::INITIAL,
     };
-    let memory_object = MemoryObject::new(0x1000, MappingPolicy::new(HandleRights::READ));
+    let memory_object = MemoryObject::new(0x1000, MappingPolicy::new(HandleRights::READ)).unwrap();
 
     let result = address_space.prepare_map(
         memory,
@@ -579,7 +580,7 @@ fn pending_tlb_capacity_failure_leaves_address_space_unchanged() {
         id: kernel::object::ObjectId::new(11),
         generation: kernel::object::ObjectGeneration::INITIAL,
     };
-    let memory_object = MemoryObject::new(0x9000, MappingPolicy::new(HandleRights::READ));
+    let memory_object = MemoryObject::new(0x9000, MappingPolicy::new(HandleRights::READ)).unwrap();
 
     for index in 0..8 {
         address_space
