@@ -1,4 +1,4 @@
-use super::frame::PAGE_SIZE;
+use super::frame::{FrameRange, PAGE_SIZE};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PageTableIntentError {
@@ -26,19 +26,6 @@ impl VirtualRange {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct PhysicalRange {
-    pub base: u64,
-    pub size_bytes: u64,
-}
-
-impl PhysicalRange {
-    pub fn new(base: u64, size_bytes: u64) -> Result<Self, PageTableIntentError> {
-        validate_page_range(base, size_bytes)?;
-        Ok(Self { base, size_bytes })
-    }
-}
-
 bitflags::bitflags! {
     #[derive(Clone, Copy, Debug, Eq, PartialEq)]
     pub struct PageTableRights: u8 {
@@ -52,7 +39,7 @@ bitflags::bitflags! {
 pub enum PageTableUpdate {
     Map {
         virtual_range: VirtualRange,
-        physical_range: PhysicalRange,
+        frame_range: FrameRange,
         rights: PageTableRights,
     },
     Unmap {
@@ -73,19 +60,19 @@ pub struct PageTableUpdateIntent {
 impl PageTableUpdateIntent {
     pub fn map(
         virtual_range: VirtualRange,
-        physical_range: PhysicalRange,
+        frame_range: FrameRange,
         rights: PageTableRights,
     ) -> Result<Self, PageTableIntentError> {
         if rights.is_empty() {
             return Err(PageTableIntentError::RightsEmpty);
         }
-        if virtual_range.size_bytes != physical_range.size_bytes {
+        if virtual_range.size_bytes != frame_range.len() as u64 {
             return Err(PageTableIntentError::RangeSizeMismatch);
         }
         Ok(Self {
             update: PageTableUpdate::Map {
                 virtual_range,
-                physical_range,
+                frame_range,
                 rights,
             },
         })

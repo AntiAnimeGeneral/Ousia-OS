@@ -118,7 +118,7 @@ Asterinas 研究线补充了另一类参考：不是用户可见对象 API，而
 | `kernel::memory::frame`                | runtime frame metadata、free lists、frame allocation/free、pin/mapping count hooks | page-table policy、VFS page cache policy          |
 | `kernel::memory::heap`                 | kernel heap/slab/fixed pool/zone owner、fallible allocation API                    | object lifecycle、syscall error mapping           |
 | `kernel::memory::reservation`          | reservation token、rollback, commit consumption, allocation context                | subsystem-specific state transition               |
-| `kernel::vm::memory_object`            | MemoryObject size、mapping policy；future backing/page-cache boundary             | handle rights table、path namespace policy        |
+| `kernel::vm::memory_object`            | MemoryObject size、mapping policy；future backing/page-cache boundary              | handle rights table、path namespace policy        |
 | `kernel::vm::address_space`            | AddressSpace、VMAR/VMA range owner、mapping metadata、page-table boundary          | process handle table、scheduler queue             |
 | `kernel::vm::fault`                    | fault descriptor、future pager/provider handoff、cancel/error skeleton             | filesystem provider implementation                |
 | `kernel::resource`                     | process/capsule budget, quota accounting, resource limits                          | physical allocator internal free list             |
@@ -197,6 +197,8 @@ Do not add future backing taxonomy before the backing owner exists. A single var
 VMA is the policy/source-of-truth for virtual ranges; page table is committed hardware state. They must not compete as two mapping truth sources.
 
 Until MemoryObject has a real frame/page backing owner, map reservations publish only AddressSpace mapping metadata. They must not fabricate a page-table map intent or TLB invalidation for a mapping that cannot yet name owned physical frames. Unmap reservations may carry an OSTD page-table unmap intent and TLB invalidation intent, because those are hardware-state work descriptions for removing a mapping once page-table ownership exists.
+
+When map intents become valid, their physical input must come from frame-owner evidence such as OSTD `FrameRange`; page-table code should not introduce a second physical-range type that repeats frame allocator alignment and ownership invariants.
 
 The current fixed mapping slots, OSTD page-table update intent and fixed pending TLB invalidation storage are incomplete final-boundary scaffolding, not stable abstractions. They must stay marked with adjacent TODOs that name the missing final owner, the semantics callers cannot rely on and the tests required to exit the scaffold. Do not make them look more complete by adding single-variant operation enums, future-only fields or compatibility facades.
 

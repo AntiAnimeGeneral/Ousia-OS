@@ -1,5 +1,6 @@
+use ostd::mm::frame::FrameRange;
 use ostd::mm::page_table::{
-    PageTableIntentError, PageTableRights, PageTableUpdate, PageTableUpdateIntent, PhysicalRange,
+    PageTableIntentError, PageTableRights, PageTableUpdate, PageTableUpdateIntent,
     TlbInvalidationIntent, VirtualRange,
 };
 
@@ -7,19 +8,19 @@ use ostd::mm::page_table::{
 fn page_table_map_intent_records_checked_mapping_facts() {
     // Goal: OSTD exposes architecture-neutral page-table mapping facts.
     // Scope: host test for value types only, not hardware page-table mutation.
-    // Semantics: map intent carries checked virtual range, physical range, and rights.
+    // Semantics: map intent carries checked virtual range, frame range, and rights.
     let virtual_range = VirtualRange::new(0x4000, 0x2000).unwrap();
-    let physical_range = PhysicalRange::new(0x8000, 0x2000).unwrap();
+    let frame_range = FrameRange::new(0x8000, 0xa000).unwrap();
     let rights = PageTableRights::READ | PageTableRights::WRITE;
 
-    let intent = PageTableUpdateIntent::map(virtual_range, physical_range, rights).unwrap();
+    let intent = PageTableUpdateIntent::map(virtual_range, frame_range, rights).unwrap();
 
     assert_eq!(intent.virtual_range(), virtual_range);
     assert_eq!(
         intent.update,
         PageTableUpdate::Map {
             virtual_range,
-            physical_range,
+            frame_range,
             rights,
         }
     );
@@ -58,7 +59,7 @@ fn page_table_intents_reject_unaligned_or_empty_ranges() {
         Err(PageTableIntentError::UnalignedRange)
     );
     assert_eq!(
-        PhysicalRange::new(u64::MAX - 0xfff, 0x1000),
+        VirtualRange::new(u64::MAX - 0xfff, 0x1000),
         Err(PageTableIntentError::RangeOverflow)
     );
 }
@@ -67,17 +68,17 @@ fn page_table_intents_reject_unaligned_or_empty_ranges() {
 fn page_table_map_intent_requires_matching_size_and_rights() {
     // Goal: map intent construction establishes facts arch page-table code may trust.
     // Scope: pure OSTD page-table intent construction.
-    // Semantics: physical and virtual ranges must cover the same size with non-empty rights.
+    // Semantics: frame and virtual ranges must cover the same size with non-empty rights.
     let virtual_range = VirtualRange::new(0x4000, 0x2000).unwrap();
-    let short_physical_range = PhysicalRange::new(0x8000, 0x1000).unwrap();
-    let physical_range = PhysicalRange::new(0x8000, 0x2000).unwrap();
+    let short_frame_range = FrameRange::new(0x8000, 0x9000).unwrap();
+    let frame_range = FrameRange::new(0x8000, 0xa000).unwrap();
 
     assert_eq!(
-        PageTableUpdateIntent::map(virtual_range, short_physical_range, PageTableRights::READ),
+        PageTableUpdateIntent::map(virtual_range, short_frame_range, PageTableRights::READ),
         Err(PageTableIntentError::RangeSizeMismatch)
     );
     assert_eq!(
-        PageTableUpdateIntent::map(virtual_range, physical_range, PageTableRights::empty()),
+        PageTableUpdateIntent::map(virtual_range, frame_range, PageTableRights::empty()),
         Err(PageTableIntentError::RightsEmpty)
     );
 }
