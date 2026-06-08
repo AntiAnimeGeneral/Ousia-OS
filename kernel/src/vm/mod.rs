@@ -96,16 +96,10 @@ impl AddressSpaceObject {
             .iter()
             .position(Option::is_none)
             .ok_or(KernelError::NoCapacity)?;
-        let range = VirtualRange::new(descriptor.base, descriptor.size_bytes);
-        let tlb_slot = self
-            .pending_tlb_invalidations
-            .reserve(TlbInvalidationIntent::new(range))?;
 
         Ok(VmMapReservation {
             address_space: self,
             mapping_slot: MappingSlotReservation { index },
-            page_table: PageTableUpdateIntent::new(range),
-            tlb_slot,
             mapping: VmMapping {
                 base: descriptor.base,
                 size_bytes: descriptor.size_bytes,
@@ -132,7 +126,9 @@ impl AddressSpaceObject {
         }) else {
             return Err(KernelError::InvalidArgument);
         };
-        let range = VirtualRange::new(base, size_bytes);
+        let range =
+            VirtualRange::new(base, size_bytes).map_err(|_| KernelError::InvalidArgument)?;
+        let page_table = PageTableUpdateIntent::unmap(range);
         let tlb_slot = self
             .pending_tlb_invalidations
             .reserve(TlbInvalidationIntent::new(range))?;
@@ -140,6 +136,7 @@ impl AddressSpaceObject {
         Ok(VmUnmapReservation {
             address_space: self,
             mapping_slot: MappingSlotReservation { index },
+            page_table,
             tlb_slot,
         })
     }
@@ -197,20 +194,10 @@ impl VmMapDescriptor {
 pub struct VmMapReservation<'a> {
     address_space: &'a mut AddressSpaceObject,
     mapping_slot: MappingSlotReservation,
-    page_table: PageTableUpdateIntent,
-    tlb_slot: PendingTlbInvalidationReservation,
     mapping: VmMapping,
 }
 
 impl VmMapReservation<'_> {
-    pub const fn page_table(&self) -> &PageTableUpdateIntent {
-        &self.page_table
-    }
-
-    pub const fn tlb_invalidation(&self) -> &TlbInvalidationIntent {
-        &self.tlb_slot.plan
-    }
-
     pub fn commit(self) {
         let index = self.mapping_slot.index;
         assert!(
@@ -219,9 +206,6 @@ impl VmMapReservation<'_> {
         );
         self.address_space.mappings[index] = Some(self.mapping);
         self.address_space.mapping_count += 1;
-        self.address_space
-            .pending_tlb_invalidations
-            .commit(self.tlb_slot);
     }
 }
 
@@ -229,12 +213,17 @@ impl VmMapReservation<'_> {
 pub struct VmUnmapReservation<'a> {
     address_space: &'a mut AddressSpaceObject,
     mapping_slot: MappingSlotReservation,
+    page_table: PageTableUpdateIntent,
     tlb_slot: PendingTlbInvalidationReservation,
 }
 
 impl VmUnmapReservation<'_> {
+    pub const fn page_table(&self) -> &PageTableUpdateIntent {
+        &self.page_table
+    }
+
     pub const fn tlb_invalidation(&self) -> &TlbInvalidationIntent {
-        &self.tlb_slot.plan
+        &self.tlb_slot.intent
     }
 
     pub fn commit(self) {
@@ -277,14 +266,14 @@ impl PendingTlbInvalidations {
 
     fn reserve(
         &self,
-        plan: TlbInvalidationIntent,
+        intent: TlbInvalidationIntent,
     ) -> KernelResult<PendingTlbInvalidationReservation> {
         let index = self
             .work
             .iter()
             .position(Option::is_none)
             .ok_or(KernelError::NoCapacity)?;
-        Ok(PendingTlbInvalidationReservation { index, plan })
+        Ok(PendingTlbInvalidationReservation { index, intent })
     }
 
     fn commit(&mut self, reservation: PendingTlbInvalidationReservation) {
@@ -293,7 +282,7 @@ impl PendingTlbInvalidations {
                 && self.work[reservation.index].is_none(),
             "tlb invalidation reservation slot must remain free until commit"
         );
-        self.work[reservation.index] = Some(reservation.plan);
+        self.work[reservation.index] = Some(reservation.intent);
         self.count += 1;
     }
 }
@@ -301,7 +290,7 @@ impl PendingTlbInvalidations {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct PendingTlbInvalidationReservation {
     index: usize,
-    plan: TlbInvalidationIntent,
+    intent: TlbInvalidationIntent,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

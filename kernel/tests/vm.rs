@@ -95,7 +95,7 @@ fn map_memory_object_records_address_space_mapping() {
     };
     let mappings = address_space_payload.mappings().collect::<Vec<_>>();
     assert_eq!(address_space_payload.mapping_count, 1);
-    assert_eq!(address_space_payload.pending_tlb_invalidations.count(), 1);
+    assert_eq!(address_space_payload.pending_tlb_invalidations.count(), 0);
     assert_eq!(mappings.len(), 1);
     assert_eq!(mappings[0].base, 0x1000);
     assert_eq!(mappings[0].size_bytes, 0x2000);
@@ -176,13 +176,9 @@ fn vm_prepare_map_does_not_publish_mapping_until_commit() {
         )
         .unwrap();
 
-    assert_eq!(reservation.page_table().range.base, 0x1000);
-    assert_eq!(reservation.page_table().range.size_bytes, 0x1000);
-    assert_eq!(reservation.tlb_invalidation().range.base, 0x1000);
-
     reservation.commit();
     assert_eq!(address_space.mapping_count, 1);
-    assert_eq!(address_space.pending_tlb_invalidations.count(), 1);
+    assert_eq!(address_space.pending_tlb_invalidations.count(), 0);
     let mapping = address_space.mappings().next().unwrap();
     assert_eq!(mapping.base, 0x1000);
     assert_eq!(mapping.memory, memory);
@@ -209,7 +205,6 @@ fn dropping_vm_map_reservation_leaves_address_space_unchanged() {
     let reservation = address_space
         .prepare_map(memory, memory_object, descriptor)
         .unwrap();
-    assert_eq!(reservation.page_table().range.base, 0x1000);
     drop(reservation);
 
     assert_eq!(address_space.mapping_count, 0);
@@ -240,11 +235,12 @@ fn dropping_vm_unmap_reservation_leaves_address_space_unchanged() {
         .commit();
 
     let reservation = address_space.prepare_unmap(0x2000, 0x1000).unwrap();
+    assert_eq!(reservation.page_table().virtual_range().base, 0x2000);
     assert_eq!(reservation.tlb_invalidation().range.base, 0x2000);
     drop(reservation);
 
     assert_eq!(address_space.mapping_count, 1);
-    assert_eq!(address_space.pending_tlb_invalidations.count(), 1);
+    assert_eq!(address_space.pending_tlb_invalidations.count(), 0);
     let mapping = address_space.mappings().next().unwrap();
     assert_eq!(mapping.base, 0x2000);
 }
@@ -513,7 +509,7 @@ fn unmap_removes_exact_mapping_only() {
         panic!("expected address space payload");
     };
     assert_eq!(address_space_payload.mapping_count, 0);
-    assert_eq!(address_space_payload.pending_tlb_invalidations.count(), 2);
+    assert_eq!(address_space_payload.pending_tlb_invalidations.count(), 1);
 }
 
 #[test]
@@ -572,9 +568,9 @@ fn mapping_table_capacity_failure_leaves_existing_mappings() {
 
 #[test]
 fn pending_tlb_capacity_failure_leaves_address_space_unchanged() {
-    // Goal: TLB pending-work capacity is reserved before mapping metadata changes.
+    // Goal: TLB pending-work capacity is reserved before unmap metadata changes.
     // Scope: direct AddressSpaceObject map/unmap reservations with fixed pending TLB storage full.
-    // Semantics: NoCapacity leaves mapping metadata unchanged for both map and unmap prepare.
+    // Semantics: pending TLB capacity does not block metadata-only map, but NoCapacity blocks unmap.
     let mut address_space = AddressSpaceObject::new();
     let memory = ObjectRef {
         id: kernel::object::ObjectId::new(11),
@@ -582,24 +578,7 @@ fn pending_tlb_capacity_failure_leaves_address_space_unchanged() {
     };
     let memory_object = MemoryObject::new(0x9000, MappingPolicy::new(HandleRights::READ));
 
-    for _ in 0..3 {
-        address_space
-            .prepare_map(
-                memory,
-                memory_object,
-                VmMapDescriptor {
-                    base: 0,
-                    size_bytes: 0x1000,
-                    memory_offset: 0,
-                    rights: HandleRights::READ,
-                },
-            )
-            .unwrap()
-            .commit();
-        address_space.prepare_unmap(0, 0x1000).unwrap().commit();
-    }
-
-    for index in 0..2 {
+    for index in 0..8 {
         address_space
             .prepare_map(
                 memory,
@@ -613,31 +592,34 @@ fn pending_tlb_capacity_failure_leaves_address_space_unchanged() {
             )
             .unwrap()
             .commit();
+        address_space
+            .prepare_unmap(index * 0x1000, 0x1000)
+            .unwrap()
+            .commit();
     }
-    assert_eq!(address_space.mapping_count, 2);
-    assert_eq!(address_space.pending_tlb_invalidations.count(), 8);
-    assert_mapping_bases(&address_space, &[0, 0x1000]);
 
-    let map_result = address_space.prepare_map(
-        memory,
-        memory_object,
-        VmMapDescriptor {
-            base: 0x2000,
-            size_bytes: 0x1000,
-            memory_offset: 0,
-            rights: HandleRights::READ,
-        },
-    );
-    assert!(matches!(map_result, Err(KernelError::NoCapacity)));
-    assert_eq!(address_space.mapping_count, 2);
+    address_space
+        .prepare_map(
+            memory,
+            memory_object,
+            VmMapDescriptor {
+                base: 0,
+                size_bytes: 0x1000,
+                memory_offset: 0,
+                rights: HandleRights::READ,
+            },
+        )
+        .unwrap()
+        .commit();
+    assert_eq!(address_space.mapping_count, 1);
     assert_eq!(address_space.pending_tlb_invalidations.count(), 8);
-    assert_mapping_bases(&address_space, &[0, 0x1000]);
+    assert_mapping_bases(&address_space, &[0]);
 
     let unmap_result = address_space.prepare_unmap(0, 0x1000);
     assert!(matches!(unmap_result, Err(KernelError::NoCapacity)));
-    assert_eq!(address_space.mapping_count, 2);
+    assert_eq!(address_space.mapping_count, 1);
     assert_eq!(address_space.pending_tlb_invalidations.count(), 8);
-    assert_mapping_bases(&address_space, &[0, 0x1000]);
+    assert_mapping_bases(&address_space, &[0]);
 }
 
 fn assert_mapping_bases(address_space: &AddressSpaceObject, expected: &[u64]) {
