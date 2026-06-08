@@ -374,7 +374,7 @@ fn missing_memory_rights_reject_map_without_mutation() {
 #[test]
 fn invalid_mapping_descriptors_are_rejected_before_mutation() {
     // Goal: malformed VM mapping descriptors fail before AddressSpace mutation.
-    // Scope: zero-size, address overflow, MemoryObject offset overflow, and non-VM rights.
+    // Scope: zero-size, overflow, unaligned range/offset, and non-VM rights.
     // Semantics: every invalid descriptor leaves mapping_count unchanged.
     let mut kernel = Kernel::new(6, 1).unwrap();
     let process = kernel.create_bootstrap_process(6, 6).unwrap();
@@ -390,8 +390,11 @@ fn invalid_mapping_descriptors_are_rejected_before_mutation() {
         (0, 0, 0, HandleRights::READ),
         (u64::MAX, 1, 0, HandleRights::READ),
         (0, 1, u64::MAX, HandleRights::READ),
-        (0, 1, 0, HandleRights::TRANSFER),
-        (0, 1, 0, HandleRights::empty()),
+        (1, 0x1000, 0, HandleRights::READ),
+        (0, 1, 0, HandleRights::READ),
+        (0, 0x1000, 1, HandleRights::READ),
+        (0, 0x1000, 0, HandleRights::TRANSFER),
+        (0, 0x1000, 0, HandleRights::empty()),
     ] {
         assert_eq!(
             kernel.execute(

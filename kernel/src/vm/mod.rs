@@ -81,13 +81,13 @@ impl AddressSpaceObject {
     ) -> KernelResult<VmMapReservation<'_>> {
         descriptor.validate()?;
         memory_object.validate_mapping(descriptor)?;
-        let end = descriptor.end()?;
+        let range = descriptor.virtual_range()?;
         if self.mapping_count == MAX_ADDRESS_SPACE_MAPPINGS {
             return Err(KernelError::NoCapacity);
         }
         if self
             .mappings()
-            .any(|mapping| ranges_overlap(descriptor.base, end, mapping))
+            .any(|mapping| ranges_overlap(range.base, range.end(), mapping))
         {
             return Err(KernelError::InvalidArgument);
         }
@@ -173,20 +173,21 @@ impl VmMapDescriptor {
         if self.rights.is_empty() || !mapping_rights.contains(self.rights) {
             return Err(KernelError::InvalidArgument);
         }
-        if self.size_bytes == 0 {
+        self.virtual_range()?;
+        if !self
+            .memory_offset
+            .is_multiple_of(ostd::mm::frame::PAGE_SIZE as u64)
+        {
             return Err(KernelError::InvalidArgument);
         }
-        self.end()?;
         self.memory_offset
             .checked_add(self.size_bytes)
             .ok_or(KernelError::InvalidArgument)?;
         Ok(())
     }
 
-    fn end(self) -> KernelResult<u64> {
-        self.base
-            .checked_add(self.size_bytes)
-            .ok_or(KernelError::InvalidArgument)
+    fn virtual_range(self) -> KernelResult<VirtualRange> {
+        VirtualRange::new(self.base, self.size_bytes).map_err(|_| KernelError::InvalidArgument)
     }
 }
 

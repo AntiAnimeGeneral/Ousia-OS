@@ -200,6 +200,8 @@ Until MemoryObject has a real frame/page backing owner, map reservations publish
 
 When map intents become valid, their physical input must come from frame-owner evidence such as OSTD `FrameRange`; page-table code should not introduce a second physical-range type that repeats frame allocator alignment and ownership invariants.
 
+VM map/unmap descriptors must establish hardware page-granularity before metadata publication: virtual range base/size and MemoryObject offset are page-aligned, non-empty and overflow-checked at the VM boundary. Kernel VM may consume OSTD `VirtualRange` as the normalized virtual range fact without reimplementing separate page-range rules.
+
 The current fixed mapping slots, OSTD page-table update intent and fixed pending TLB invalidation storage are incomplete final-boundary scaffolding, not stable abstractions. They must stay marked with adjacent TODOs that name the missing final owner, the semantics callers cannot rely on and the tests required to exit the scaffold. Do not make them look more complete by adding single-variant operation enums, future-only fields or compatibility facades.
 
 ## Error Boundary
