@@ -164,15 +164,25 @@ impl Kernel {
                 base,
                 size_bytes,
             } => {
-                process.unmap_address_range(&mut self.objects, address_space, base, size_bytes)?;
+                process.unmap_address_range(
+                    &mut self.objects,
+                    &mut self.frames,
+                    address_space,
+                    base,
+                    size_bytes,
+                )?;
                 Ok(SyscallOutcome::Closed)
             }
             Syscall::CreateChannelPair {
                 max_messages,
                 rights,
             } => {
-                let (first, second) =
-                    process.create_channel_pair_handles(&mut self.objects, max_messages, rights)?;
+                let (first, second) = process.create_channel_pair_handles(
+                    &mut self.objects,
+                    &mut self.frames,
+                    max_messages,
+                    rights,
+                )?;
                 Ok(SyscallOutcome::HandlePair { first, second })
             }
             Syscall::ChannelSend {
@@ -198,13 +208,17 @@ impl Kernel {
                 Ok(SyscallOutcome::Handle { handle })
             }
             Syscall::CloseHandle { handle } => {
-                process.handles.close(&mut self.objects, handle)?;
+                process
+                    .handles
+                    .close(&mut self.objects, &mut self.frames, handle)?;
                 Ok(SyscallOutcome::Closed)
             }
             Syscall::RevokeDescendants { root } => {
-                let count = process
-                    .handles
-                    .revoke_descendants(&mut self.objects, root)?;
+                let count = process.handles.revoke_descendants(
+                    &mut self.objects,
+                    &mut self.frames,
+                    root,
+                )?;
                 Ok(SyscallOutcome::Revoked { count })
             }
         }

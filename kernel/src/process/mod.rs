@@ -215,6 +215,7 @@ impl Process {
     pub fn unmap_address_range(
         &mut self,
         objects: &mut ObjectManager,
+        frames: &mut FrameAllocator,
         address_space: HandleValue,
         base: u64,
         size_bytes: u64,
@@ -226,6 +227,7 @@ impl Process {
             HandleRights::MANAGE,
         )?;
         objects.unmap_address_range(
+            frames,
             ObjectRef {
                 id: address_space.object.id,
                 generation: address_space.object.generation,
@@ -238,6 +240,7 @@ impl Process {
     pub fn create_channel_pair_handles(
         &mut self,
         objects: &mut ObjectManager,
+        frames: &mut FrameAllocator,
         max_messages: usize,
         rights: HandleRights,
     ) -> KernelResult<(HandleValue, HandleValue)> {
@@ -276,7 +279,7 @@ impl Process {
         let second_handle = match self.handles.install(objects, second, rights) {
             Ok(handle) => handle,
             Err(error) => {
-                let _ = self.handles.close(objects, first_handle);
+                let _ = self.handles.close(objects, frames, first_handle);
                 let _ = objects.destroy(first.id, first.generation);
                 let _ = objects.destroy(second.id, second.generation);
                 self.budget.release_object();

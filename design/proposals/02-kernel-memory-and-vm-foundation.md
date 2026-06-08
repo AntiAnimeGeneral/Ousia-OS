@@ -28,7 +28,7 @@
 - early frame allocator 是 boot-time facility，不是长期 PMM。
 - early heap 是 smoke/bring-up 设施，不是 kernel object allocator。
 - kernel object/handle/process table 仍主要依赖 fixed capacity `Vec` 初始化和局部 preflight helper，没有统一 allocation context / reservation token。
-- `MemoryObject` 已有 page-aligned size、mapping policy 和 eager contiguous runtime frame backing；尚未连接 page cache、pager-backed state、frame reclaim 或真实 page table commit。
+- `MemoryObject` 已有 page-aligned size、mapping policy、eager contiguous runtime frame backing、active mapping count 和 last-reference frame reclaim；尚未连接 page cache、pager-backed state 或真实 page table commit。
 - `AddressSpaceObject` 只有固定 mapping slots，尚未建立 VMA/VMAR owner、page-table owner、TLB invalidation boundary 或 fault routing。
 - 当前 VM tests 已覆盖 mapping overlap、bounds、rights 和 no partial metadata mutation，但还不能证明 page allocation、metadata allocation 或 page table mutation 失败无副作用。
 
@@ -179,12 +179,15 @@ This interface is the local Ousia lesson from CortenMM: correctness comes from m
 - page-aligned non-zero size
 - rights-compatible mapping policy
 - eager contiguous runtime frame backing evidence for the first anonymous memory slice
+- active mapping count used to delay frame reclaim until no AddressSpace mapping references the object
 - future page-cache metadata only when a real pager or page-cache owner exists
 - future zero-fill, CoW and pager fault endpoint only when their state owner exists
 
 Do not add future backing taxonomy before the backing owner exists. A single variant backing enum, an unused backing field or an `anonymous` constructor is not a harmless placeholder; it hides the fact that the final owner has not been designed. Until pager/page-cache state exists, MemoryObject exposes only the current facts above. Eager contiguous backing is an implementation slice for physical anonymous memory, not a compatibility layer for future SSD、pager、CoW 或 page-cache semantics.
 
 MemoryObject creation must go through an explicit size descriptor. Generic `CreateObject(MemoryObject)` must not synthesize a zero-sized placeholder object; without page-aligned non-zero size, the runtime frame owner cannot be attached without changing semantics. Creation preflights process quota, handle slot, object entry and contiguous frame reservation before publishing the object or handle; frame exhaustion must leave all public owner state unchanged.
+
+MemoryObject frame reclaim is driven by object lifetime plus mapping references: closing the last handle destroys and frees an unmapped MemoryObject, while a mapped MemoryObject keeps its frames until the final unmap removes the AddressSpace reference. Current tests cover the single-process handle/map/unmap path; cross-process shared mappings, revoke-driven last reference and generation-bearing frame owner evidence remain later lifecycle slices.
 
 ### AddressSpace and Mapping
 
@@ -268,10 +271,11 @@ Required initial matrix rows:
 - Define MemoryObject size、mapping policy and eager contiguous runtime frame backing; do not add a backing taxonomy before a real pager/page-cache owner exists.
 - Define AddressSpace range owner and page-table boundary placeholder.
 - Make `MapMemoryObject` reserve mapping metadata and build OSTD page-table map intent from frame owner evidence before commit.
+- Track active mappings so last-handle close only reclaims unmapped MemoryObjects, and final unmap can reclaim a handle-less MemoryObject.
 - Introduce an exclusive VM reservation token even if it only covers metadata in the first slice; do not let syscall code mutate AddressSpace, MemoryObject and page-table placeholder directly.
 - Expand existing `kernel/tests/vm.rs` to cover allocation/reservation failure no partial state.
 
-Current exclusion: MemoryObject destruction/last-handle finalization does not yet reclaim frames. That is a separate object lifecycle slice because it crosses handle close/revoke, object destruction, frame release and stale-generation tests.
+Current exclusion: cross-process shared MemoryObject mappings, revoke-driven last-reference reclaim, frame owner generation hardening and real page-table teardown remain separate lifecycle/page-table slices.
 
 ### Slice 5：Page fault and pager skeleton
 

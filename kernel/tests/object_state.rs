@@ -239,6 +239,45 @@ fn memory_object_frame_exhaustion_leaves_public_state_unchanged() {
 }
 
 #[test]
+fn closing_last_memory_object_handle_reclaims_unmapped_frames() {
+    // Goal: MemoryObject frame backing is reclaimed when the last unmapped handle closes.
+    // Scope: host integration through CreateMemoryObject and CloseHandle.
+    // Semantics: close destroys the unreferenced MemoryObject and frees its runtime frames.
+    let mut kernel = Kernel::new(4, 1, &[FrameRange::new(0x1000, 0x3000).unwrap()]).unwrap();
+    let process = kernel.create_bootstrap_process(4, 3).unwrap();
+    let context = SyscallContext::new(process);
+    let memory = handle(
+        kernel
+            .execute(
+                context,
+                Syscall::CreateMemoryObject {
+                    size_bytes: 0x2000,
+                    rights: HandleRights::READ,
+                },
+            )
+            .unwrap(),
+    );
+    assert_eq!(kernel.frames.free_count(), 0);
+
+    assert_eq!(
+        kernel.execute(context, Syscall::CloseHandle { handle: memory }),
+        Ok(SyscallOutcome::Closed)
+    );
+
+    assert_eq!(kernel.frames.free_count(), 2);
+    assert_eq!(kernel.objects.live_count(), 1);
+    assert_eq!(
+        kernel.lookup_handle(
+            process,
+            memory,
+            ObjectKind::MemoryObject,
+            HandleRights::READ
+        ),
+        Err(KernelError::InvalidHandle)
+    );
+}
+
+#[test]
 fn generic_memory_object_creation_is_not_supported() {
     // Goal: MemoryObject creation requires a size descriptor and cannot use generic object create.
     // Scope: host integration through Syscall::CreateObject with ObjectKind::MemoryObject.

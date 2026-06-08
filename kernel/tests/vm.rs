@@ -546,6 +546,74 @@ fn unmap_removes_exact_mapping_only() {
 }
 
 #[test]
+fn mapped_memory_object_reclaims_frames_after_last_handle_and_unmap() {
+    // Goal: MemoryObject backing stays alive while AddressSpace metadata references it.
+    // Scope: host integration through map, CloseHandle, and UnmapAddressRange.
+    // Semantics: last close does not reclaim mapped frames; final unmap releases them.
+    let mut kernel = Kernel::new(6, 1, &[FrameRange::new(0x1000, 0x3000).unwrap()]).unwrap();
+    let process = kernel.create_bootstrap_process(6, 6).unwrap();
+    let context = SyscallContext::new(process);
+    let address_space = create_address_space(&mut kernel, context, HandleRights::MANAGE);
+    let memory = handle(
+        kernel
+            .execute(
+                context,
+                Syscall::CreateMemoryObject {
+                    size_bytes: 0x2000,
+                    rights: HandleRights::READ,
+                },
+            )
+            .unwrap(),
+    );
+
+    kernel
+        .execute(
+            context,
+            Syscall::MapMemoryObject {
+                address_space,
+                memory,
+                base: 0x4000,
+                size_bytes: 0x2000,
+                memory_offset: 0,
+                rights: HandleRights::READ,
+            },
+        )
+        .unwrap();
+    assert_eq!(kernel.frames.free_count(), 0);
+
+    assert_eq!(
+        kernel.execute(context, Syscall::CloseHandle { handle: memory }),
+        Ok(SyscallOutcome::Closed)
+    );
+    assert_eq!(kernel.frames.free_count(), 0);
+    assert_eq!(mapping_count(&kernel, process, address_space), 1);
+
+    assert_eq!(
+        kernel.execute(
+            context,
+            Syscall::UnmapAddressRange {
+                address_space,
+                base: 0x4000,
+                size_bytes: 0x2000,
+            },
+        ),
+        Ok(SyscallOutcome::Closed)
+    );
+
+    assert_eq!(kernel.frames.free_count(), 2);
+    assert_eq!(mapping_count(&kernel, process, address_space), 0);
+    assert_eq!(
+        kernel.lookup_handle(
+            process,
+            memory,
+            ObjectKind::MemoryObject,
+            HandleRights::READ
+        ),
+        Err(KernelError::InvalidHandle)
+    );
+}
+
+#[test]
 fn mapping_table_capacity_failure_leaves_existing_mappings() {
     // Goal: fixed AddressSpace mapping capacity is checked before mutation.
     // Scope: fill all mapping slots, then attempt one more non-overlapping mapping.

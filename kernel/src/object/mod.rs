@@ -3,7 +3,7 @@ use alloc::vec::Vec;
 use crate::{
     error::{KernelError, KernelResult},
     handle::HandleRights,
-    memory::frame::FrameRange,
+    memory::frame::{FrameAllocator, FrameOwner, FrameRange},
     vm::{AddressSpaceObject, MappingPolicy, MemoryObject, VmMapDescriptor},
 };
 
@@ -468,18 +468,29 @@ impl ObjectManager {
             memory_offset,
             rights,
         };
+        self.add_memory_mapping(memory.id, memory.generation)?;
 
-        let payload = self.live_payload_mut(address_space.id, address_space.generation)?;
-        let ObjectPayload::AddressSpace(address_space) = payload else {
-            return Err(KernelError::WrongObjectType);
-        };
-        let reservation = address_space.prepare_map(memory, memory_object, descriptor)?;
-        reservation.commit();
+        let map_result = (|| {
+            let payload = self.live_payload_mut(address_space.id, address_space.generation)?;
+            let ObjectPayload::AddressSpace(address_space) = payload else {
+                return Err(KernelError::WrongObjectType);
+            };
+            let reservation = address_space.prepare_map(memory, memory_object, descriptor)?;
+            reservation.commit();
+            Ok(())
+        })();
+        if let Err(error) = map_result {
+            self.remove_memory_mapping(memory.id, memory.generation)
+                .expect("memory mapping reference rollback must match a successful reservation");
+            return Err(error);
+        }
+
         Ok(())
     }
 
     pub fn unmap_address_range(
         &mut self,
+        frames: &mut FrameAllocator,
         address_space: ObjectRef,
         base: u64,
         size_bytes: u64,
@@ -489,8 +500,39 @@ impl ObjectManager {
             return Err(KernelError::WrongObjectType);
         };
         let reservation = address_space.prepare_unmap(base, size_bytes)?;
+        let memory = reservation.memory();
         reservation.commit();
+        self.remove_memory_mapping(memory.id, memory.generation)
+            .expect("vm unmap commit must match one active MemoryObject mapping reference");
+        self.reclaim_memory_object_if_unreferenced(frames, memory.id, memory.generation);
         Ok(())
+    }
+
+    pub fn reclaim_memory_object_if_unreferenced(
+        &mut self,
+        frames: &mut FrameAllocator,
+        id: ObjectId,
+        generation: ObjectGeneration,
+    ) {
+        let entry = self
+            .entry(id)
+            .expect("reclaim candidate must still name an object entry");
+        assert_eq!(
+            entry.generation, generation,
+            "reclaim candidate generation must match the object entry"
+        );
+        let ObjectPayload::MemoryObject(memory) = entry.payload else {
+            return;
+        };
+        if entry.handle_count > 0 || !memory.can_reclaim() {
+            return;
+        }
+
+        frames
+            .free_range(memory.frame_range, FrameOwner::MemoryObject(id.raw()))
+            .expect("MemoryObject frame range must be owned by the object until reclaim");
+        self.destroy(id, generation)
+            .expect("unreferenced MemoryObject must be destroyable during reclaim")
     }
 
     pub fn channel_endpoint(
@@ -618,6 +660,30 @@ impl ObjectManager {
         }
         entry.handle_count = entry.handle_count.saturating_sub(1);
         Ok(())
+    }
+
+    fn add_memory_mapping(
+        &mut self,
+        id: ObjectId,
+        generation: ObjectGeneration,
+    ) -> KernelResult<()> {
+        let payload = self.live_payload_mut(id, generation)?;
+        let ObjectPayload::MemoryObject(memory) = payload else {
+            return Err(KernelError::WrongObjectType);
+        };
+        memory.add_mapping()
+    }
+
+    fn remove_memory_mapping(
+        &mut self,
+        id: ObjectId,
+        generation: ObjectGeneration,
+    ) -> KernelResult<()> {
+        let payload = self.live_payload_mut(id, generation)?;
+        let ObjectPayload::MemoryObject(memory) = payload else {
+            return Err(KernelError::WrongObjectType);
+        };
+        memory.remove_mapping()
     }
 
     pub fn destroy(&mut self, id: ObjectId, generation: ObjectGeneration) -> KernelResult<()> {

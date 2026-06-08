@@ -28,6 +28,7 @@ pub struct MemoryObject {
     pub size_bytes: u64,
     pub mapping_policy: MappingPolicy,
     pub frame_range: MemoryFrameRange,
+    pub active_mappings: usize,
 }
 
 impl MemoryObject {
@@ -44,6 +45,7 @@ impl MemoryObject {
             size_bytes,
             mapping_policy,
             frame_range,
+            active_mappings: 0,
         })
     }
 
@@ -64,6 +66,26 @@ impl MemoryObject {
             return Err(KernelError::InvalidArgument);
         }
         Ok(())
+    }
+
+    pub fn add_mapping(&mut self) -> KernelResult<()> {
+        self.active_mappings = self
+            .active_mappings
+            .checked_add(1)
+            .ok_or(KernelError::NoCapacity)?;
+        Ok(())
+    }
+
+    pub fn remove_mapping(&mut self) -> KernelResult<()> {
+        if self.active_mappings == 0 {
+            return Err(KernelError::InvalidArgument);
+        }
+        self.active_mappings -= 1;
+        Ok(())
+    }
+
+    pub const fn can_reclaim(self) -> bool {
+        self.active_mappings == 0
     }
 
     fn page_table_frame_range(
@@ -177,10 +199,14 @@ impl AddressSpaceObject {
         let tlb_slot = self
             .pending_tlb_invalidations
             .reserve(TlbInvalidationIntent::new(range))?;
+        let memory = self.mappings[index]
+            .expect("vm unmap reservation selected an occupied mapping")
+            .memory;
 
         Ok(VmUnmapReservation {
             address_space: self,
             mapping_slot: MappingSlotReservation { index },
+            memory,
             page_table,
             tlb_slot,
         })
@@ -264,11 +290,16 @@ impl VmMapReservation<'_> {
 pub struct VmUnmapReservation<'a> {
     address_space: &'a mut AddressSpaceObject,
     mapping_slot: MappingSlotReservation,
+    memory: ObjectRef,
     page_table: PageTableUpdateIntent,
     tlb_slot: PendingTlbInvalidationReservation,
 }
 
 impl VmUnmapReservation<'_> {
+    pub const fn memory(&self) -> ObjectRef {
+        self.memory
+    }
+
     pub const fn page_table(&self) -> &PageTableUpdateIntent {
         &self.page_table
     }

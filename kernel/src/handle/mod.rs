@@ -4,6 +4,7 @@ use bitflags::bitflags;
 
 use crate::{
     error::{KernelError, KernelResult},
+    memory::frame::FrameAllocator,
     object::{ObjectGeneration, ObjectId, ObjectKind, ObjectManager, ObjectSnapshot},
 };
 
@@ -244,6 +245,7 @@ impl HandleTable {
     pub fn revoke_descendants(
         &mut self,
         objects: &mut ObjectManager,
+        frames: &mut FrameAllocator,
         root: HandleValue,
     ) -> KernelResult<usize> {
         let root_entry = self.valid_entry(root)?;
@@ -265,15 +267,25 @@ impl HandleTable {
 
         let removed = descendants.len();
         for handle in descendants {
-            self.close(objects, handle)?;
+            self.close(objects, frames, handle)?;
         }
         Ok(removed)
     }
 
-    pub fn close(&mut self, objects: &mut ObjectManager, handle: HandleValue) -> KernelResult<()> {
+    pub fn close(
+        &mut self,
+        objects: &mut ObjectManager,
+        frames: &mut FrameAllocator,
+        handle: HandleValue,
+    ) -> KernelResult<()> {
         let entry = self.valid_entry(handle)?;
         objects.remove_handle(entry.object, entry.object_generation)?;
         self.remove_entry(handle)?;
+        objects.reclaim_memory_object_if_unreferenced(
+            frames,
+            entry.object,
+            entry.object_generation,
+        );
         Ok(())
     }
 
