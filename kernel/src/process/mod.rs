@@ -155,8 +155,12 @@ impl Process {
         {
             Ok(handle) => handle,
             Err(error) => {
-                let _ = objects.destroy(object.id, object.generation);
                 let _ = frames.free_range(frame_range, owner);
+                objects
+                    .destroy_unpublished_memory_object(object.id, object.generation)
+                    .expect(
+                        "unpublished MemoryObject entry must be removable after frame rollback",
+                    );
                 self.budget.release_object();
                 return Err(error);
             }

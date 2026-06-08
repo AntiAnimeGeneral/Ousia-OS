@@ -614,6 +614,62 @@ fn mapped_memory_object_reclaims_frames_after_last_handle_and_unmap() {
 }
 
 #[test]
+fn direct_destroy_of_handleless_mapped_memory_object_is_rejected() {
+    // Goal: active AddressSpace mappings keep MemoryObject backing alive after the handle closes.
+    // Scope: map a MemoryObject, close its handle, then call ObjectManager destroy directly.
+    // Semantics: WouldBlock preserves mapping metadata and frame ownership until unmap.
+    let mut kernel = Kernel::new(6, 1, &[FrameRange::new(0x1000, 0x3000).unwrap()]).unwrap();
+    let process = kernel.create_bootstrap_process(6, 6).unwrap();
+    let context = SyscallContext::new(process);
+    let address_space = create_address_space(&mut kernel, context, HandleRights::MANAGE);
+    let memory = handle(
+        kernel
+            .execute(
+                context,
+                Syscall::CreateMemoryObject {
+                    size_bytes: 0x2000,
+                    rights: HandleRights::READ,
+                },
+            )
+            .unwrap(),
+    );
+    let memory_view = kernel
+        .lookup_handle(
+            process,
+            memory,
+            ObjectKind::MemoryObject,
+            HandleRights::READ,
+        )
+        .unwrap();
+    kernel
+        .execute(
+            context,
+            Syscall::MapMemoryObject {
+                address_space,
+                memory,
+                base: 0x4000,
+                size_bytes: 0x2000,
+                memory_offset: 0,
+                rights: HandleRights::READ,
+            },
+        )
+        .unwrap();
+    kernel
+        .execute(context, Syscall::CloseHandle { handle: memory })
+        .unwrap();
+
+    assert_eq!(
+        kernel
+            .objects
+            .destroy(memory_view.object.id, memory_view.object.generation),
+        Err(KernelError::WouldBlock)
+    );
+
+    assert_eq!(kernel.frames.free_count(), 0);
+    assert_eq!(mapping_count(&kernel, process, address_space), 1);
+}
+
+#[test]
 fn mapping_table_capacity_failure_leaves_existing_mappings() {
     // Goal: fixed AddressSpace mapping capacity is checked before mutation.
     // Scope: fill all mapping slots, then attempt one more non-overlapping mapping.

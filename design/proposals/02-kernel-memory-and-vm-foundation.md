@@ -187,7 +187,7 @@ Do not add future backing taxonomy before the backing owner exists. A single var
 
 MemoryObject creation must go through an explicit size descriptor. Generic `CreateObject(MemoryObject)` must not synthesize a zero-sized placeholder object; without page-aligned non-zero size, the runtime frame owner cannot be attached without changing semantics. Creation preflights process quota, handle slot, object entry and contiguous frame reservation before publishing the object or handle; frame exhaustion must leave all public owner state unchanged.
 
-MemoryObject frame reclaim is driven by object lifetime plus mapping references: closing the last handle destroys and frees an unmapped MemoryObject, while a mapped MemoryObject keeps its frames until the final unmap removes the AddressSpace reference. Current tests cover the single-process handle/map/unmap path; cross-process shared mappings, revoke-driven last reference and generation-bearing frame owner evidence remain later lifecycle slices.
+MemoryObject frame reclaim is driven by object lifetime plus mapping references: closing the last handle destroys and frees an unmapped MemoryObject, while a mapped MemoryObject keeps its frames until the final unmap removes the AddressSpace reference. Generic object destruction is not a MemoryObject reclaim path because it cannot free frame ownership; MemoryObject entries are removed only by unpublished creation rollback or after the reclaim path has freed their frames. Current tests cover the single-process handle/map/unmap path; cross-process shared mappings, revoke-driven last reference and generation-bearing frame owner evidence remain later lifecycle slices.
 
 ### AddressSpace and Mapping
 

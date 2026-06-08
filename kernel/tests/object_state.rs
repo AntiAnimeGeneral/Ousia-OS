@@ -278,6 +278,54 @@ fn closing_last_memory_object_handle_reclaims_unmapped_frames() {
 }
 
 #[test]
+fn direct_memory_object_destroy_with_live_handle_is_rejected() {
+    // Goal: MemoryObject frames cannot be leaked by bypassing handle-owned lifetime.
+    // Scope: direct ObjectManager destroy against a live MemoryObject handle.
+    // Semantics: WouldBlock preserves the object, handle, and frame ownership.
+    let mut kernel = Kernel::new(4, 1, &[FrameRange::new(0x1000, 0x3000).unwrap()]).unwrap();
+    let process = kernel.create_bootstrap_process(4, 3).unwrap();
+    let context = SyscallContext::new(process);
+    let memory = handle(
+        kernel
+            .execute(
+                context,
+                Syscall::CreateMemoryObject {
+                    size_bytes: 0x2000,
+                    rights: HandleRights::READ,
+                },
+            )
+            .unwrap(),
+    );
+    let view = kernel
+        .lookup_handle(
+            process,
+            memory,
+            ObjectKind::MemoryObject,
+            HandleRights::READ,
+        )
+        .unwrap();
+
+    assert_eq!(
+        kernel
+            .objects
+            .destroy(view.object.id, view.object.generation),
+        Err(KernelError::WouldBlock)
+    );
+
+    assert_eq!(kernel.frames.free_count(), 0);
+    assert!(
+        kernel
+            .lookup_handle(
+                process,
+                memory,
+                ObjectKind::MemoryObject,
+                HandleRights::READ,
+            )
+            .is_ok()
+    );
+}
+
+#[test]
 fn generic_memory_object_creation_is_not_supported() {
     // Goal: MemoryObject creation requires a size descriptor and cannot use generic object create.
     // Scope: host integration through Syscall::CreateObject with ObjectKind::MemoryObject.

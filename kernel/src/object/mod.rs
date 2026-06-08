@@ -3,8 +3,8 @@ use alloc::vec::Vec;
 use crate::{
     error::{KernelError, KernelResult},
     handle::HandleRights,
-    memory::frame::{FrameAllocator, FrameOwner, FrameRange},
-    vm::{AddressSpaceObject, MappingPolicy, MemoryObject, VmMapDescriptor},
+    memory::frame::{FrameAllocator, FrameOwner},
+    vm::{AddressSpaceObject, MemoryObject, VmMapDescriptor},
 };
 
 pub const MAX_CHANNEL_MESSAGES: usize = 4;
@@ -274,18 +274,6 @@ impl ObjectManager {
         })
     }
 
-    pub fn create_memory_object(
-        &mut self,
-        size_bytes: u64,
-        frame_range: FrameRange,
-    ) -> KernelResult<ObjectSnapshot> {
-        self.create_payload(ObjectPayload::MemoryObject(MemoryObject::new(
-            size_bytes,
-            MappingPolicy::new(HandleRights::READ | HandleRights::WRITE | HandleRights::EXECUTE),
-            frame_range,
-        )?))
-    }
-
     pub fn create_channel_endpoint(&mut self, max_messages: usize) -> KernelResult<ObjectSnapshot> {
         self.create_payload(ObjectPayload::ChannelEndpoint(ChannelEndpointObject::new(
             max_messages,
@@ -531,8 +519,8 @@ impl ObjectManager {
         frames
             .free_range(memory.frame_range, FrameOwner::MemoryObject(id.raw()))
             .expect("MemoryObject frame range must be owned by the object until reclaim");
-        self.destroy(id, generation)
-            .expect("unreferenced MemoryObject must be destroyable during reclaim")
+        self.destroy_reclaimed_memory_object(id, generation)
+            .expect("reclaimed MemoryObject entry must be removable after frame reclaim")
     }
 
     pub fn channel_endpoint(
@@ -712,6 +700,58 @@ impl ObjectManager {
             }
         }
 
+        if let ObjectPayload::MemoryObject(_) = entry.payload {
+            return Err(KernelError::WouldBlock);
+        }
+
+        self.entries[index] = None;
+        self.generations[index] = generation.next();
+        Ok(())
+    }
+
+    fn destroy_reclaimed_memory_object(
+        &mut self,
+        id: ObjectId,
+        generation: ObjectGeneration,
+    ) -> KernelResult<()> {
+        let index = self.index(id)?;
+        let Some(entry) = self.entries[index] else {
+            return Err(KernelError::DeadObject);
+        };
+        if entry.generation != generation {
+            return Err(KernelError::StaleHandle);
+        }
+        let ObjectPayload::MemoryObject(memory) = entry.payload else {
+            return Err(KernelError::WrongObjectType);
+        };
+        if entry.handle_count != 0 || !memory.can_reclaim() {
+            return Err(KernelError::WouldBlock);
+        }
+
+        self.entries[index] = None;
+        self.generations[index] = generation.next();
+        Ok(())
+    }
+
+    pub(crate) fn destroy_unpublished_memory_object(
+        &mut self,
+        id: ObjectId,
+        generation: ObjectGeneration,
+    ) -> KernelResult<()> {
+        let index = self.index(id)?;
+        let Some(entry) = self.entries[index] else {
+            return Err(KernelError::DeadObject);
+        };
+        if entry.generation != generation {
+            return Err(KernelError::StaleHandle);
+        }
+        let ObjectPayload::MemoryObject(memory) = entry.payload else {
+            return Err(KernelError::WrongObjectType);
+        };
+        if entry.handle_count != 0 || !memory.can_reclaim() {
+            return Err(KernelError::WouldBlock);
+        }
+
         self.entries[index] = None;
         self.generations[index] = generation.next();
         Ok(())
@@ -775,5 +815,42 @@ impl From<ObjectEntry> for ObjectSnapshot {
             state: entry.state,
             handle_count: entry.handle_count,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::memory::frame::FrameRange;
+    use crate::vm::MappingPolicy;
+
+    #[test]
+    fn generic_destroy_rejects_unpublished_reclaimable_memory_object() {
+        // Goal: direct object deletion cannot leak frames for a handleless MemoryObject.
+        // Scope: ObjectManager entry committed before handle publication.
+        // Semantics: generic destroy rejects MemoryObject because it cannot reclaim frames.
+        let mut objects = ObjectManager::with_capacity(1).unwrap();
+        let reservation = objects.reserve_entry().unwrap();
+        let owner = FrameOwner::MemoryObject(reservation.object_id().raw());
+        let memory = MemoryObject::new(
+            0x1000,
+            MappingPolicy::new(HandleRights::READ | HandleRights::WRITE),
+            FrameRange::new(0x1000, 0x2000).unwrap(),
+        )
+        .unwrap();
+        let object = objects
+            .commit_reserved(reservation, ObjectPayload::MemoryObject(memory))
+            .unwrap();
+
+        assert_eq!(owner, FrameOwner::MemoryObject(object.id.raw()));
+        assert_eq!(
+            objects.destroy(object.id, object.generation),
+            Err(KernelError::WouldBlock)
+        );
+        assert!(
+            objects
+                .validate(object.id, object.generation, ObjectKind::MemoryObject)
+                .is_ok()
+        );
     }
 }
