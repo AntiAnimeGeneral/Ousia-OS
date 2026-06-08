@@ -3,6 +3,7 @@ use alloc::vec::Vec;
 use crate::{
     error::KernelResult,
     handle::{HandleRights, HandleValue, HandleView},
+    memory::frame::{FrameAllocator, FrameRange},
     object::{MAX_CHANNEL_MESSAGE_BYTES, ObjectKind, ObjectManager},
     process::{ProcessId, ProcessTable},
 };
@@ -90,13 +91,19 @@ impl SyscallContext {
 pub struct Kernel {
     pub objects: ObjectManager,
     pub processes: ProcessTable,
+    pub frames: FrameAllocator,
 }
 
 impl Kernel {
-    pub fn new(object_capacity: usize, process_capacity: usize) -> KernelResult<Self> {
+    pub fn new(
+        object_capacity: usize,
+        process_capacity: usize,
+        frame_ranges: &[FrameRange],
+    ) -> KernelResult<Self> {
         Ok(Self {
             objects: ObjectManager::with_capacity(object_capacity)?,
             processes: ProcessTable::with_capacity(process_capacity)?,
+            frames: FrameAllocator::from_available_ranges(frame_ranges)?,
         })
     }
 
@@ -121,8 +128,12 @@ impl Kernel {
                 Ok(SyscallOutcome::Handle { handle })
             }
             Syscall::CreateMemoryObject { size_bytes, rights } => {
-                let handle =
-                    process.create_memory_object_handle(&mut self.objects, size_bytes, rights)?;
+                let handle = process.create_memory_object_handle(
+                    &mut self.objects,
+                    &mut self.frames,
+                    size_bytes,
+                    rights,
+                )?;
                 Ok(SyscallOutcome::Handle { handle })
             }
             Syscall::CreateAddressSpace { rights } => {

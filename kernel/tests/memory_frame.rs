@@ -42,6 +42,72 @@ fn reserving_frame_publishes_owner_and_physical_address() {
 }
 
 #[test]
+fn contiguous_reservation_publishes_one_owner_range() {
+    // Goal: MemoryObject backing can reserve a contiguous physical frame range.
+    // Scope: runtime FrameAllocator contiguous reservation.
+    // Semantics: the reserved range has one owner and cannot skip fragmented gaps.
+    let mut allocator = allocator();
+
+    let range = allocator
+        .reserve_contiguous(FrameOwner::MemoryObject(3), 0x2000)
+        .unwrap();
+
+    assert_eq!(range, FrameRange::new(0x1000, 0x3000).unwrap());
+    assert_eq!(allocator.free_count(), 1);
+    assert_eq!(
+        allocator.state(kernel::memory::frame::FrameId::new(0)),
+        Ok(FrameState::Allocated {
+            owner: FrameOwner::MemoryObject(3),
+        })
+    );
+    assert_eq!(
+        allocator.state(kernel::memory::frame::FrameId::new(1)),
+        Ok(FrameState::Allocated {
+            owner: FrameOwner::MemoryObject(3),
+        })
+    );
+}
+
+#[test]
+fn contiguous_reservation_is_based_on_physical_order() {
+    // Goal: contiguous backing depends on physical adjacency, not boot map input order.
+    // Scope: allocator import with out-of-order available ranges followed by contiguous reserve.
+    // Semantics: normalized runtime metadata still finds the physical two-frame run.
+    let mut allocator = FrameAllocator::from_available_ranges(&[
+        FrameRange::new(0x8000, 0x9000).unwrap(),
+        FrameRange::new(0x1000, 0x3000).unwrap(),
+    ])
+    .unwrap();
+
+    assert_eq!(
+        allocator.reserve_contiguous(FrameOwner::MemoryObject(5), 0x2000),
+        Ok(FrameRange::new(0x1000, 0x3000).unwrap())
+    );
+}
+
+#[test]
+fn contiguous_reservation_failure_leaves_allocator_unchanged() {
+    // Goal: fragmented backing failure happens before frame owner mutation.
+    // Scope: reserve one frame from the only two-frame run, then request two contiguous frames.
+    // Semantics: NoMemory leaves existing ownership and free count unchanged.
+    let mut allocator = allocator();
+    let first = allocator.reserve_one(FrameOwner::Kernel).unwrap();
+
+    assert_eq!(
+        allocator.reserve_contiguous(FrameOwner::MemoryObject(4), 0x2000),
+        Err(KernelError::NoMemory)
+    );
+
+    assert_eq!(allocator.free_count(), 2);
+    assert_eq!(
+        allocator.state(first.id()),
+        Ok(FrameState::Allocated {
+            owner: FrameOwner::Kernel,
+        })
+    );
+}
+
+#[test]
 fn exhaustion_does_not_mutate_allocator_state() {
     // Goal: frame exhaustion is a recoverable memory error with no hidden state mutation.
     // Scope: reserve every frame, then attempt one extra reservation.

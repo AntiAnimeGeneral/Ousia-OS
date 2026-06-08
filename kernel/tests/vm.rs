@@ -1,10 +1,30 @@
 use kernel::{
     error::KernelError,
     handle::{HandleRights, HandleValue},
+    memory::frame::FrameRange,
     object::{ObjectKind, ObjectPayload, ObjectRef},
     syscall::{Kernel, Syscall, SyscallContext, SyscallOutcome},
     vm::{AddressSpaceObject, MappingPolicy, MemoryObject, VmMapDescriptor},
 };
+use ostd::mm::page_table::{PageTableRights, PageTableUpdate, VirtualRange};
+
+fn kernel(object_capacity: usize, process_capacity: usize) -> Kernel {
+    Kernel::new(
+        object_capacity,
+        process_capacity,
+        &[FrameRange::new(0x1000, 0x20000).unwrap()],
+    )
+    .unwrap()
+}
+
+fn memory_object(size_bytes: u64, rights: HandleRights) -> MemoryObject {
+    MemoryObject::new(
+        size_bytes,
+        MappingPolicy::new(rights),
+        FrameRange::new(0x8000, 0x8000 + size_bytes).unwrap(),
+    )
+    .unwrap()
+}
 
 fn handle(outcome: SyscallOutcome) -> HandleValue {
     let SyscallOutcome::Handle { handle } = outcome else {
@@ -48,7 +68,7 @@ fn map_memory_object_records_address_space_mapping() {
     // Goal: AddressSpace owns VM mapping metadata for MemoryObject ranges.
     // Scope: host integration through CreateAddressSpace, CreateMemoryObject, and MapMemoryObject.
     // Semantics: a valid map increments mapping_count and records range/object/rights metadata.
-    let mut kernel = Kernel::new(6, 1).unwrap();
+    let mut kernel = kernel(6, 1);
     let process = kernel.create_bootstrap_process(6, 6).unwrap();
     let context = SyscallContext::new(process);
     let address_space = create_address_space(&mut kernel, context, HandleRights::MANAGE);
@@ -107,10 +127,10 @@ fn map_memory_object_records_address_space_mapping() {
 
 #[test]
 fn memory_object_records_size_and_mapping_policy() {
-    // Goal: MemoryObject owns size and mapping policy, not physical frames.
+    // Goal: MemoryObject owns sized frame backing and mapping policy.
     // Scope: host integration through CreateMemoryObject and handle lookup.
-    // Semantics: a memory object records size and maximum mapping rights.
-    let mut kernel = Kernel::new(4, 1).unwrap();
+    // Semantics: a memory object records size, frame range, and maximum mapping rights.
+    let mut kernel = kernel(4, 1);
     let process = kernel.create_bootstrap_process(4, 4).unwrap();
     let context = SyscallContext::new(process);
     let memory = create_memory(&mut kernel, context, HandleRights::READ);
@@ -128,6 +148,10 @@ fn memory_object_records_size_and_mapping_policy() {
     };
 
     assert_eq!(memory_payload.size_bytes, 0x4000);
+    assert_eq!(
+        memory_payload.frame_range,
+        FrameRange::new(0x1000, 0x5000).unwrap()
+    );
     assert!(
         memory_payload
             .mapping_policy
@@ -158,11 +182,7 @@ fn vm_prepare_map_does_not_publish_mapping_until_commit() {
         id: kernel::object::ObjectId::new(7),
         generation: kernel::object::ObjectGeneration::INITIAL,
     };
-    let memory_object = MemoryObject::new(
-        0x4000,
-        MappingPolicy::new(HandleRights::READ | HandleRights::WRITE),
-    )
-    .unwrap();
+    let memory_object = memory_object(0x4000, HandleRights::READ | HandleRights::WRITE);
 
     let reservation = address_space
         .prepare_map(
@@ -176,6 +196,15 @@ fn vm_prepare_map_does_not_publish_mapping_until_commit() {
             },
         )
         .unwrap();
+
+    assert_eq!(
+        reservation.page_table().update,
+        PageTableUpdate::Map {
+            virtual_range: VirtualRange::new(0x1000, 0x1000).unwrap(),
+            frame_range: ostd::mm::frame::FrameRange::new(0x8000, 0x9000).unwrap(),
+            rights: PageTableRights::READ,
+        }
+    );
 
     reservation.commit();
     assert_eq!(address_space.mapping_count, 1);
@@ -195,7 +224,7 @@ fn dropping_vm_map_reservation_leaves_address_space_unchanged() {
         id: kernel::object::ObjectId::new(9),
         generation: kernel::object::ObjectGeneration::INITIAL,
     };
-    let memory_object = MemoryObject::new(0x4000, MappingPolicy::new(HandleRights::READ)).unwrap();
+    let memory_object = memory_object(0x4000, HandleRights::READ);
     let descriptor = VmMapDescriptor {
         base: 0x1000,
         size_bytes: 0x1000,
@@ -223,7 +252,7 @@ fn dropping_vm_unmap_reservation_leaves_address_space_unchanged() {
         id: kernel::object::ObjectId::new(10),
         generation: kernel::object::ObjectGeneration::INITIAL,
     };
-    let memory_object = MemoryObject::new(0x4000, MappingPolicy::new(HandleRights::READ)).unwrap();
+    let memory_object = memory_object(0x4000, HandleRights::READ);
     let descriptor = VmMapDescriptor {
         base: 0x2000,
         size_bytes: 0x1000,
@@ -256,7 +285,7 @@ fn vm_prepare_map_failure_leaves_address_space_unchanged() {
         id: kernel::object::ObjectId::new(8),
         generation: kernel::object::ObjectGeneration::INITIAL,
     };
-    let memory_object = MemoryObject::new(0x1000, MappingPolicy::new(HandleRights::READ)).unwrap();
+    let memory_object = memory_object(0x1000, HandleRights::READ);
 
     let result = address_space.prepare_map(
         memory,
@@ -280,7 +309,7 @@ fn overlapping_map_is_rejected_without_mutating_address_space() {
     // Goal: VM range overlap is rejected before mapping owner mutation.
     // Scope: two MapMemoryObject calls against the same AddressSpace.
     // Semantics: InvalidArgument leaves the existing mapping set unchanged.
-    let mut kernel = Kernel::new(6, 1).unwrap();
+    let mut kernel = kernel(6, 1);
     let process = kernel.create_bootstrap_process(6, 6).unwrap();
     let context = SyscallContext::new(process);
     let address_space = create_address_space(&mut kernel, context, HandleRights::MANAGE);
@@ -321,7 +350,7 @@ fn map_beyond_memory_size_is_rejected_without_mutation() {
     // Goal: MemoryObject range bounds are checked before AddressSpace mutation.
     // Scope: MapMemoryObject with memory_offset + size beyond MemoryObject size.
     // Semantics: InvalidArgument leaves mapping_count unchanged.
-    let mut kernel = Kernel::new(6, 1).unwrap();
+    let mut kernel = kernel(6, 1);
     let process = kernel.create_bootstrap_process(6, 6).unwrap();
     let context = SyscallContext::new(process);
     let address_space = create_address_space(&mut kernel, context, HandleRights::MANAGE);
@@ -349,7 +378,7 @@ fn missing_memory_rights_reject_map_without_mutation() {
     // Goal: mapping rights derive from the MemoryObject handle rights.
     // Scope: MapMemoryObject requesting WRITE from a read-only memory handle.
     // Semantics: MissingRights leaves the AddressSpace mapping set unchanged.
-    let mut kernel = Kernel::new(6, 1).unwrap();
+    let mut kernel = kernel(6, 1);
     let process = kernel.create_bootstrap_process(6, 6).unwrap();
     let context = SyscallContext::new(process);
     let address_space = create_address_space(&mut kernel, context, HandleRights::MANAGE);
@@ -377,7 +406,7 @@ fn invalid_mapping_descriptors_are_rejected_before_mutation() {
     // Goal: malformed VM mapping descriptors fail before AddressSpace mutation.
     // Scope: zero-size, overflow, unaligned range/offset, and non-VM rights.
     // Semantics: every invalid descriptor leaves mapping_count unchanged.
-    let mut kernel = Kernel::new(6, 1).unwrap();
+    let mut kernel = kernel(6, 1);
     let process = kernel.create_bootstrap_process(6, 6).unwrap();
     let context = SyscallContext::new(process);
     let address_space = create_address_space(&mut kernel, context, HandleRights::MANAGE);
@@ -420,7 +449,7 @@ fn zero_size_unmap_is_rejected_before_mutation() {
     // Goal: malformed unmap descriptors do not touch AddressSpace metadata.
     // Scope: UnmapAddressRange with size zero after one valid mapping exists.
     // Semantics: InvalidArgument leaves the mapping intact.
-    let mut kernel = Kernel::new(6, 1).unwrap();
+    let mut kernel = kernel(6, 1);
     let process = kernel.create_bootstrap_process(6, 6).unwrap();
     let context = SyscallContext::new(process);
     let address_space = create_address_space(&mut kernel, context, HandleRights::MANAGE);
@@ -458,7 +487,7 @@ fn unmap_removes_exact_mapping_only() {
     // Goal: unmap commits only an exact mapped range removal.
     // Scope: map one range, reject partial unmap, then unmap the exact range.
     // Semantics: partial unmap leaves mapping_count unchanged; exact unmap removes it.
-    let mut kernel = Kernel::new(6, 1).unwrap();
+    let mut kernel = kernel(6, 1);
     let process = kernel.create_bootstrap_process(6, 6).unwrap();
     let context = SyscallContext::new(process);
     let address_space = create_address_space(&mut kernel, context, HandleRights::MANAGE);
@@ -521,7 +550,7 @@ fn mapping_table_capacity_failure_leaves_existing_mappings() {
     // Goal: fixed AddressSpace mapping capacity is checked before mutation.
     // Scope: fill all mapping slots, then attempt one more non-overlapping mapping.
     // Semantics: NoCapacity leaves the existing mapping_count unchanged.
-    let mut kernel = Kernel::new(6, 1).unwrap();
+    let mut kernel = kernel(6, 1);
     let process = kernel.create_bootstrap_process(6, 6).unwrap();
     let context = SyscallContext::new(process);
     let address_space = create_address_space(&mut kernel, context, HandleRights::MANAGE);
@@ -580,7 +609,7 @@ fn pending_tlb_capacity_failure_leaves_address_space_unchanged() {
         id: kernel::object::ObjectId::new(11),
         generation: kernel::object::ObjectGeneration::INITIAL,
     };
-    let memory_object = MemoryObject::new(0x9000, MappingPolicy::new(HandleRights::READ)).unwrap();
+    let memory_object = memory_object(0x9000, HandleRights::READ);
 
     for index in 0..8 {
         address_space

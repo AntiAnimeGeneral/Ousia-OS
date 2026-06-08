@@ -1,9 +1,13 @@
 use crate::{
     error::{KernelError, KernelResult},
     handle::HandleRights,
+    memory::frame::FrameRange as MemoryFrameRange,
     object::ObjectRef,
 };
-use ostd::mm::page_table::{PageTableUpdateIntent, TlbInvalidationIntent, VirtualRange};
+use ostd::mm::{
+    frame::FrameRange as PageTableFrameRange,
+    page_table::{PageTableRights, PageTableUpdateIntent, TlbInvalidationIntent, VirtualRange},
+};
 
 pub const MAX_ADDRESS_SPACE_MAPPINGS: usize = 8;
 pub const MAX_PENDING_TLB_INVALIDATIONS: usize = 8;
@@ -23,15 +27,29 @@ impl MappingPolicy {
 pub struct MemoryObject {
     pub size_bytes: u64,
     pub mapping_policy: MappingPolicy,
+    pub frame_range: MemoryFrameRange,
 }
 
 impl MemoryObject {
-    pub fn new(size_bytes: u64, mapping_policy: MappingPolicy) -> KernelResult<Self> {
-        VirtualRange::new(0, size_bytes).map_err(|_| KernelError::InvalidArgument)?;
+    pub fn new(
+        size_bytes: u64,
+        mapping_policy: MappingPolicy,
+        frame_range: MemoryFrameRange,
+    ) -> KernelResult<Self> {
+        Self::validate_size(size_bytes)?;
+        if frame_range.len() != size_bytes {
+            return Err(KernelError::InvalidArgument);
+        }
         Ok(Self {
             size_bytes,
             mapping_policy,
+            frame_range,
         })
+    }
+
+    pub fn validate_size(size_bytes: u64) -> KernelResult<()> {
+        VirtualRange::new(0, size_bytes).map_err(|_| KernelError::InvalidArgument)?;
+        Ok(())
     }
 
     pub fn validate_mapping(&self, descriptor: VmMapDescriptor) -> KernelResult<()> {
@@ -46,6 +64,25 @@ impl MemoryObject {
             return Err(KernelError::InvalidArgument);
         }
         Ok(())
+    }
+
+    fn page_table_frame_range(
+        &self,
+        descriptor: VmMapDescriptor,
+    ) -> KernelResult<PageTableFrameRange> {
+        let start = self
+            .frame_range
+            .start
+            .checked_add(descriptor.memory_offset)
+            .ok_or(KernelError::InvalidArgument)?;
+        let end = start
+            .checked_add(descriptor.size_bytes)
+            .ok_or(KernelError::InvalidArgument)?;
+        PageTableFrameRange::new(
+            usize::try_from(start).map_err(|_| KernelError::InvalidArgument)?,
+            usize::try_from(end).map_err(|_| KernelError::InvalidArgument)?,
+        )
+        .map_err(|_| KernelError::InvalidArgument)
     }
 }
 
@@ -92,6 +129,12 @@ impl AddressSpaceObject {
         {
             return Err(KernelError::InvalidArgument);
         }
+        let page_table = PageTableUpdateIntent::map(
+            range,
+            memory_object.page_table_frame_range(descriptor)?,
+            page_table_rights(descriptor.rights),
+        )
+        .map_err(|_| KernelError::InvalidArgument)?;
         let index = self
             .mappings
             .iter()
@@ -108,6 +151,7 @@ impl AddressSpaceObject {
                 memory_offset: descriptor.memory_offset,
                 rights: descriptor.rights,
             },
+            page_table,
         })
     }
 
@@ -197,9 +241,14 @@ pub struct VmMapReservation<'a> {
     address_space: &'a mut AddressSpaceObject,
     mapping_slot: MappingSlotReservation,
     mapping: VmMapping,
+    page_table: PageTableUpdateIntent,
 }
 
 impl VmMapReservation<'_> {
+    pub const fn page_table(&self) -> &PageTableUpdateIntent {
+        &self.page_table
+    }
+
     pub fn commit(self) {
         let index = self.mapping_slot.index;
         assert!(
@@ -302,4 +351,18 @@ struct MappingSlotReservation {
 
 fn ranges_overlap(base: u64, end: u64, mapping: VmMapping) -> bool {
     base < mapping.end() && mapping.base < end
+}
+
+fn page_table_rights(rights: HandleRights) -> PageTableRights {
+    let mut page_table_rights = PageTableRights::empty();
+    if rights.contains(HandleRights::READ) {
+        page_table_rights |= PageTableRights::READ;
+    }
+    if rights.contains(HandleRights::WRITE) {
+        page_table_rights |= PageTableRights::WRITE;
+    }
+    if rights.contains(HandleRights::EXECUTE) {
+        page_table_rights |= PageTableRights::EXECUTE;
+    }
+    page_table_rights
 }

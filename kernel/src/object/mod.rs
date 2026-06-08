@@ -3,6 +3,7 @@ use alloc::vec::Vec;
 use crate::{
     error::{KernelError, KernelResult},
     handle::HandleRights,
+    memory::frame::FrameRange,
     vm::{AddressSpaceObject, MappingPolicy, MemoryObject, VmMapDescriptor},
 };
 
@@ -201,6 +202,12 @@ pub(crate) struct ObjectEntryReservation {
     generation: ObjectGeneration,
 }
 
+impl ObjectEntryReservation {
+    pub(crate) fn object_id(self) -> ObjectId {
+        ObjectId::new(self.index as u64)
+    }
+}
+
 impl ObjectSnapshot {
     pub const fn kind(self) -> ObjectKind {
         self.payload.kind()
@@ -267,10 +274,15 @@ impl ObjectManager {
         })
     }
 
-    pub fn create_memory_object(&mut self, size_bytes: u64) -> KernelResult<ObjectSnapshot> {
+    pub fn create_memory_object(
+        &mut self,
+        size_bytes: u64,
+        frame_range: FrameRange,
+    ) -> KernelResult<ObjectSnapshot> {
         self.create_payload(ObjectPayload::MemoryObject(MemoryObject::new(
             size_bytes,
             MappingPolicy::new(HandleRights::READ | HandleRights::WRITE | HandleRights::EXECUTE),
+            frame_range,
         )?))
     }
 

@@ -3,11 +3,21 @@ use alloc::vec;
 use kernel::{
     error::KernelError,
     handle::{HandleRights, HandleValue},
+    memory::frame::FrameRange,
     object::ObjectKind,
     syscall::{Kernel, Syscall, SyscallContext, SyscallOutcome},
 };
 
 extern crate alloc;
+
+fn kernel(object_capacity: usize, process_capacity: usize) -> Kernel {
+    Kernel::new(
+        object_capacity,
+        process_capacity,
+        &[FrameRange::new(0x1000, 0x20000).unwrap()],
+    )
+    .unwrap()
+}
 
 fn handle(outcome: SyscallOutcome) -> HandleValue {
     let SyscallOutcome::Handle { handle } = outcome else {
@@ -28,7 +38,7 @@ fn channel_send_recv_transfers_bytes() {
     // Goal: channel endpoints exchange bounded bytes through the syscall boundary.
     // Scope: host integration through CreateChannelPair, ChannelSend, and ChannelRecv.
     // Semantics: send writes to the peer queue; recv dequeues the same bytes.
-    let mut kernel = Kernel::new(6, 1).unwrap();
+    let mut kernel = kernel(6, 1);
     let process = kernel.create_bootstrap_process(6, 6).unwrap();
     let context = SyscallContext::new(process);
     let (left, right) = channel_pair(
@@ -74,7 +84,7 @@ fn channel_send_moves_transfer_handles_until_recv_reinstalls_them() {
     // Goal: channel handle transfer moves authority into the queued message.
     // Scope: host integration through ChannelSend and ChannelRecv with one transferred handle.
     // Semantics: sender handle becomes stale; receiver gets a fresh handle to the same object.
-    let mut kernel = Kernel::new(8, 1).unwrap();
+    let mut kernel = kernel(8, 1);
     let process = kernel.create_bootstrap_process(8, 8).unwrap();
     let context = SyscallContext::new(process);
     let (left, right) = channel_pair(
@@ -136,7 +146,7 @@ fn channel_full_send_does_not_move_transfer_handle() {
     // Goal: queue capacity failure happens before transferring handles out of the sender table.
     // Scope: host integration through two sends to a one-slot channel.
     // Semantics: NoCapacity leaves the second transfer handle live and the queued message intact.
-    let mut kernel = Kernel::new(10, 1).unwrap();
+    let mut kernel = kernel(10, 1);
     let process = kernel.create_bootstrap_process(10, 10).unwrap();
     let context = SyscallContext::new(process);
     let (left, right) = channel_pair(
@@ -216,7 +226,7 @@ fn recv_capacity_failure_keeps_message_queued() {
     // Goal: recv preflights destination handle capacity before dequeuing a message.
     // Scope: host integration with a transferred handle and a full handle table at receive time.
     // Semantics: NoCapacity leaves the message queued so a later recv can succeed.
-    let mut kernel = Kernel::new(7, 1).unwrap();
+    let mut kernel = kernel(7, 1);
     let process = kernel.create_bootstrap_process(5, 7).unwrap();
     let context = SyscallContext::new(process);
     let (left, right) = channel_pair(
@@ -300,7 +310,7 @@ fn duplicate_transfer_handle_is_rejected_before_move() {
     // Goal: repeated handle transfer input is rejected before owner mutation.
     // Scope: host integration through ChannelSend with duplicate handle values.
     // Semantics: InvalidArgument leaves the handle live and no message queued.
-    let mut kernel = Kernel::new(8, 1).unwrap();
+    let mut kernel = kernel(8, 1);
     let process = kernel.create_bootstrap_process(8, 8).unwrap();
     let context = SyscallContext::new(process);
     let (left, right) = channel_pair(
@@ -353,7 +363,7 @@ fn transferred_derived_handle_remains_revocable_after_recv() {
     // Goal: channel transfer preserves process-local derivation lineage.
     // Scope: duplicate, transfer through channel, receive, then revoke descendants.
     // Semantics: root revoke removes the reinstalled descendant handle.
-    let mut kernel = Kernel::new(10, 1).unwrap();
+    let mut kernel = kernel(10, 1);
     let process = kernel.create_bootstrap_process(10, 10).unwrap();
     let context = SyscallContext::new(process);
     let (left, right) = channel_pair(
@@ -425,7 +435,7 @@ fn send_after_peer_destroy_reports_peer_closed() {
     // Goal: peer finalization maps channel send failure to PeerClosed.
     // Scope: ObjectManager destroy on peer endpoint followed by ChannelSend.
     // Semantics: send observes peer_closed before validating the dead peer object.
-    let mut kernel = Kernel::new(6, 1).unwrap();
+    let mut kernel = kernel(6, 1);
     let process = kernel.create_bootstrap_process(6, 6).unwrap();
     let context = SyscallContext::new(process);
     let (left, right) = channel_pair(
@@ -470,7 +480,7 @@ fn destroy_non_empty_channel_is_rejected_without_dropping_message() {
     // Goal: channel finalization cannot leak queued transferred authority.
     // Scope: ObjectManager destroy on endpoint with a queued handle-bearing message.
     // Semantics: WouldBlock leaves the message available to receive.
-    let mut kernel = Kernel::new(8, 1).unwrap();
+    let mut kernel = kernel(8, 1);
     let process = kernel.create_bootstrap_process(8, 8).unwrap();
     let context = SyscallContext::new(process);
     let (left, right) = channel_pair(

@@ -1,10 +1,20 @@
 use kernel::{
     error::KernelError,
     handle::{HandleRights, HandleValue},
+    memory::frame::FrameRange,
     object::{EventState, ObjectKind, ObjectPayload},
     syscall::{Kernel, Syscall, SyscallContext, SyscallOutcome},
     vm::{MappingPolicy, MemoryObject},
 };
+
+fn kernel(object_capacity: usize, process_capacity: usize) -> Kernel {
+    Kernel::new(
+        object_capacity,
+        process_capacity,
+        &[FrameRange::new(0x1000, 0x20000).unwrap()],
+    )
+    .unwrap()
+}
 
 fn handle(outcome: SyscallOutcome) -> HandleValue {
     let SyscallOutcome::Handle { handle } = outcome else {
@@ -18,7 +28,7 @@ fn event_object_owns_signal_state() {
     // Goal: Event has real object-manager-owned runtime state.
     // Scope: host integration through syscall creation and ObjectManager event operations.
     // Semantics: signal and clear mutate only the Event payload for the referenced object.
-    let mut kernel = Kernel::new(4, 1).unwrap();
+    let mut kernel = kernel(4, 1);
     let process = kernel.create_bootstrap_process(4, 3).unwrap();
     let event = handle(
         kernel
@@ -70,7 +80,7 @@ fn wrong_object_operation_does_not_mutate_payload() {
     // Goal: object-specific operations reject wrong kinds before mutation.
     // Scope: ObjectManager event operation against a MemoryObject.
     // Semantics: WrongObjectType leaves the original payload intact.
-    let mut kernel = Kernel::new(4, 1).unwrap();
+    let mut kernel = kernel(4, 1);
     let process = kernel.create_bootstrap_process(4, 3).unwrap();
     let memory = handle(
         kernel
@@ -113,7 +123,7 @@ fn memory_object_creation_records_size_in_payload() {
     // Goal: VM MemoryObject carries meaningful owner state, not just a kind tag.
     // Scope: host integration through Syscall::CreateMemoryObject and handle lookup.
     // Semantics: size metadata is owned by the VM payload and visible through object snapshot.
-    let mut kernel = Kernel::new(4, 1).unwrap();
+    let mut kernel = kernel(4, 1);
     let process = kernel.create_bootstrap_process(4, 3).unwrap();
     let memory = handle(
         kernel
@@ -145,6 +155,7 @@ fn memory_object_creation_records_size_in_payload() {
                 MappingPolicy::new(
                     HandleRights::READ | HandleRights::WRITE | HandleRights::EXECUTE
                 ),
+                FrameRange::new(0x1000, 0x3000).unwrap(),
             )
             .unwrap()
         )
@@ -164,7 +175,7 @@ fn memory_object_creation_rejects_invalid_size_without_publication() {
     // Goal: MemoryObject size obeys VM page-granularity before object publication.
     // Scope: host integration through Syscall::CreateMemoryObject.
     // Semantics: invalid sizes fail before object manager, handle table, or quota state changes.
-    let mut kernel = Kernel::new(4, 1).unwrap();
+    let mut kernel = kernel(4, 1);
     let process = kernel.create_bootstrap_process(4, 3).unwrap();
     let context = SyscallContext::new(process);
     let before_objects = kernel.objects.live_count();
@@ -194,11 +205,45 @@ fn memory_object_creation_rejects_invalid_size_without_publication() {
 }
 
 #[test]
+fn memory_object_frame_exhaustion_leaves_public_state_unchanged() {
+    // Goal: MemoryObject creation reserves frame backing before object publication.
+    // Scope: host integration through Syscall::CreateMemoryObject with too few runtime frames.
+    // Semantics: NoMemory leaves frame metadata, object manager, handle table, and quota unchanged.
+    let mut kernel = Kernel::new(4, 1, &[FrameRange::new(0x1000, 0x2000).unwrap()]).unwrap();
+    let process = kernel.create_bootstrap_process(4, 3).unwrap();
+    let context = SyscallContext::new(process);
+    let before_objects = kernel.objects.live_count();
+    let before_quota = kernel
+        .processes
+        .get(process)
+        .unwrap()
+        .budget
+        .remaining_objects();
+
+    assert_eq!(
+        kernel.execute(
+            context,
+            Syscall::CreateMemoryObject {
+                size_bytes: 0x2000,
+                rights: HandleRights::READ,
+            },
+        ),
+        Err(KernelError::NoMemory)
+    );
+
+    let process_state = kernel.processes.get(process).unwrap();
+    assert_eq!(kernel.frames.free_count(), 1);
+    assert_eq!(kernel.objects.live_count(), before_objects);
+    assert_eq!(process_state.handles.live_count(), 1);
+    assert_eq!(process_state.budget.remaining_objects(), before_quota);
+}
+
+#[test]
 fn generic_memory_object_creation_is_not_supported() {
     // Goal: MemoryObject creation requires a size descriptor and cannot use generic object create.
     // Scope: host integration through Syscall::CreateObject with ObjectKind::MemoryObject.
     // Semantics: Unsupported leaves object manager, handle table, and quota state unchanged.
-    let mut kernel = Kernel::new(4, 1).unwrap();
+    let mut kernel = kernel(4, 1);
     let process = kernel.create_bootstrap_process(4, 3).unwrap();
     let context = SyscallContext::new(process);
     let before_objects = kernel.objects.live_count();

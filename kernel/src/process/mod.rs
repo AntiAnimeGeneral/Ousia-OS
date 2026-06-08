@@ -3,6 +3,7 @@ use alloc::vec::Vec;
 use crate::{
     error::{KernelError, KernelResult},
     handle::{HandleRights, HandleTable, HandleValue},
+    memory::frame::{FrameAllocator, FrameOwner},
     object::{
         ChannelMessage, MAX_CHANNEL_MESSAGE_BYTES, ObjectKind, ObjectManager, ObjectPayload,
         ObjectRef,
@@ -106,19 +107,62 @@ impl Process {
     pub fn create_memory_object_handle(
         &mut self,
         objects: &mut ObjectManager,
+        frames: &mut FrameAllocator,
         size_bytes: u64,
         rights: HandleRights,
     ) -> KernelResult<HandleValue> {
-        self.create_preflighted_object_handle(
-            objects,
-            rights,
-            ObjectPayload::MemoryObject(MemoryObject::new(
-                size_bytes,
-                MappingPolicy::new(
-                    HandleRights::READ | HandleRights::WRITE | HandleRights::EXECUTE,
-                ),
-            )?),
-        )
+        MemoryObject::validate_size(size_bytes)?;
+        let mut reservation = self.budget.reserve_object()?;
+        let handle_slot = match self.handles.reserve_slot() {
+            Ok(slot) => slot,
+            Err(error) => {
+                self.budget.release_object();
+                return Err(error);
+            }
+        };
+        let object_entry = match objects.reserve_entry() {
+            Ok(entry) => entry,
+            Err(error) => {
+                self.budget.release_object();
+                return Err(error);
+            }
+        };
+        let owner = FrameOwner::MemoryObject(object_entry.object_id().raw());
+        let frame_range = match frames.reserve_contiguous(owner, size_bytes) {
+            Ok(range) => range,
+            Err(error) => {
+                self.budget.release_object();
+                return Err(error);
+            }
+        };
+        let payload = ObjectPayload::MemoryObject(MemoryObject::new(
+            size_bytes,
+            MappingPolicy::new(HandleRights::READ | HandleRights::WRITE | HandleRights::EXECUTE),
+            frame_range,
+        )?);
+
+        let object = match objects.commit_reserved(object_entry, payload) {
+            Ok(object) => object,
+            Err(error) => {
+                let _ = frames.free_range(frame_range, owner);
+                self.budget.release_object();
+                return Err(error);
+            }
+        };
+        let handle = match self
+            .handles
+            .install_reserved(objects, handle_slot, object, rights)
+        {
+            Ok(handle) => handle,
+            Err(error) => {
+                let _ = objects.destroy(object.id, object.generation);
+                let _ = frames.free_range(frame_range, owner);
+                self.budget.release_object();
+                return Err(error);
+            }
+        };
+        reservation.commit();
+        Ok(handle)
     }
 
     pub fn create_address_space_handle(

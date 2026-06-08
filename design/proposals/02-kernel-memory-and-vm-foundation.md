@@ -28,7 +28,7 @@
 - early frame allocator 是 boot-time facility，不是长期 PMM。
 - early heap 是 smoke/bring-up 设施，不是 kernel object allocator。
 - kernel object/handle/process table 仍主要依赖 fixed capacity `Vec` 初始化和局部 preflight helper，没有统一 allocation context / reservation token。
-- `MemoryObject` 只有 size，尚未连接 physical frame metadata、page cache、pager-backed state 或 page table commit。
+- `MemoryObject` 已有 page-aligned size、mapping policy 和 eager contiguous runtime frame backing；尚未连接 page cache、pager-backed state、frame reclaim 或真实 page table commit。
 - `AddressSpaceObject` 只有固定 mapping slots，尚未建立 VMA/VMAR owner、page-table owner、TLB invalidation boundary 或 fault routing。
 - 当前 VM tests 已覆盖 mapping overlap、bounds、rights 和 no partial metadata mutation，但还不能证明 page allocation、metadata allocation 或 page table mutation 失败无副作用。
 
@@ -73,7 +73,7 @@ Asterinas 研究线补充了另一类参考：不是用户可见对象 API，而
 
 - runtime PMM、frame metadata、kernel heap/slab/fixed pool、reservation token 和 VM range owner 都应新建为长期模块。
 - `AddressSpaceObject` 的 fixed mapping slots 应重建为可 reservation 的 mapping metadata owner；第一版可以 fixed-capacity，但 API 必须表达 future VMA/VMAR owner。
-- `MemoryObject` 应从 size-only object 重建为 memory owner：当前只保留 size 和 rights-compatible mapping policy；backing taxonomy、page/cache metadata hook 和 pager state 只在对应 owner boundary 落地时引入。
+- `MemoryObject` 应从 metadata-only object 重建为 memory owner：当前保留 size、rights-compatible mapping policy 和 runtime frame owner evidence；backing taxonomy、page/cache metadata hook 和 pager state 只在对应 owner boundary 落地时引入。
 
 ### 应停止模仿
 
@@ -118,7 +118,7 @@ Asterinas 研究线补充了另一类参考：不是用户可见对象 API，而
 | `kernel::memory::frame`                | runtime frame metadata、free lists、frame allocation/free、pin/mapping count hooks | page-table policy、VFS page cache policy          |
 | `kernel::memory::heap`                 | kernel heap/slab/fixed pool/zone owner、fallible allocation API                    | object lifecycle、syscall error mapping           |
 | `kernel::memory::reservation`          | reservation token、rollback, commit consumption, allocation context                | subsystem-specific state transition               |
-| `kernel::vm::memory_object`            | MemoryObject size、mapping policy；future backing/page-cache boundary              | handle rights table、path namespace policy        |
+| `kernel::vm::memory_object`            | MemoryObject size、mapping policy、runtime frame owner evidence；future page-cache boundary | handle rights table、path namespace policy        |
 | `kernel::vm::address_space`            | AddressSpace、VMAR/VMA range owner、mapping metadata、page-table boundary          | process handle table、scheduler queue             |
 | `kernel::vm::fault`                    | fault descriptor、future pager/provider handoff、cancel/error skeleton             | filesystem provider implementation                |
 | `kernel::resource`                     | process/capsule budget, quota accounting, resource limits                          | physical allocator internal free list             |
@@ -178,12 +178,13 @@ This interface is the local Ousia lesson from CortenMM: correctness comes from m
 
 - page-aligned non-zero size
 - rights-compatible mapping policy
-- future backing/page-cache metadata only when a real pager or page-cache owner exists
+- eager contiguous runtime frame backing evidence for the first anonymous memory slice
+- future page-cache metadata only when a real pager or page-cache owner exists
 - future zero-fill, CoW and pager fault endpoint only when their state owner exists
 
-Do not add future backing taxonomy before the backing owner exists. A single variant backing enum, an unused backing field or an `anonymous` constructor is not a harmless placeholder; it hides the fact that the final owner has not been designed. Until pager/page-cache state exists, MemoryObject exposes only the current facts above.
+Do not add future backing taxonomy before the backing owner exists. A single variant backing enum, an unused backing field or an `anonymous` constructor is not a harmless placeholder; it hides the fact that the final owner has not been designed. Until pager/page-cache state exists, MemoryObject exposes only the current facts above. Eager contiguous backing is an implementation slice for physical anonymous memory, not a compatibility layer for future SSD、pager、CoW 或 page-cache semantics.
 
-MemoryObject creation must go through an explicit size descriptor. Generic `CreateObject(MemoryObject)` must not synthesize a zero-sized placeholder object; without page-aligned non-zero size, the final frame/page backing owner cannot be attached without changing semantics.
+MemoryObject creation must go through an explicit size descriptor. Generic `CreateObject(MemoryObject)` must not synthesize a zero-sized placeholder object; without page-aligned non-zero size, the runtime frame owner cannot be attached without changing semantics. Creation preflights process quota, handle slot, object entry and contiguous frame reservation before publishing the object or handle; frame exhaustion must leave all public owner state unchanged.
 
 ### AddressSpace and Mapping
 
@@ -193,12 +194,12 @@ MemoryObject creation must go through an explicit size descriptor. Generic `Crea
 - mapping rights
 - MemoryObject reference + generation snapshot
 - offset and size
-- OSTD page-table update intent when the operation has real hardware-state work to describe
+- OSTD page-table update intent when map has runtime frame owner evidence, or unmap has hardware-state removal work to describe
 - OSTD TLB invalidation intent and pending-work storage for page-table removals that need later coherence work
 
 VMA is the policy/source-of-truth for virtual ranges; page table is committed hardware state. They must not compete as two mapping truth sources.
 
-Until MemoryObject has a real frame/page backing owner, map reservations publish only AddressSpace mapping metadata. They must not fabricate a page-table map intent or TLB invalidation for a mapping that cannot yet name owned physical frames. Unmap reservations may carry an OSTD page-table unmap intent and TLB invalidation intent, because those are hardware-state work descriptions for removing a mapping once page-table ownership exists.
+Map reservations may carry an OSTD page-table map intent only after MemoryObject can name owned runtime frames. Unmap reservations may carry an OSTD page-table unmap intent and TLB invalidation intent, because those are hardware-state work descriptions for removing a mapping once page-table ownership exists.
 
 When map intents become valid, their physical input must come from frame-owner evidence such as OSTD `FrameRange`; page-table code should not introduce a second physical-range type that repeats frame allocator alignment and ownership invariants.
 
@@ -263,12 +264,14 @@ Required initial matrix rows:
 
 ### Slice 4：Minimal VM/MemoryObject foundation
 
-- Move current size-only `MemoryObject` and fixed `AddressSpaceObject` mapping set into `kernel::vm` owner modules.
-- Define MemoryObject size and mapping policy; do not add a backing taxonomy before a real backing owner exists.
+- Move `MemoryObject` and fixed `AddressSpaceObject` mapping set into `kernel::vm` owner modules.
+- Define MemoryObject size、mapping policy and eager contiguous runtime frame backing; do not add a backing taxonomy before a real pager/page-cache owner exists.
 - Define AddressSpace range owner and page-table boundary placeholder.
-- Make `MapMemoryObject` reserve mapping metadata/page-table resources before commit.
+- Make `MapMemoryObject` reserve mapping metadata and build OSTD page-table map intent from frame owner evidence before commit.
 - Introduce an exclusive VM reservation token even if it only covers metadata in the first slice; do not let syscall code mutate AddressSpace, MemoryObject and page-table placeholder directly.
 - Expand existing `kernel/tests/vm.rs` to cover allocation/reservation failure no partial state.
+
+Current exclusion: MemoryObject destruction/last-handle finalization does not yet reclaim frames. That is a separate object lifecycle slice because it crosses handle close/revoke, object destruction, frame release and stale-generation tests.
 
 ### Slice 5：Page fault and pager skeleton
 

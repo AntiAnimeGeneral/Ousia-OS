@@ -1,16 +1,26 @@
 use kernel::{
     error::KernelError,
     handle::{HandleRights, HandleValue},
+    memory::frame::FrameRange,
     object::ObjectKind,
     syscall::{Kernel, Syscall, SyscallContext},
 };
+
+fn kernel(object_capacity: usize, process_capacity: usize) -> Kernel {
+    Kernel::new(
+        object_capacity,
+        process_capacity,
+        &[FrameRange::new(0x1000, 0x20000).unwrap()],
+    )
+    .unwrap()
+}
 
 #[test]
 fn handle_table_capacity_failure_leaves_object_manager_unchanged() {
     // Goal: fixed handle table capacity is checked before object publication.
     // Scope: host integration through Syscall::CreateObject on a full process table.
     // Semantics: NoCapacity leaves object manager, handle table, and quota state unchanged.
-    let mut kernel = Kernel::new(4, 1).unwrap();
+    let mut kernel = kernel(4, 1);
     let process = kernel.create_bootstrap_process(1, 4).unwrap();
     let before_objects = kernel.objects.live_count();
     let before_quota = kernel
@@ -42,7 +52,7 @@ fn quota_failure_leaves_object_manager_and_handles_unchanged() {
     // Goal: process resource budget is a preflight boundary.
     // Scope: host integration through Syscall::CreateObject after bootstrap consumes quota.
     // Semantics: QuotaExceeded happens before handle installation or object creation.
-    let mut kernel = Kernel::new(4, 1).unwrap();
+    let mut kernel = kernel(4, 1);
     let process = kernel.create_bootstrap_process(4, 1).unwrap();
     let before_objects = kernel.objects.live_count();
 
@@ -78,7 +88,7 @@ fn object_capacity_failure_rolls_back_process_budget() {
     // Goal: object table capacity failure does not consume process quota.
     // Scope: host integration through Syscall::CreateObject with no object slots left.
     // Semantics: NoCapacity from object manager leaves process budget and handles unchanged.
-    let mut kernel = Kernel::new(1, 1).unwrap();
+    let mut kernel = kernel(1, 1);
     let process = kernel.create_bootstrap_process(4, 3).unwrap();
     let before_quota = kernel
         .processes
@@ -109,7 +119,7 @@ fn memory_object_quota_failure_leaves_object_manager_and_handles_unchanged() {
     // Goal: MemoryObject creation uses the same process preflight boundary as generic objects.
     // Scope: host integration through Syscall::CreateMemoryObject after bootstrap consumes quota.
     // Semantics: QuotaExceeded happens before MemoryObject publication or handle installation.
-    let mut kernel = Kernel::new(4, 1).unwrap();
+    let mut kernel = kernel(4, 1);
     let process = kernel.create_bootstrap_process(4, 1).unwrap();
     let before_objects = kernel.objects.live_count();
 
@@ -135,7 +145,7 @@ fn address_space_quota_failure_leaves_object_manager_and_handles_unchanged() {
     // Goal: AddressSpace creation uses the same process quota preflight as other object creation.
     // Scope: host integration through Syscall::CreateAddressSpace after bootstrap consumes quota.
     // Semantics: QuotaExceeded happens before AddressSpace publication or handle installation.
-    let mut kernel = Kernel::new(4, 1).unwrap();
+    let mut kernel = kernel(4, 1);
     let process = kernel.create_bootstrap_process(4, 1).unwrap();
     let before_objects = kernel.objects.live_count();
 
@@ -160,7 +170,7 @@ fn memory_object_handle_capacity_failure_leaves_object_manager_unchanged() {
     // Goal: MemoryObject publication is blocked by handle capacity preflight.
     // Scope: host integration through Syscall::CreateMemoryObject with a full handle table.
     // Semantics: NoCapacity leaves object manager, handle table, and quota state unchanged.
-    let mut kernel = Kernel::new(4, 1).unwrap();
+    let mut kernel = kernel(4, 1);
     let process = kernel.create_bootstrap_process(1, 4).unwrap();
     let before_objects = kernel.objects.live_count();
     let before_quota = kernel
@@ -192,7 +202,7 @@ fn address_space_handle_capacity_failure_leaves_object_manager_unchanged() {
     // Goal: AddressSpace creation consumes the shared object/handle reservation path.
     // Scope: host integration through Syscall::CreateAddressSpace with a full handle table.
     // Semantics: NoCapacity leaves object manager, handle table, and quota state unchanged.
-    let mut kernel = Kernel::new(4, 1).unwrap();
+    let mut kernel = kernel(4, 1);
     let process = kernel.create_bootstrap_process(1, 4).unwrap();
     let before_objects = kernel.objects.live_count();
     let before_quota = kernel
