@@ -69,7 +69,8 @@ argument-hint: "mode, target, scope, user goal, inputs, validation expectations,
 5. 涉及项目专用语义或外部 baseline 时，读取 reference 索引和对应正文，并在 plan 中列出正文、具体文件或符号。
 6. 至少比较两个方案：保守局部演进、边界修正、抽象提取、成熟库/现有模块复用、文档归属调整，或暂不改动。
 7. 输出符合本 skill 输出要求的 architecture plan / proposal packet。
-8. 给出 `设计提案 + diff` review focus；如需进入实施，按 workflow handoff packet 说明 implementation handoff 条件，不在本 skill 中另定义交接协议。
+8. 明确第一个可实施的纵向切片；边界整理、模块拆分或命名修正必须说明如何服务该切片。
+9. 给出 `设计提案 + diff` review focus；如需进入实施，按 workflow handoff packet 说明 implementation handoff 条件，不在本 skill 中另定义交接协议。
 
 ## Target 特化
 
@@ -116,6 +117,7 @@ argument-hint: "mode, target, scope, user goal, inputs, validation expectations,
 - 至少两个候选方案，以及不选择它们的原因。
 - 推荐方案和取舍理由。
 - 推荐方案如何改善边界，而不是只增加层数。
+- 第一个可实施的纵向切片：目标语义、跨越 owner、边界 API、实现文件、owning docs、测试层级、完成条件、排除范围，以及哪些边界调整是必要前置。
 - 模块边界、依赖方向、状态所有权、数据流和副作用边界。
 - 状态所有权、数据流、副作用边界、错误映射层和内部 invariant。
 - 校验、归一化、权限检查、错误映射和内部 invariant 所在层。
@@ -124,5 +126,7 @@ argument-hint: "mode, target, scope, user goal, inputs, validation expectations,
 - 测试策略如何覆盖新语义、失败路径、失败后状态不变性和边界状态。
 - 兼容性、迁移成本、回滚方式、验证命令和剩余风险。
 - 已知 assumptions、open questions、residual risks 和 review focus。
+
+如果计划只能说明边界会更清楚，却不能说明首个可验证纵向切片，必须先收窄 scope 或返回 architecture handoff；不要输出只会导致连续边界整理的实施计划。
 
 如果调用者提供的是已经实施的 diff，本 skill 不应继续审查；应使用 `black-team-review` 并声明 subject：`代码实现`，mode：`diff`。

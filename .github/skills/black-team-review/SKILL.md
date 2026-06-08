@@ -59,6 +59,7 @@ Review 前尽量收集：
 - 模块边界、状态所有权、依赖方向、数据流和副作用边界是否闭合。
 - 产品层落点、代码落点或 owning docs 是否明确。
 - proposal 或 owning doc 是否把实现过程、文件迁移历史或 agent 刚完成的步骤写成进度噪音；除非历史事实解释当前兼容入口、删除条件、风险或迁移步骤，否则应要求改为当前结构、当前约束和下一步入口。
+- proposal 是否声明了第一个可实施纵向切片，且边界清理、模块重排、命名修正都服务于该切片；如果只会继续横向整理，应阻塞进入 implementation。
 - 迁移、兼容性、回滚和验证策略是否可执行。
 - Assumptions、open questions 和 residual risks 是否足以阻止误实施。
 - Ousia OS 专用漂移风险按 `.github/skills/_shared/reference/index.md` 索引选择正文后追加攻击。
@@ -70,6 +71,7 @@ Review 前尽量收集：
 - 失败路径是否先完成外部输入检查，再做状态修改或外部副作用。
 - 内部 invariant 是否被边界建立后仍层层重复防御，或被包装成 public recoverable error。
 - 抽象是否只是透传 helper、薄 service、空泛 adapter 或私有小框架。
+- 真实 diff 是否推进了声明的纵向切片；如果只是连续收紧边界、改名、删除中间态而没有可观察语义闭环，应作为 finding 要求重新规划或收窄实施范围。
 - 实现同步的文档是否只描述当前结构、状态 owner、兼容入口和可执行下一步；如果只是记录“本次移动/重组/拆分了什么”，应作为需要修正的文档噪音。
 - 测试是否约束使用语义、失败无副作用和边界状态，而不是复述实现或只覆盖 happy path。
 - Ousia OS 专用边界、reference 和实现偏好按 `.github/skills/_shared/reference/index.md` 索引选择正文后追加攻击。
