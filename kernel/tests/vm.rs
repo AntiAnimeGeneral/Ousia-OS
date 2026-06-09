@@ -614,6 +614,151 @@ fn mapped_memory_object_reclaims_frames_after_last_handle_and_unmap() {
 }
 
 #[test]
+fn revoke_memory_object_descendant_preserves_root_owned_frames_until_root_close() {
+    // Goal: revoking derived MemoryObject authority uses close semantics without deleting root state.
+    // Scope: duplicate an unmapped MemoryObject, revoke the descendant, then close the root handle.
+    // Semantics: revoke removes only descendant authority; root remains the final reclaim owner.
+    let mut kernel = Kernel::new(4, 1, &[FrameRange::new(0x1000, 0x3000).unwrap()]).unwrap();
+    let process = kernel.create_bootstrap_process(4, 4).unwrap();
+    let context = SyscallContext::new(process);
+    let root = handle(
+        kernel
+            .execute(
+                context,
+                Syscall::CreateMemoryObject {
+                    size_bytes: 0x2000,
+                    rights: HandleRights::READ | HandleRights::DUPLICATE,
+                },
+            )
+            .unwrap(),
+    );
+    let child = handle(
+        kernel
+            .execute(
+                context,
+                Syscall::DuplicateHandle {
+                    source: root,
+                    rights: HandleRights::READ,
+                },
+            )
+            .unwrap(),
+    );
+    assert_eq!(kernel.frames.free_count(), 0);
+
+    assert_eq!(
+        kernel.execute(context, Syscall::RevokeDescendants { root }),
+        Ok(SyscallOutcome::Revoked { count: 1 })
+    );
+
+    assert_eq!(kernel.frames.free_count(), 0);
+    assert!(
+        kernel
+            .lookup_handle(process, root, ObjectKind::MemoryObject, HandleRights::READ,)
+            .is_ok()
+    );
+    assert_eq!(
+        kernel.lookup_handle(process, child, ObjectKind::MemoryObject, HandleRights::READ,),
+        Err(KernelError::InvalidHandle)
+    );
+
+    kernel
+        .execute(context, Syscall::CloseHandle { handle: root })
+        .unwrap();
+    assert_eq!(kernel.frames.free_count(), 2);
+    assert_eq!(
+        kernel.lookup_handle(process, child, ObjectKind::MemoryObject, HandleRights::READ,),
+        Err(KernelError::InvalidHandle)
+    );
+}
+
+#[test]
+fn revoke_mapped_memory_object_descendant_waits_for_final_unmap() {
+    // Goal: revoke removes handle authority without reclaiming frames still held by AddressSpace.
+    // Scope: map a derived MemoryObject handle, revoke it, then unmap the AddressSpace range.
+    // Semantics: frames stay reserved after revoke and are freed only after root close plus unmap.
+    let mut kernel = Kernel::new(6, 1, &[FrameRange::new(0x1000, 0x3000).unwrap()]).unwrap();
+    let process = kernel.create_bootstrap_process(6, 6).unwrap();
+    let context = SyscallContext::new(process);
+    let address_space = create_address_space(&mut kernel, context, HandleRights::MANAGE);
+    let root = handle(
+        kernel
+            .execute(
+                context,
+                Syscall::CreateMemoryObject {
+                    size_bytes: 0x2000,
+                    rights: HandleRights::READ | HandleRights::DUPLICATE,
+                },
+            )
+            .unwrap(),
+    );
+    let child = handle(
+        kernel
+            .execute(
+                context,
+                Syscall::DuplicateHandle {
+                    source: root,
+                    rights: HandleRights::READ,
+                },
+            )
+            .unwrap(),
+    );
+
+    kernel
+        .execute(
+            context,
+            Syscall::MapMemoryObject {
+                address_space,
+                memory: child,
+                base: 0x4000,
+                size_bytes: 0x2000,
+                memory_offset: 0,
+                rights: HandleRights::READ,
+            },
+        )
+        .unwrap();
+    assert_eq!(kernel.frames.free_count(), 0);
+
+    assert_eq!(
+        kernel.execute(context, Syscall::RevokeDescendants { root }),
+        Ok(SyscallOutcome::Revoked { count: 1 })
+    );
+    assert_eq!(kernel.frames.free_count(), 0);
+    assert!(
+        kernel
+            .lookup_handle(process, root, ObjectKind::MemoryObject, HandleRights::READ,)
+            .is_ok()
+    );
+    assert_eq!(
+        kernel.lookup_handle(process, child, ObjectKind::MemoryObject, HandleRights::READ,),
+        Err(KernelError::InvalidHandle)
+    );
+    assert_eq!(mapping_count(&kernel, process, address_space), 1);
+
+    kernel
+        .execute(context, Syscall::CloseHandle { handle: root })
+        .unwrap();
+    assert_eq!(kernel.frames.free_count(), 0);
+
+    kernel
+        .execute(
+            context,
+            Syscall::UnmapAddressRange {
+                address_space,
+                base: 0x4000,
+                size_bytes: 0x2000,
+            },
+        )
+        .unwrap();
+
+    assert_eq!(kernel.frames.free_count(), 2);
+    assert_eq!(mapping_count(&kernel, process, address_space), 0);
+    assert_eq!(
+        kernel.lookup_handle(process, child, ObjectKind::MemoryObject, HandleRights::READ,),
+        Err(KernelError::InvalidHandle)
+    );
+}
+
+#[test]
 fn direct_destroy_of_handleless_mapped_memory_object_is_rejected() {
     // Goal: active AddressSpace mappings keep MemoryObject backing alive after the handle closes.
     // Scope: map a MemoryObject, close its handle, then call ObjectManager destroy directly.
