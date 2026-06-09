@@ -211,6 +211,10 @@ impl AddressSpaceObject {
             tlb_slot,
         })
     }
+
+    pub fn take_pending_tlb_invalidation(&mut self) -> Option<TlbInvalidationIntent> {
+        self.pending_tlb_invalidations.take_next()
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -325,9 +329,9 @@ impl VmUnmapReservation<'_> {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PendingTlbInvalidations {
     // TODO(vm-tlb): count is diagnostic scaffolding for the missing invalidation
-    // queue. Do not use it as correctness evidence for TLB completion.
+    // queue. Do not use it as correctness evidence for TLB completion. The current
     // work is fixed pending-work storage, but still lacks target CPU/generation,
-    // consumer, completion, and reclaim semantics; MAX_PENDING_TLB_INVALIDATIONS is
+    // completion, and reclaim semantics; MAX_PENDING_TLB_INVALIDATIONS is
     // not a product limit. Replace with the final pending-work owner when map/unmap
     // and flush-consumer tests prove publication, consumption, and completion.
     count: usize,
@@ -366,6 +370,15 @@ impl PendingTlbInvalidations {
         );
         self.work[reservation.index] = Some(reservation.intent);
         self.count += 1;
+    }
+
+    fn take_next(&mut self) -> Option<TlbInvalidationIntent> {
+        let index = self.work.iter().position(Option::is_some)?;
+        let intent = self.work[index]
+            .take()
+            .expect("pending TLB invalidation slot was selected as occupied");
+        self.count -= 1;
+        Some(intent)
     }
 }
 

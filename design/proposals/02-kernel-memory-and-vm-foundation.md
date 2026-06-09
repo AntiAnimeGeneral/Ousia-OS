@@ -112,16 +112,16 @@ Asterinas 研究线补充了另一类参考：不是用户可见对象 API，而
 
 ### 模块边界
 
-| 模块                                   | 职责                                                                               | 不应拥有                                          |
-| -------------------------------------- | ---------------------------------------------------------------------------------- | ------------------------------------------------- |
-| `ostd::mm::boot` 或现有 `frame` 子模块 | boot memory map normalization、reserved range subtraction、early frame allocation  | runtime frame ownership、process quota、VM policy |
-| `kernel::memory::frame`                | runtime frame metadata、free lists、frame allocation/free、pin/mapping count hooks | page-table policy、VFS page cache policy          |
-| `kernel::memory::heap`                 | kernel heap/slab/fixed pool/zone owner、fallible allocation API                    | object lifecycle、syscall error mapping           |
-| `kernel::memory::reservation`          | reservation token、rollback, commit consumption, allocation context                | subsystem-specific state transition               |
+| 模块                                   | 职责                                                                                        | 不应拥有                                          |
+| -------------------------------------- | ------------------------------------------------------------------------------------------- | ------------------------------------------------- |
+| `ostd::mm::boot` 或现有 `frame` 子模块 | boot memory map normalization、reserved range subtraction、early frame allocation           | runtime frame ownership、process quota、VM policy |
+| `kernel::memory::frame`                | runtime frame metadata、free lists、frame allocation/free、pin/mapping count hooks          | page-table policy、VFS page cache policy          |
+| `kernel::memory::heap`                 | kernel heap/slab/fixed pool/zone owner、fallible allocation API                             | object lifecycle、syscall error mapping           |
+| `kernel::memory::reservation`          | reservation token、rollback, commit consumption, allocation context                         | subsystem-specific state transition               |
 | `kernel::vm::memory_object`            | MemoryObject size、mapping policy、runtime frame owner evidence；future page-cache boundary | handle rights table、path namespace policy        |
-| `kernel::vm::address_space`            | AddressSpace、VMAR/VMA range owner、mapping metadata、page-table boundary          | process handle table、scheduler queue             |
-| `kernel::vm::fault`                    | fault descriptor、future pager/provider handoff、cancel/error skeleton             | filesystem provider implementation                |
-| `kernel::resource`                     | process/capsule budget, quota accounting, resource limits                          | physical allocator internal free list             |
+| `kernel::vm::address_space`            | AddressSpace、VMAR/VMA range owner、mapping metadata、page-table boundary                   | process handle table、scheduler queue             |
+| `kernel::vm::fault`                    | fault descriptor、future pager/provider handoff、cancel/error skeleton                      | filesystem provider implementation                |
+| `kernel::resource`                     | process/capsule budget, quota accounting, resource limits                                   | physical allocator internal free list             |
 
 ### 依赖方向
 
@@ -203,6 +203,8 @@ MemoryObject frame reclaim is driven by object lifetime plus mapping references:
 VMA is the policy/source-of-truth for virtual ranges; page table is committed hardware state. They must not compete as two mapping truth sources.
 
 Map reservations may carry an OSTD page-table map intent only after MemoryObject can name owned runtime frames. Unmap reservations may carry an OSTD page-table unmap intent and TLB invalidation intent, because those are hardware-state work descriptions for removing a mapping once page-table ownership exists.
+
+Committed unmaps publish pending TLB invalidation work under the AddressSpace owner, and a later flush boundary can consume that work so fixed pending storage is not a permanent unmap limit. Consumption only transfers the invalidation intent out of AddressSpace metadata; it is not proof that an architecture TLB shootdown, ordering barrier or completion has happened.
 
 When map intents become valid, their physical input must come from frame-owner evidence such as OSTD `FrameRange`; page-table code should not introduce a second physical-range type that repeats frame allocator alignment and ownership invariants.
 

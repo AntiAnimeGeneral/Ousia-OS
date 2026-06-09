@@ -276,6 +276,102 @@ fn dropping_vm_unmap_reservation_leaves_address_space_unchanged() {
 }
 
 #[test]
+fn committed_unmap_publishes_consumable_tlb_invalidation_work() {
+    // Goal: unmap publishes hardware-coherence work that a later flush consumer can drain.
+    // Scope: direct AddressSpaceObject map, unmap commit, then pending TLB consumption.
+    // Semantics: the consumed intent names the unmapped range and clears pending work state.
+    let mut address_space = AddressSpaceObject::new();
+    let memory = ObjectRef {
+        id: kernel::object::ObjectId::new(12),
+        generation: kernel::object::ObjectGeneration::INITIAL,
+    };
+    let memory_object = memory_object(0x4000, HandleRights::READ);
+    address_space
+        .prepare_map(
+            memory,
+            memory_object,
+            VmMapDescriptor {
+                base: 0x3000,
+                size_bytes: 0x1000,
+                memory_offset: 0,
+                rights: HandleRights::READ,
+            },
+        )
+        .unwrap()
+        .commit();
+
+    address_space
+        .prepare_unmap(0x3000, 0x1000)
+        .unwrap()
+        .commit();
+
+    assert_eq!(address_space.pending_tlb_invalidations.count(), 1);
+    let intent = address_space.take_pending_tlb_invalidation().unwrap();
+    assert_eq!(intent.range.base, 0x3000);
+    assert_eq!(intent.range.size_bytes, 0x1000);
+    assert_eq!(address_space.pending_tlb_invalidations.count(), 0);
+    assert_eq!(address_space.take_pending_tlb_invalidation(), None);
+}
+
+#[test]
+fn consuming_pending_tlb_work_releases_unmap_capacity() {
+    // Goal: pending TLB storage is bounded work state, not a permanent unmap limit.
+    // Scope: fill fixed pending slots, consume one intent, then unmap another mapping.
+    // Semantics: consuming work frees exactly one pending slot for later unmap publication.
+    let mut address_space = AddressSpaceObject::new();
+    let memory = ObjectRef {
+        id: kernel::object::ObjectId::new(13),
+        generation: kernel::object::ObjectGeneration::INITIAL,
+    };
+    let memory_object = memory_object(0x9000, HandleRights::READ);
+
+    for index in 0..8 {
+        address_space
+            .prepare_map(
+                memory,
+                memory_object,
+                VmMapDescriptor {
+                    base: index * 0x1000,
+                    size_bytes: 0x1000,
+                    memory_offset: index * 0x1000,
+                    rights: HandleRights::READ,
+                },
+            )
+            .unwrap()
+            .commit();
+        address_space
+            .prepare_unmap(index * 0x1000, 0x1000)
+            .unwrap()
+            .commit();
+    }
+    assert_eq!(address_space.pending_tlb_invalidations.count(), 8);
+
+    let consumed = address_space.take_pending_tlb_invalidation().unwrap();
+    assert_eq!(consumed.range.base, 0);
+    assert_eq!(address_space.pending_tlb_invalidations.count(), 7);
+
+    address_space
+        .prepare_map(
+            memory,
+            memory_object,
+            VmMapDescriptor {
+                base: 0x8000,
+                size_bytes: 0x1000,
+                memory_offset: 0x8000,
+                rights: HandleRights::READ,
+            },
+        )
+        .unwrap()
+        .commit();
+    address_space
+        .prepare_unmap(0x8000, 0x1000)
+        .unwrap()
+        .commit();
+
+    assert_eq!(address_space.pending_tlb_invalidations.count(), 8);
+}
+
+#[test]
 fn vm_prepare_map_failure_leaves_address_space_unchanged() {
     // Goal: VM validation failures happen before AddressSpace owner mutation.
     // Scope: direct prepare_map with a MemoryObject range overflow.
