@@ -187,7 +187,7 @@ Do not add future backing taxonomy before the backing owner exists. A single var
 
 MemoryObject creation must go through an explicit size descriptor. Generic `CreateObject(MemoryObject)` must not synthesize a zero-sized placeholder object; without page-aligned non-zero size, the runtime frame owner cannot be attached without changing semantics. Creation preflights process quota, handle slot, object entry and contiguous frame reservation before publishing the object or handle; frame exhaustion must leave all public owner state unchanged.
 
-MemoryObject frame reclaim is driven by object lifetime plus mapping references: closing the last handle destroys and frees an unmapped MemoryObject, while a mapped MemoryObject keeps its frames until the final unmap removes the AddressSpace reference. Generic object destruction is not a MemoryObject reclaim path because it cannot free frame ownership; MemoryObject entries are removed only by unpublished creation rollback or after the reclaim path has freed their frames. Current tests cover the single-process handle/map/unmap path; cross-process shared mappings, revoke-driven last reference and generation-bearing frame owner evidence remain later lifecycle slices.
+MemoryObject frame reclaim is driven by object lifetime plus mapping references: closing the last handle destroys and frees an unmapped MemoryObject, while a mapped MemoryObject keeps its frames until the final unmap removes the AddressSpace reference. Generic object destruction is not a MemoryObject reclaim path because it cannot free frame ownership; MemoryObject entries are removed only by unpublished creation rollback or after the reclaim path has freed their frames. Frame ownership records the MemoryObject slot and generation so reclaim cannot release frames with stale object-generation evidence. Current tests cover the single-process handle/map/unmap path; cross-process shared mappings and revoke-driven last reference remain later lifecycle slices.
 
 ### AddressSpace and Mapping
 
@@ -275,7 +275,7 @@ Required initial matrix rows:
 - Introduce an exclusive VM reservation token even if it only covers metadata in the first slice; do not let syscall code mutate AddressSpace, MemoryObject and page-table placeholder directly.
 - Expand existing `kernel/tests/vm.rs` to cover allocation/reservation failure no partial state.
 
-Current exclusion: cross-process shared MemoryObject mappings, revoke-driven last-reference reclaim, frame owner generation hardening and real page-table teardown remain separate lifecycle/page-table slices.
+Current exclusion: cross-process shared MemoryObject mappings, revoke-driven last-reference reclaim and real page-table teardown remain separate lifecycle/page-table slices.
 
 ### Slice 5：Page fault and pager skeleton
 

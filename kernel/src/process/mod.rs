@@ -127,7 +127,10 @@ impl Process {
                 return Err(error);
             }
         };
-        let owner = FrameOwner::MemoryObject(object_entry.object_id().raw());
+        let owner = FrameOwner::MemoryObject {
+            object: object_entry.object_id().raw(),
+            generation: object_entry.object_generation().raw(),
+        };
         let frame_range = match frames.reserve_contiguous(owner, size_bytes) {
             Ok(range) => range,
             Err(error) => {

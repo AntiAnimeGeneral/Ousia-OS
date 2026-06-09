@@ -49,7 +49,13 @@ fn contiguous_reservation_publishes_one_owner_range() {
     let mut allocator = allocator();
 
     let range = allocator
-        .reserve_contiguous(FrameOwner::MemoryObject(3), 0x2000)
+        .reserve_contiguous(
+            FrameOwner::MemoryObject {
+                object: 3,
+                generation: 1,
+            },
+            0x2000,
+        )
         .unwrap();
 
     assert_eq!(range, FrameRange::new(0x1000, 0x3000).unwrap());
@@ -57,13 +63,19 @@ fn contiguous_reservation_publishes_one_owner_range() {
     assert_eq!(
         allocator.state(kernel::memory::frame::FrameId::new(0)),
         Ok(FrameState::Allocated {
-            owner: FrameOwner::MemoryObject(3),
+            owner: FrameOwner::MemoryObject {
+                object: 3,
+                generation: 1,
+            },
         })
     );
     assert_eq!(
         allocator.state(kernel::memory::frame::FrameId::new(1)),
         Ok(FrameState::Allocated {
-            owner: FrameOwner::MemoryObject(3),
+            owner: FrameOwner::MemoryObject {
+                object: 3,
+                generation: 1,
+            },
         })
     );
 }
@@ -80,7 +92,13 @@ fn contiguous_reservation_is_based_on_physical_order() {
     .unwrap();
 
     assert_eq!(
-        allocator.reserve_contiguous(FrameOwner::MemoryObject(5), 0x2000),
+        allocator.reserve_contiguous(
+            FrameOwner::MemoryObject {
+                object: 5,
+                generation: 1,
+            },
+            0x2000,
+        ),
         Ok(FrameRange::new(0x1000, 0x3000).unwrap())
     );
 }
@@ -94,7 +112,13 @@ fn contiguous_reservation_failure_leaves_allocator_unchanged() {
     let first = allocator.reserve_one(FrameOwner::Kernel).unwrap();
 
     assert_eq!(
-        allocator.reserve_contiguous(FrameOwner::MemoryObject(4), 0x2000),
+        allocator.reserve_contiguous(
+            FrameOwner::MemoryObject {
+                object: 4,
+                generation: 1,
+            },
+            0x2000,
+        ),
         Err(KernelError::NoMemory)
     );
 
@@ -162,12 +186,47 @@ fn freed_frame_rejects_stale_reference_after_generation_advance() {
     // Scope: free a frame, then attempt to free the same reference again.
     // Semantics: the second free fails as stale and leaves the frame free.
     let mut allocator = allocator();
-    let frame = allocator.reserve_one(FrameOwner::MemoryObject(9)).unwrap();
+    let frame = allocator
+        .reserve_one(FrameOwner::MemoryObject {
+            object: 9,
+            generation: 1,
+        })
+        .unwrap();
 
     assert_eq!(allocator.free(frame), Ok(()));
     assert_eq!(allocator.free(frame), Err(KernelError::StaleHandle));
     assert_eq!(allocator.state(frame.id()), Ok(FrameState::Free));
     assert_eq!(allocator.free_count(), 3);
+}
+
+#[test]
+fn memory_object_range_release_requires_matching_object_generation() {
+    // Goal: MemoryObject frame ownership is tied to object generation, not just slot id.
+    // Scope: reserve a range for one object generation, then release with a later generation.
+    // Semantics: MissingRights preserves the reserved frame owner state.
+    let mut allocator = allocator();
+    let owner = FrameOwner::MemoryObject {
+        object: 7,
+        generation: 1,
+    };
+    let range = allocator.reserve_contiguous(owner, 0x2000).unwrap();
+
+    assert_eq!(
+        allocator.free_range(
+            range,
+            FrameOwner::MemoryObject {
+                object: 7,
+                generation: 2,
+            },
+        ),
+        Err(KernelError::MissingRights)
+    );
+
+    assert_eq!(allocator.free_count(), 1);
+    assert_eq!(
+        allocator.state(kernel::memory::frame::FrameId::new(0)),
+        Ok(FrameState::Allocated { owner })
+    );
 }
 
 #[test]

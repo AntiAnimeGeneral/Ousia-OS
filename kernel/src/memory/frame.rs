@@ -41,7 +41,7 @@ impl FrameGeneration {
 pub enum FrameOwner {
     Kernel,
     Process(u64),
-    MemoryObject(u64),
+    MemoryObject { object: u64, generation: u64 },
     PageTable(u64),
     Device(u64),
 }

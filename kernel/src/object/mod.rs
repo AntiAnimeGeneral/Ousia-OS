@@ -206,6 +206,10 @@ impl ObjectEntryReservation {
     pub(crate) fn object_id(self) -> ObjectId {
         ObjectId::new(self.index as u64)
     }
+
+    pub(crate) fn object_generation(self) -> ObjectGeneration {
+        self.generation
+    }
 }
 
 impl ObjectSnapshot {
@@ -517,7 +521,13 @@ impl ObjectManager {
         }
 
         frames
-            .free_range(memory.frame_range, FrameOwner::MemoryObject(id.raw()))
+            .free_range(
+                memory.frame_range,
+                FrameOwner::MemoryObject {
+                    object: id.raw(),
+                    generation: generation.raw(),
+                },
+            )
             .expect("MemoryObject frame range must be owned by the object until reclaim");
         self.destroy_reclaimed_memory_object(id, generation)
             .expect("reclaimed MemoryObject entry must be removable after frame reclaim")
@@ -831,7 +841,10 @@ mod tests {
         // Semantics: generic destroy rejects MemoryObject because it cannot reclaim frames.
         let mut objects = ObjectManager::with_capacity(1).unwrap();
         let reservation = objects.reserve_entry().unwrap();
-        let owner = FrameOwner::MemoryObject(reservation.object_id().raw());
+        let owner = FrameOwner::MemoryObject {
+            object: reservation.object_id().raw(),
+            generation: reservation.object_generation().raw(),
+        };
         let memory = MemoryObject::new(
             0x1000,
             MappingPolicy::new(HandleRights::READ | HandleRights::WRITE),
@@ -842,7 +855,13 @@ mod tests {
             .commit_reserved(reservation, ObjectPayload::MemoryObject(memory))
             .unwrap();
 
-        assert_eq!(owner, FrameOwner::MemoryObject(object.id.raw()));
+        assert_eq!(
+            owner,
+            FrameOwner::MemoryObject {
+                object: object.id.raw(),
+                generation: object.generation.raw(),
+            }
+        );
         assert_eq!(
             objects.destroy(object.id, object.generation),
             Err(KernelError::WouldBlock)
