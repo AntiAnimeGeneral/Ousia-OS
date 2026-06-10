@@ -196,12 +196,12 @@ impl AddressSpaceObject {
         let range =
             VirtualRange::new(base, size_bytes).map_err(|_| KernelError::InvalidArgument)?;
         let page_table = PageTableUpdateIntent::unmap(range);
-        let tlb_slot = self
-            .pending_tlb_invalidations
-            .reserve(TlbInvalidationIntent::new(range))?;
         let memory = self.mappings[index]
             .expect("vm unmap reservation selected an occupied mapping")
             .memory;
+        let tlb_slot = self
+            .pending_tlb_invalidations
+            .reserve(TlbInvalidationIntent::new(range), memory)?;
 
         Ok(VmUnmapReservation {
             address_space: self,
@@ -212,8 +212,12 @@ impl AddressSpaceObject {
         })
     }
 
-    pub fn take_pending_tlb_invalidation(&mut self) -> Option<TlbInvalidationIntent> {
+    pub fn take_pending_tlb_invalidation(&mut self) -> Option<PendingTlbInvalidationWork> {
         self.pending_tlb_invalidations.take_next()
+    }
+
+    pub const fn can_destroy(self) -> bool {
+        self.mapping_count == 0 && self.pending_tlb_invalidations.count() == 0
     }
 }
 
@@ -355,6 +359,7 @@ impl PendingTlbInvalidations {
     fn reserve(
         &self,
         intent: TlbInvalidationIntent,
+        deferred_reclaim: ObjectRef,
     ) -> KernelResult<PendingTlbInvalidationReservation> {
         let index = self
             .work
@@ -365,6 +370,7 @@ impl PendingTlbInvalidations {
             index,
             sequence: self.next_sequence,
             intent,
+            deferred_reclaim,
         })
     }
 
@@ -381,12 +387,13 @@ impl PendingTlbInvalidations {
         self.work[reservation.index] = Some(PendingTlbInvalidation {
             sequence: reservation.sequence,
             intent: reservation.intent,
+            deferred_reclaim: reservation.deferred_reclaim,
         });
         self.next_sequence = next_sequence;
         self.count += 1;
     }
 
-    fn take_next(&mut self) -> Option<TlbInvalidationIntent> {
+    fn take_next(&mut self) -> Option<PendingTlbInvalidationWork> {
         let index = self
             .work
             .iter()
@@ -398,14 +405,24 @@ impl PendingTlbInvalidations {
             .take()
             .expect("pending TLB invalidation slot was selected as occupied");
         self.count -= 1;
-        Some(pending.intent)
+        Some(PendingTlbInvalidationWork {
+            intent: pending.intent,
+            deferred_reclaim: pending.deferred_reclaim,
+        })
     }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PendingTlbInvalidationWork {
+    pub intent: TlbInvalidationIntent,
+    pub deferred_reclaim: ObjectRef,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct PendingTlbInvalidation {
     sequence: u64,
     intent: TlbInvalidationIntent,
+    deferred_reclaim: ObjectRef,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -413,6 +430,7 @@ struct PendingTlbInvalidationReservation {
     index: usize,
     sequence: u64,
     intent: TlbInvalidationIntent,
+    deferred_reclaim: ObjectRef,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

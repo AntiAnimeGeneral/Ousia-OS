@@ -86,8 +86,8 @@ fn map_memory_object_records_address_space_mapping() {
         )
         .unwrap();
 
-    assert_eq!(
-        kernel.execute(
+    let SyscallOutcome::PageTableUpdate { intent } = kernel
+        .execute(
             context,
             Syscall::MapMemoryObject {
                 address_space,
@@ -97,8 +97,18 @@ fn map_memory_object_records_address_space_mapping() {
                 memory_offset: 0x1000,
                 rights: HandleRights::READ,
             },
-        ),
-        Ok(SyscallOutcome::Closed)
+        )
+        .unwrap()
+    else {
+        panic!("expected page-table update outcome");
+    };
+    assert_eq!(
+        intent.update,
+        PageTableUpdate::Map {
+            virtual_range: VirtualRange::new(0x1000, 0x2000).unwrap(),
+            frame_range: ostd::mm::frame::FrameRange::new(0x2000, 0x4000).unwrap(),
+            rights: PageTableRights::READ,
+        }
     );
 
     let address_space_view = kernel
@@ -306,9 +316,9 @@ fn committed_unmap_publishes_consumable_tlb_invalidation_work() {
         .commit();
 
     assert_eq!(address_space.pending_tlb_invalidations.count(), 1);
-    let intent = address_space.take_pending_tlb_invalidation().unwrap();
-    assert_eq!(intent.range.base, 0x3000);
-    assert_eq!(intent.range.size_bytes, 0x1000);
+    let work = address_space.take_pending_tlb_invalidation().unwrap();
+    assert_eq!(work.intent.range.base, 0x3000);
+    assert_eq!(work.intent.range.size_bytes, 0x1000);
     assert_eq!(address_space.pending_tlb_invalidations.count(), 0);
     assert_eq!(address_space.take_pending_tlb_invalidation(), None);
 }
@@ -464,7 +474,7 @@ fn consuming_pending_tlb_work_releases_unmap_capacity() {
     assert_eq!(address_space.pending_tlb_invalidations.count(), 8);
 
     let consumed = address_space.take_pending_tlb_invalidation().unwrap();
-    assert_eq!(consumed.range.base, 0);
+    assert_eq!(consumed.intent.range.base, 0);
     assert_eq!(address_space.pending_tlb_invalidations.count(), 7);
 
     address_space
@@ -524,6 +534,7 @@ fn pending_tlb_consumption_preserves_publication_order_after_slot_reuse() {
         address_space
             .take_pending_tlb_invalidation()
             .unwrap()
+            .intent
             .range
             .base,
         0
@@ -550,6 +561,7 @@ fn pending_tlb_consumption_preserves_publication_order_after_slot_reuse() {
         address_space
             .take_pending_tlb_invalidation()
             .unwrap()
+            .intent
             .range
             .base,
         0x1000
@@ -887,16 +899,24 @@ fn unmap_removes_exact_mapping_only() {
         Err(KernelError::InvalidArgument)
     );
     assert_eq!(mapping_count(&kernel, process, address_space), 1);
-    assert_eq!(
-        kernel.execute(
+    let SyscallOutcome::PageTableUpdate { intent } = kernel
+        .execute(
             context,
             Syscall::UnmapAddressRange {
                 address_space,
                 base: 0x4000,
                 size_bytes: 0x2000,
             },
-        ),
-        Ok(SyscallOutcome::Closed)
+        )
+        .unwrap()
+    else {
+        panic!("expected page-table update outcome");
+    };
+    assert_eq!(
+        intent.update,
+        PageTableUpdate::Unmap {
+            virtual_range: VirtualRange::new(0x4000, 0x2000).unwrap(),
+        }
     );
     let address_space_view = kernel
         .lookup_handle(
@@ -915,10 +935,10 @@ fn unmap_removes_exact_mapping_only() {
 }
 
 #[test]
-fn mapped_memory_object_reclaims_frames_after_last_handle_and_unmap() {
-    // Goal: MemoryObject backing stays alive while AddressSpace metadata references it.
-    // Scope: host integration through map, CloseHandle, and UnmapAddressRange.
-    // Semantics: last close does not reclaim mapped frames; final unmap releases them.
+fn mapped_memory_object_reclaims_frames_after_unmap_tlb_work_is_consumed() {
+    // Goal: MemoryObject backing outlives unpublished page-table and TLB invalidation work.
+    // Scope: host integration through map, CloseHandle, UnmapAddressRange, and FlushAddressSpaceTlb.
+    // Semantics: final unmap removes metadata, but frame reclaim waits until pending TLB work is consumed.
     let mut kernel = Kernel::new(6, 1, &[FrameRange::new(0x1000, 0x3000).unwrap()]).unwrap();
     let process = kernel.create_bootstrap_process(6, 6).unwrap();
     let context = SyscallContext::new(process);
@@ -957,20 +977,38 @@ fn mapped_memory_object_reclaims_frames_after_last_handle_and_unmap() {
     assert_eq!(kernel.frames.free_count(), 0);
     assert_eq!(mapping_count(&kernel, process, address_space), 1);
 
-    assert_eq!(
-        kernel.execute(
+    let SyscallOutcome::PageTableUpdate { intent } = kernel
+        .execute(
             context,
             Syscall::UnmapAddressRange {
                 address_space,
                 base: 0x4000,
                 size_bytes: 0x2000,
             },
-        ),
-        Ok(SyscallOutcome::Closed)
+        )
+        .unwrap()
+    else {
+        panic!("expected page-table update outcome");
+    };
+    assert_eq!(
+        intent.update,
+        PageTableUpdate::Unmap {
+            virtual_range: VirtualRange::new(0x4000, 0x2000).unwrap(),
+        }
     );
 
-    assert_eq!(kernel.frames.free_count(), 2);
     assert_eq!(mapping_count(&kernel, process, address_space), 0);
+    assert_eq!(kernel.frames.free_count(), 0);
+
+    let SyscallOutcome::TlbInvalidation { intent } = kernel
+        .execute(context, Syscall::FlushAddressSpaceTlb { address_space })
+        .unwrap()
+    else {
+        panic!("expected TLB invalidation outcome");
+    };
+    assert_eq!(intent.range.base, 0x4000);
+    assert_eq!(intent.range.size_bytes, 0x2000);
+    assert_eq!(kernel.frames.free_count(), 2);
     assert_eq!(
         kernel.lookup_handle(
             process,
@@ -979,6 +1017,83 @@ fn mapped_memory_object_reclaims_frames_after_last_handle_and_unmap() {
             HandleRights::READ
         ),
         Err(KernelError::InvalidHandle)
+    );
+}
+
+#[test]
+fn address_space_close_waits_for_pending_tlb_work() {
+    // Goal: AddressSpace teardown cannot orphan pending VM work that holds MemoryObject backing.
+    // Scope: close MemoryObject handle, unmap, attempt AddressSpace close, flush pending work, then close.
+    // Semantics: pending TLB work blocks AddressSpace destroy and keeps frames reserved until consumed.
+    let mut kernel = Kernel::new(6, 1, &[FrameRange::new(0x1000, 0x3000).unwrap()]).unwrap();
+    let process = kernel.create_bootstrap_process(6, 6).unwrap();
+    let context = SyscallContext::new(process);
+    let address_space = create_address_space(&mut kernel, context, HandleRights::MANAGE);
+    let memory = handle(
+        kernel
+            .execute(
+                context,
+                Syscall::CreateMemoryObject {
+                    size_bytes: 0x2000,
+                    rights: HandleRights::READ,
+                },
+            )
+            .unwrap(),
+    );
+    kernel
+        .execute(
+            context,
+            Syscall::MapMemoryObject {
+                address_space,
+                memory,
+                base: 0x4000,
+                size_bytes: 0x2000,
+                memory_offset: 0,
+                rights: HandleRights::READ,
+            },
+        )
+        .unwrap();
+    kernel
+        .execute(context, Syscall::CloseHandle { handle: memory })
+        .unwrap();
+    kernel
+        .execute(
+            context,
+            Syscall::UnmapAddressRange {
+                address_space,
+                base: 0x4000,
+                size_bytes: 0x2000,
+            },
+        )
+        .unwrap();
+
+    assert_eq!(
+        kernel.execute(
+            context,
+            Syscall::CloseHandle {
+                handle: address_space,
+            },
+        ),
+        Err(KernelError::WouldBlock)
+    );
+    assert_eq!(kernel.frames.free_count(), 0);
+
+    let SyscallOutcome::TlbInvalidation { intent } = kernel
+        .execute(context, Syscall::FlushAddressSpaceTlb { address_space })
+        .unwrap()
+    else {
+        panic!("expected TLB invalidation outcome");
+    };
+    assert_eq!(intent.range.base, 0x4000);
+    assert_eq!(kernel.frames.free_count(), 2);
+    assert_eq!(
+        kernel.execute(
+            context,
+            Syscall::CloseHandle {
+                handle: address_space,
+            },
+        ),
+        Ok(SyscallOutcome::Closed)
     );
 }
 
@@ -1042,9 +1157,9 @@ fn revoke_memory_object_descendant_preserves_root_owned_frames_until_root_close(
 
 #[test]
 fn revoke_mapped_memory_object_descendant_waits_for_final_unmap() {
-    // Goal: revoke removes handle authority without reclaiming frames still held by AddressSpace.
-    // Scope: map a derived MemoryObject handle, revoke it, then unmap the AddressSpace range.
-    // Semantics: frames stay reserved after revoke and are freed only after root close plus unmap.
+    // Goal: revoke removes handle authority without reclaiming frames still held by VM work.
+    // Scope: map a derived MemoryObject handle, revoke it, unmap the AddressSpace range, then flush TLB work.
+    // Semantics: frames stay reserved after revoke/root close/unmap and are freed only after TLB work consumption.
     let mut kernel = Kernel::new(6, 1, &[FrameRange::new(0x1000, 0x3000).unwrap()]).unwrap();
     let process = kernel.create_bootstrap_process(6, 6).unwrap();
     let context = SyscallContext::new(process);
@@ -1119,8 +1234,18 @@ fn revoke_mapped_memory_object_descendant_waits_for_final_unmap() {
         )
         .unwrap();
 
-    assert_eq!(kernel.frames.free_count(), 2);
     assert_eq!(mapping_count(&kernel, process, address_space), 0);
+    assert_eq!(kernel.frames.free_count(), 0);
+
+    let SyscallOutcome::TlbInvalidation { intent } = kernel
+        .execute(context, Syscall::FlushAddressSpaceTlb { address_space })
+        .unwrap()
+    else {
+        panic!("expected TLB invalidation outcome");
+    };
+    assert_eq!(intent.range.base, 0x4000);
+    assert_eq!(intent.range.size_bytes, 0x2000);
+    assert_eq!(kernel.frames.free_count(), 2);
     assert_eq!(
         kernel.lookup_handle(process, child, ObjectKind::MemoryObject, HandleRights::READ,),
         Err(KernelError::InvalidHandle)

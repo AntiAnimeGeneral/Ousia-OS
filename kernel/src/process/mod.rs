@@ -10,7 +10,7 @@ use crate::{
     },
     vm::{MappingPolicy, MemoryObject},
 };
-use ostd::mm::page_table::TlbInvalidationIntent;
+use ostd::mm::page_table::{PageTableUpdateIntent, TlbInvalidationIntent};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Ord, PartialOrd)]
 pub struct ProcessId(u64);
@@ -194,7 +194,7 @@ impl Process {
         size_bytes: u64,
         memory_offset: u64,
         rights: HandleRights,
-    ) -> KernelResult<()> {
+    ) -> KernelResult<PageTableUpdateIntent> {
         let address_space = self.handles.lookup(
             objects,
             address_space,
@@ -223,11 +223,10 @@ impl Process {
     pub fn unmap_address_range(
         &mut self,
         objects: &mut ObjectManager,
-        frames: &mut FrameAllocator,
         address_space: HandleValue,
         base: u64,
         size_bytes: u64,
-    ) -> KernelResult<()> {
+    ) -> KernelResult<PageTableUpdateIntent> {
         let address_space = self.handles.lookup(
             objects,
             address_space,
@@ -235,7 +234,6 @@ impl Process {
             HandleRights::MANAGE,
         )?;
         objects.unmap_address_range(
-            frames,
             ObjectRef {
                 id: address_space.object.id,
                 generation: address_space.object.generation,
@@ -248,6 +246,7 @@ impl Process {
     pub fn flush_address_space_tlb(
         &mut self,
         objects: &mut ObjectManager,
+        frames: &mut FrameAllocator,
         address_space: HandleValue,
     ) -> KernelResult<TlbInvalidationIntent> {
         let address_space = self.handles.lookup(
@@ -256,10 +255,13 @@ impl Process {
             ObjectKind::AddressSpace,
             HandleRights::MANAGE,
         )?;
-        objects.take_address_space_tlb_invalidation(ObjectRef {
-            id: address_space.object.id,
-            generation: address_space.object.generation,
-        })
+        objects.take_address_space_tlb_invalidation(
+            frames,
+            ObjectRef {
+                id: address_space.object.id,
+                generation: address_space.object.generation,
+            },
+        )
     }
 
     pub fn create_channel_pair_handles(

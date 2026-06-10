@@ -7,7 +7,7 @@ use crate::{
     object::{MAX_CHANNEL_MESSAGE_BYTES, ObjectKind, ObjectManager},
     process::{ProcessId, ProcessTable},
 };
-use ostd::mm::page_table::TlbInvalidationIntent;
+use ostd::mm::page_table::{PageTableUpdateIntent, TlbInvalidationIntent};
 
 pub enum Syscall {
     CreateObject {
@@ -78,6 +78,9 @@ pub enum SyscallOutcome {
     Closed,
     Revoked {
         count: usize,
+    },
+    PageTableUpdate {
+        intent: PageTableUpdateIntent,
     },
     TlbInvalidation {
         intent: TlbInvalidationIntent,
@@ -155,7 +158,7 @@ impl Kernel {
                 memory_offset,
                 rights,
             } => {
-                process.map_memory_object(
+                let intent = process.map_memory_object(
                     &mut self.objects,
                     address_space,
                     memory,
@@ -164,24 +167,27 @@ impl Kernel {
                     memory_offset,
                     rights,
                 )?;
-                Ok(SyscallOutcome::Closed)
+                Ok(SyscallOutcome::PageTableUpdate { intent })
             }
             Syscall::UnmapAddressRange {
                 address_space,
                 base,
                 size_bytes,
             } => {
-                process.unmap_address_range(
+                let intent = process.unmap_address_range(
                     &mut self.objects,
-                    &mut self.frames,
                     address_space,
                     base,
                     size_bytes,
                 )?;
-                Ok(SyscallOutcome::Closed)
+                Ok(SyscallOutcome::PageTableUpdate { intent })
             }
             Syscall::FlushAddressSpaceTlb { address_space } => {
-                let intent = process.flush_address_space_tlb(&mut self.objects, address_space)?;
+                let intent = process.flush_address_space_tlb(
+                    &mut self.objects,
+                    &mut self.frames,
+                    address_space,
+                )?;
                 Ok(SyscallOutcome::TlbInvalidation { intent })
             }
             Syscall::CreateChannelPair {

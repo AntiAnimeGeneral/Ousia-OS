@@ -279,6 +279,7 @@ impl HandleTable {
         handle: HandleValue,
     ) -> KernelResult<()> {
         let entry = self.valid_entry(handle)?;
+        objects.ensure_handle_can_close(entry.object, entry.object_generation)?;
         objects.remove_handle(entry.object, entry.object_generation)?;
         self.remove_entry(handle)?;
         objects.reclaim_memory_object_if_unreferenced(

@@ -6,7 +6,7 @@ use crate::{
     memory::frame::{FrameAllocator, FrameOwner},
     vm::{AddressSpaceObject, MemoryObject, VmMapDescriptor},
 };
-use ostd::mm::page_table::TlbInvalidationIntent;
+use ostd::mm::page_table::{PageTableUpdateIntent, TlbInvalidationIntent};
 
 pub const MAX_CHANNEL_MESSAGES: usize = 4;
 pub const MAX_CHANNEL_MESSAGE_BYTES: usize = 64;
@@ -453,7 +453,7 @@ impl ObjectManager {
         size_bytes: u64,
         memory_offset: u64,
         rights: HandleRights,
-    ) -> KernelResult<()> {
+    ) -> KernelResult<PageTableUpdateIntent> {
         let memory_object = self.memory_object(memory.id, memory.generation)?;
         let descriptor = VmMapDescriptor {
             base,
@@ -469,8 +469,9 @@ impl ObjectManager {
                 return Err(KernelError::WrongObjectType);
             };
             let reservation = address_space.prepare_map(memory, memory_object, descriptor)?;
+            let page_table = *reservation.page_table();
             reservation.commit();
-            Ok(())
+            Ok(page_table)
         })();
         if let Err(error) = map_result {
             self.remove_memory_mapping(memory.id, memory.generation)
@@ -478,40 +479,45 @@ impl ObjectManager {
             return Err(error);
         }
 
-        Ok(())
+        map_result
     }
 
     pub fn unmap_address_range(
         &mut self,
-        frames: &mut FrameAllocator,
         address_space: ObjectRef,
         base: u64,
         size_bytes: u64,
-    ) -> KernelResult<()> {
+    ) -> KernelResult<PageTableUpdateIntent> {
         let payload = self.live_payload_mut(address_space.id, address_space.generation)?;
         let ObjectPayload::AddressSpace(address_space) = payload else {
             return Err(KernelError::WrongObjectType);
         };
         let reservation = address_space.prepare_unmap(base, size_bytes)?;
-        let memory = reservation.memory();
+        let page_table = *reservation.page_table();
         reservation.commit();
-        self.remove_memory_mapping(memory.id, memory.generation)
-            .expect("vm unmap commit must match one active MemoryObject mapping reference");
-        self.reclaim_memory_object_if_unreferenced(frames, memory.id, memory.generation);
-        Ok(())
+        Ok(page_table)
     }
 
     pub fn take_address_space_tlb_invalidation(
         &mut self,
+        frames: &mut FrameAllocator,
         address_space: ObjectRef,
     ) -> KernelResult<TlbInvalidationIntent> {
         let payload = self.live_payload_mut(address_space.id, address_space.generation)?;
         let ObjectPayload::AddressSpace(address_space) = payload else {
             return Err(KernelError::WrongObjectType);
         };
-        address_space
+        let work = address_space
             .take_pending_tlb_invalidation()
-            .ok_or(KernelError::WouldBlock)
+            .ok_or(KernelError::WouldBlock)?;
+        self.remove_memory_mapping(work.deferred_reclaim.id, work.deferred_reclaim.generation)
+            .expect("pending TLB work must hold one active MemoryObject mapping reference");
+        self.reclaim_memory_object_if_unreferenced(
+            frames,
+            work.deferred_reclaim.id,
+            work.deferred_reclaim.generation,
+        );
+        Ok(work.intent)
     }
 
     pub fn reclaim_memory_object_if_unreferenced(
@@ -674,6 +680,26 @@ impl ObjectManager {
         Ok(())
     }
 
+    pub fn ensure_handle_can_close(
+        &self,
+        id: ObjectId,
+        generation: ObjectGeneration,
+    ) -> KernelResult<()> {
+        let entry = self.entry(id)?;
+        if entry.generation != generation {
+            return Err(KernelError::StaleHandle);
+        }
+        if entry.handle_count > 1 {
+            return Ok(());
+        }
+        if let ObjectPayload::AddressSpace(address_space) = entry.payload {
+            if !address_space.can_destroy() {
+                return Err(KernelError::WouldBlock);
+            }
+        }
+        Ok(())
+    }
+
     fn add_memory_mapping(
         &mut self,
         id: ObjectId,
@@ -726,6 +752,12 @@ impl ObjectManager {
 
         if let ObjectPayload::MemoryObject(_) = entry.payload {
             return Err(KernelError::WouldBlock);
+        }
+
+        if let ObjectPayload::AddressSpace(address_space) = entry.payload {
+            if !address_space.can_destroy() {
+                return Err(KernelError::WouldBlock);
+            }
         }
 
         self.entries[index] = None;
