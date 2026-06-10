@@ -7,6 +7,7 @@ use crate::{
     object::{MAX_CHANNEL_MESSAGE_BYTES, ObjectKind, ObjectManager},
     process::{ProcessId, ProcessTable},
 };
+use ostd::mm::page_table::TlbInvalidationIntent;
 
 pub enum Syscall {
     CreateObject {
@@ -32,6 +33,9 @@ pub enum Syscall {
         address_space: HandleValue,
         base: u64,
         size_bytes: u64,
+    },
+    FlushAddressSpaceTlb {
+        address_space: HandleValue,
     },
     CreateChannelPair {
         max_messages: usize,
@@ -74,6 +78,9 @@ pub enum SyscallOutcome {
     Closed,
     Revoked {
         count: usize,
+    },
+    TlbInvalidation {
+        intent: TlbInvalidationIntent,
     },
 }
 
@@ -172,6 +179,10 @@ impl Kernel {
                     size_bytes,
                 )?;
                 Ok(SyscallOutcome::Closed)
+            }
+            Syscall::FlushAddressSpaceTlb { address_space } => {
+                let intent = process.flush_address_space_tlb(&mut self.objects, address_space)?;
+                Ok(SyscallOutcome::TlbInvalidation { intent })
             }
             Syscall::CreateChannelPair {
                 max_messages,

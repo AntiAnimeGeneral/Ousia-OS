@@ -10,6 +10,7 @@ use crate::{
     },
     vm::{MappingPolicy, MemoryObject},
 };
+use ostd::mm::page_table::TlbInvalidationIntent;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Ord, PartialOrd)]
 pub struct ProcessId(u64);
@@ -242,6 +243,23 @@ impl Process {
             base,
             size_bytes,
         )
+    }
+
+    pub fn flush_address_space_tlb(
+        &mut self,
+        objects: &mut ObjectManager,
+        address_space: HandleValue,
+    ) -> KernelResult<TlbInvalidationIntent> {
+        let address_space = self.handles.lookup(
+            objects,
+            address_space,
+            ObjectKind::AddressSpace,
+            HandleRights::MANAGE,
+        )?;
+        objects.take_address_space_tlb_invalidation(ObjectRef {
+            id: address_space.object.id,
+            generation: address_space.object.generation,
+        })
     }
 
     pub fn create_channel_pair_handles(

@@ -314,6 +314,123 @@ fn committed_unmap_publishes_consumable_tlb_invalidation_work() {
 }
 
 #[test]
+fn flush_address_space_tlb_consumes_pending_unmap_work() {
+    // Goal: the process-visible flush boundary drains AddressSpace-owned TLB work.
+    // Scope: map and unmap through syscalls, then consume pending invalidation through syscall.
+    // Semantics: MANAGE authority can take one intent naming the unmapped range; next flush blocks.
+    let mut kernel = kernel(6, 1);
+    let process = kernel.create_bootstrap_process(6, 6).unwrap();
+    let context = SyscallContext::new(process);
+    let address_space = create_address_space(&mut kernel, context, HandleRights::MANAGE);
+    let memory = create_memory(&mut kernel, context, HandleRights::READ);
+    kernel
+        .execute(
+            context,
+            Syscall::MapMemoryObject {
+                address_space,
+                memory,
+                base: 0x5000,
+                size_bytes: 0x1000,
+                memory_offset: 0,
+                rights: HandleRights::READ,
+            },
+        )
+        .unwrap();
+    kernel
+        .execute(
+            context,
+            Syscall::UnmapAddressRange {
+                address_space,
+                base: 0x5000,
+                size_bytes: 0x1000,
+            },
+        )
+        .unwrap();
+
+    let SyscallOutcome::TlbInvalidation { intent } = kernel
+        .execute(context, Syscall::FlushAddressSpaceTlb { address_space })
+        .unwrap()
+    else {
+        panic!("expected TLB invalidation outcome");
+    };
+
+    assert_eq!(intent.range.base, 0x5000);
+    assert_eq!(intent.range.size_bytes, 0x1000);
+    assert_eq!(
+        kernel.execute(context, Syscall::FlushAddressSpaceTlb { address_space }),
+        Err(KernelError::WouldBlock)
+    );
+}
+
+#[test]
+fn flush_address_space_tlb_requires_manage_rights() {
+    // Goal: draining AddressSpace TLB work requires management authority.
+    // Scope: attempt the flush syscall through a read-only AddressSpace handle.
+    // Semantics: MissingRights leaves pending work available to a MANAGE handle.
+    let mut kernel = kernel(6, 1);
+    let process = kernel.create_bootstrap_process(6, 7).unwrap();
+    let context = SyscallContext::new(process);
+    let address_space = create_address_space(
+        &mut kernel,
+        context,
+        HandleRights::READ | HandleRights::MANAGE | HandleRights::DUPLICATE,
+    );
+    let read_only_address_space = handle(
+        kernel
+            .execute(
+                context,
+                Syscall::DuplicateHandle {
+                    source: address_space,
+                    rights: HandleRights::READ,
+                },
+            )
+            .unwrap(),
+    );
+    let memory = create_memory(&mut kernel, context, HandleRights::READ);
+    kernel
+        .execute(
+            context,
+            Syscall::MapMemoryObject {
+                address_space,
+                memory,
+                base: 0x6000,
+                size_bytes: 0x1000,
+                memory_offset: 0,
+                rights: HandleRights::READ,
+            },
+        )
+        .unwrap();
+    kernel
+        .execute(
+            context,
+            Syscall::UnmapAddressRange {
+                address_space,
+                base: 0x6000,
+                size_bytes: 0x1000,
+            },
+        )
+        .unwrap();
+
+    assert_eq!(
+        kernel.execute(
+            context,
+            Syscall::FlushAddressSpaceTlb {
+                address_space: read_only_address_space,
+            },
+        ),
+        Err(KernelError::MissingRights)
+    );
+
+    let SyscallOutcome::TlbInvalidation { intent } = kernel
+        .execute(context, Syscall::FlushAddressSpaceTlb { address_space })
+        .unwrap()
+    else {
+        panic!("expected TLB invalidation outcome");
+    };
+    assert_eq!(intent.range.base, 0x6000);
+}
+
+#[test]
 fn consuming_pending_tlb_work_releases_unmap_capacity() {
     // Goal: pending TLB storage is bounded work state, not a permanent unmap limit.
     // Scope: fill fixed pending slots, consume one intent, then unmap another mapping.

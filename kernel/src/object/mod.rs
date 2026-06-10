@@ -6,6 +6,7 @@ use crate::{
     memory::frame::{FrameAllocator, FrameOwner},
     vm::{AddressSpaceObject, MemoryObject, VmMapDescriptor},
 };
+use ostd::mm::page_table::TlbInvalidationIntent;
 
 pub const MAX_CHANNEL_MESSAGES: usize = 4;
 pub const MAX_CHANNEL_MESSAGE_BYTES: usize = 64;
@@ -498,6 +499,19 @@ impl ObjectManager {
             .expect("vm unmap commit must match one active MemoryObject mapping reference");
         self.reclaim_memory_object_if_unreferenced(frames, memory.id, memory.generation);
         Ok(())
+    }
+
+    pub fn take_address_space_tlb_invalidation(
+        &mut self,
+        address_space: ObjectRef,
+    ) -> KernelResult<TlbInvalidationIntent> {
+        let payload = self.live_payload_mut(address_space.id, address_space.generation)?;
+        let ObjectPayload::AddressSpace(address_space) = payload else {
+            return Err(KernelError::WrongObjectType);
+        };
+        address_space
+            .take_pending_tlb_invalidation()
+            .ok_or(KernelError::WouldBlock)
     }
 
     pub fn reclaim_memory_object_if_unreferenced(
