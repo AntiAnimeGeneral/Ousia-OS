@@ -6,6 +6,10 @@
 
 传统 OS 把 CPU (`taskset`)、GPU（厂商私有调度）、NPU/DSP（无 OS 级调度）当独立资源管理，各有各的 API、各有各的调度器，彼此不可见。结果：一个 NPU 推理任务和 GPU 渲染任务无法在系统层做联合调度——即使它们共享同一块 SoC 的内存带宽和功耗预算。
 
+Ousia OS 的内核默认是 always-multicore 原生 HMP（heterogeneous multiprocessing）架构，不支持把单核作为目标平台、实现捷径或性能论据，也不是先做同构 SMP 再补异构支持。SMP 是 HMP 的退化情况；大小核、不同 CPU cluster、GPU、NPU、DSP、SmartNIC、硬件队列、设备本地内存、共享内存带宽和电源/热设计域都必须在同一资源模型里被看见。
+
+性能设计从并发和并行出发：多个 runnable thread、多个硬件队列、多个执行后端和共享带宽/功耗竞争是默认场景。任何调度、IPC、VM、allocator 或 driver queue 设计如果只能在单核 happy path 下解释清楚，就还不是 Ousia 的架构设计。
+
 Ousia OS 用 Compute Domain 统一描述所有计算后端：类型、拓扑、能力（SIMD/FP64/Tensor）、本地内存大小与带宽、缓存一致性模型、功耗参数（base/boost 频率 + 功耗域）、抢占粒度。
 
 应用声明任务需求（`compute_type: "tensor-inference", latency_target: "10ms", power_budget: "low"`），系统按 Compute Domain 和执行等级自动路由。路由决策不考虑原始算力——数据移动成本也是输入：如果图片已经在 GPU 显存中，CPU 推理需要先搬数据，总延迟可能比 GPU 推理更高。调度器将此纳入 cost model。
@@ -40,6 +44,8 @@ Ousia OS 的机制：
 
 ## 异构资源调度
 
+HMP 调度不是“CPU scheduler + GPU plugin”。CPU 大小核选择、NPU 推理、GPU compute、DMA copy engine、SmartNIC offload 和 storage queue placement 都是同一类资源路由问题：任务在哪个执行后端运行、数据在哪里、迁移/拷贝成本是多少、会不会挤压前台交互或功耗预算。
+
 GPU 调度不是黑盒。Ousia OS 理解 GPU 内部多引擎（Graphics/Compute/Copy/Video Decode/Encode），支持引擎级并发——一个 Capsule 用 Compute 引擎做推理，另一个用 Graphics 引擎做渲染，它们应真正并行而非时分复用。
 
 抢占粒度取决于硬件能力：支持 thread-level preemption 的 GPU 上 INT 可直接打断 BG；不支持时降级为 draw-call 边界抢占。VRAM 满时按执行等级决定换出顺序（BG 任务先被换出）。
@@ -55,6 +61,7 @@ GPU 调度不是黑盒。Ousia OS 理解 GPU 内部多引擎（Graphics/Compute/
 1. GPU 硬件不支持 fine-grained preemption 时，INT 被长时间 BG 任务阻塞的降级策略？
 2. E-core 上有实时任务需求：等待 P-core 还是立即在 E-core 上运行（延迟 vs 吞吐）？
 3. 功耗预算跨 CPU/GPU/NPU 的动态分配策略？
+4. NPU/GPU 等异构后端的抢占和故障恢复粒度如何映射到统一 Execution Class？
 
 ## 相关章节
 

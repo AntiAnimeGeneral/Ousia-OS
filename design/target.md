@@ -173,7 +173,7 @@ Ousia OS 的第一阶段分层如下，详细路线见 [06-roadmap.md](./topics/
 1. Kernel handle/object baseline：不可伪造 handle、rights 单调性、generation/stale handle 失败、object lifetime、delete/revoke 和资源预算语义。
 2. VM 与 allocator baseline：boot memory map、page allocator、kernel heap/slab 或 fixed pool、VMO/MemoryObject、VMAR/address-space owner 和失败前置检查。
 3. IPC 与等待 baseline：channel/call、Portal fast call、Operation、Continuation、EventPort/WaitSet、timeout、cancel、late reply 和 handle transfer。
-4. Process/thread/scheduler baseline：Capsule、process、thread、scheduler、priority/affinity、抢占和多核状态。
+4. Process/thread/scheduler baseline：Capsule、process、thread、scheduler、priority/affinity、抢占和 always-multicore native HMP 状态。
 5. Object Namespace 与 VFS/Object Store：路径解析、ProviderRoot、MountBinding、ObjectHandle 解析缓存、撤销、mmap 和 page cache 边界。
 6. Service Graph bootstrap 与 Capsule 生命周期。
 7. Package Cell 安装、激活、回滚、卸载和多版本并存。

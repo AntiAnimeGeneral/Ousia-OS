@@ -1,6 +1,6 @@
 ---
 applyTo: "kernel/**,ostd/**,tools/qemu-runner/**,Cargo.toml,.cargo/**,design/implementation/**"
-description: "Ousia OS 内核边界：kernel/OSTD/tooling 职责归属、Ousia capability kernel 路线、多核假设和平台参考规则。"
+description: "Ousia OS 内核边界：kernel/OSTD/tooling 职责归属、Ousia capability kernel 路线、原生 HMP 假设和平台参考规则。"
 ---
 
 # Ousia 内核边界
@@ -37,8 +37,10 @@ description: "Ousia OS 内核边界：kernel/OSTD/tooling 职责归属、Ousia c
 ## Memory 与平台方向
 
 - CortenMM/Asterinas/Zircon 的 memory-management 启发应先落实为边界。避免让 VMA tree、VMO/MemoryObject metadata 和 page table 成为多套互相竞争的真相源。
-- 后续 address space 应以 VM object/address-space owner、page-table structure、typed frame metadata 和 range/cursor guard 作为权威边界。multi-level page-table locking、SMP 并发、reclaim 和 verification structure 应等 VM object、page table 与 frame-metadata 语义稳定后再接入。
-- Ousia 是 multi-core-only kernel 项目。不要把“single-core first, SMP later”设计成主路径。scheduler、per-CPU state、IRQ/timer routing、TLB shootdown、FPU/SIMD ownership、locks 和 allocator 边界从一开始就必须按多核语义建模，即使第一版实现很小。
+- 后续 address space 应以 VM object/address-space owner、page-table structure、typed frame metadata 和 range/cursor guard 作为权威边界。multi-level page-table locking、HMP 并发、reclaim 和 verification structure 应等 VM object、page table 与 frame-metadata 语义稳定后再接入。
+- Ousia 是 always-multicore native HMP kernel 项目。单核不是支持目标、实现捷径或 correctness/performance 论据；不要把“single-core first, SMP later”设计成主路径，也不要把同构 SMP 当成最终硬件模型。SMP 只是 HMP 的退化情况；scheduler、per-CPU/per-compute-domain state、IRQ/timer routing、TLB shootdown、FPU/SIMD/accelerator ownership、locks、allocator 和 power/thermal boundary 从一开始就必须按异构多处理器语义建模，即使第一版实现很小。
+- 所有 kernel/OSTD 主路径设计都必须以并发、并行和跨资源竞争下的性能为出发点。不能用“第一版只有一个 CPU 跑得通”证明锁、队列、allocator、page-table mutation、IPC wait/wake 或 driver queue 设计成立；临时 smoke path 可以单 CPU 运行，但 owning design 必须说明并行 owner、同步边界、可扩展瓶颈和 HMP 退出条件。
+- HMP 语义覆盖 CPU 大小核、cluster/topology、GPU/NPU/DSP/SmartNIC 等异构执行后端、共享内存带宽、设备本地内存、电源/热设计功耗域和硬件队列。kernel 和 OSTD 需要把这些硬件事实归一化为 Compute Domain、Execution Class、resource budget 和 device/resource handle；不要把 NPU/GPU 视为普通外设旁路，也不要让厂商 runtime 私有调度绕过系统级预算和隔离。
 
 ## Ousia Kernel Architecture Direction
 

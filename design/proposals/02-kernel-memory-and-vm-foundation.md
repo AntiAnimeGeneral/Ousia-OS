@@ -48,7 +48,7 @@ Asterinas 研究线补充了另一类参考：不是用户可见对象 API，而
 3. 明确 `NO_MEMORY`、`NO_CAPACITY`、`QUOTA_EXCEEDED` 的边界和测试入口。
 4. 建立最小 VM foundation：`MemoryObject`、`AddressSpace`、VMA/VMAR mapping metadata、page-table boundary、fault routing skeleton。
 5. 让 existing handle/object/process/syscall skeleton 消费 reservation，而不是直接使用临时 `Vec`/fixed table 作为最终资源模型。
-6. 从第一版就按 multi-core-only 设计 allocator locks、per-CPU cache placeholder、TLB invalidation boundary 和 page-table mutation serialization。
+6. 从第一版就按 always-multicore native HMP 设计 allocator locks、per-CPU/per-domain cache placeholder、TLB invalidation boundary 和 page-table mutation serialization。单核不是支持目标；SMP 是 HMP 的退化情况；内存和 VM 边界必须以并发 page fault、跨核 TLB invalidation、共享带宽竞争、大小核、异构执行后端、设备本地内存和功耗域为默认约束。
 7. 让 VM 主路径具备 CortenMM 式事务形态：descriptor decode、rights/lifetime validation、resource reservation、commit plan construction 和 state publication 必须分阶段，且 commit 阶段不再发现可恢复分配失败。
 
 ## 非目标
@@ -302,7 +302,7 @@ Current exclusion: cross-process shared MemoryObject mappings, hard revoke of ro
 - Allocation failure injection tests where each reservation step can fail independently.
 - Mapping tests asserting AddressSpace mapping metadata, frame metadata and page-table placeholder remain unchanged after failure.
 - Transaction tests for VM reservations: validation, reservation failure or dropped uncommitted tokens must leave every owner unchanged; commit success must have one visible publication point.
-- Multi-core boundary tests can start as model assertions: page-table mutation records pending TLB invalidation work rather than silently assuming single-core.
+- HMP boundary tests can start as model assertions: page-table mutation records pending TLB invalidation work, allocator/cache ownership names CPU/domain scope, and no VM path silently assumes single-core.
 - Converos-style model candidates: frame metadata lifecycle, reservation token lifecycle, channel call wait/wake, handle revoke lineage and VM fault commit. These should stay small enough for TLA+/PlusCal or Verus-style specifications before implementation grows concurrent shortcuts.
 - RusyFuzz-style fuzz targets: syscall descriptors, handle values, VM ranges, object ids, IPC message lengths and allocation failure injection should actively search for panic-prone paths such as unchecked indexing, failed `unwrap`/`expect`, arithmetic overflow and impossible-state assertions reachable from external input.
 - QEMU smoke only when boot/OSTD/platform path changes.

@@ -25,7 +25,7 @@ Platform/boot/driver reference 用于防止 bring-up 期间把 QEMU、machine、
 - Kernel 是否直接持有 QEMU machine、MMIO base、device tree node、exception level 或 UART register。
 - Boot code 是否把 loader-specific layout 当成长期 ABI，却没有 owning doc 或 reference comparison。
 - Driver SDK proposal 是否混淆 kernel driver、user-space service、OSTD arch support 和 host tooling。
-- Interrupt/timer routing 是否按 single-core bring-up 写死，无法支持 multi-core-only 方向。
+- Interrupt/timer routing 是否按 single-core 或同构 SMP bring-up 写死，无法支持 always-multicore native HMP 方向。
 - Device tree parsing 是否散落在多个模块，或缺少 normalization owner。
 - QEMU runner 是否绕过 project boundary，靠修改 kernel cfg 或 Cargo target 解决 host/tooling 问题。
 - sDDF/Microkit/Asterinas 参考是否只列名字，没有分析 isolation、IPC、capability 和 scheduling 适配成本。
@@ -43,5 +43,5 @@ Platform/boot/driver reference 用于防止 bring-up 期间把 QEMU、machine、
 - Boot/QEMU details appear in kernel core。
 - Platform assumption has no owning doc。
 - Driver proposal cannot say whether driver runs in kernel, OSTD, service graph, or host tooling。
-- Interrupt/timer plan assumes one CPU。
+- Interrupt/timer plan assumes one CPU or homogeneous CPU topology。
 - Reference comparison lists projects but not adoption/rejection reasoning。
