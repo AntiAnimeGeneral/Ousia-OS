@@ -6,7 +6,10 @@ use kernel::{
     syscall::{Kernel, Syscall, SyscallContext, SyscallOutcome},
     vm::{AddressSpaceObject, MappingPolicy, MemoryObject, VmMapDescriptor},
 };
-use ostd::mm::page_table::{PageTableRights, PageTableUpdate, VirtualRange};
+use ostd::{
+    cpu::{CpuGeneration, CpuSet},
+    mm::page_table::{PageTableRights, PageTableUpdate, VirtualRange},
+};
 
 fn kernel(object_capacity: usize, process_capacity: usize) -> Kernel {
     Kernel::new(
@@ -277,6 +280,11 @@ fn dropping_vm_unmap_reservation_leaves_address_space_unchanged() {
     let reservation = address_space.prepare_unmap(0x2000, 0x1000).unwrap();
     assert_eq!(reservation.page_table().virtual_range().base, 0x2000);
     assert_eq!(reservation.tlb_invalidation().range.base, 0x2000);
+    assert_eq!(reservation.tlb_invalidation().target, CpuSet::AllActive);
+    assert_eq!(
+        reservation.tlb_invalidation().generation,
+        CpuGeneration::INITIAL
+    );
     drop(reservation);
 
     assert_eq!(address_space.mapping_count, 1);
@@ -319,6 +327,8 @@ fn committed_unmap_publishes_consumable_tlb_invalidation_work() {
     let work = address_space.take_pending_tlb_invalidation().unwrap();
     assert_eq!(work.intent.range.base, 0x3000);
     assert_eq!(work.intent.range.size_bytes, 0x1000);
+    assert_eq!(work.intent.target, CpuSet::AllActive);
+    assert_eq!(work.intent.generation, CpuGeneration::INITIAL);
     assert_eq!(address_space.pending_tlb_invalidations.count(), 0);
     assert_eq!(address_space.take_pending_tlb_invalidation(), None);
 }
@@ -366,6 +376,8 @@ fn flush_address_space_tlb_consumes_pending_unmap_work() {
 
     assert_eq!(intent.range.base, 0x5000);
     assert_eq!(intent.range.size_bytes, 0x1000);
+    assert_eq!(intent.target, CpuSet::AllActive);
+    assert_eq!(intent.generation, CpuGeneration::INITIAL);
     assert_eq!(
         kernel.execute(context, Syscall::FlushAddressSpaceTlb { address_space }),
         Err(KernelError::WouldBlock)
@@ -475,6 +487,8 @@ fn consuming_pending_tlb_work_releases_unmap_capacity() {
 
     let consumed = address_space.take_pending_tlb_invalidation().unwrap();
     assert_eq!(consumed.intent.range.base, 0);
+    assert_eq!(consumed.intent.target, CpuSet::AllActive);
+    assert_eq!(consumed.intent.generation, CpuGeneration::INITIAL);
     assert_eq!(address_space.pending_tlb_invalidations.count(), 7);
 
     address_space
@@ -530,15 +544,9 @@ fn pending_tlb_consumption_preserves_publication_order_after_slot_reuse() {
             .commit();
     }
 
-    assert_eq!(
-        address_space
-            .take_pending_tlb_invalidation()
-            .unwrap()
-            .intent
-            .range
-            .base,
-        0
-    );
+    let consumed = address_space.take_pending_tlb_invalidation().unwrap();
+    assert_eq!(consumed.intent.range.base, 0);
+    assert_eq!(consumed.intent.generation, CpuGeneration::INITIAL);
     address_space
         .prepare_map(
             memory,
@@ -557,15 +565,10 @@ fn pending_tlb_consumption_preserves_publication_order_after_slot_reuse() {
         .unwrap()
         .commit();
 
-    assert_eq!(
-        address_space
-            .take_pending_tlb_invalidation()
-            .unwrap()
-            .intent
-            .range
-            .base,
-        0x1000
-    );
+    let consumed = address_space.take_pending_tlb_invalidation().unwrap();
+    assert_eq!(consumed.intent.range.base, 0x1000);
+    assert_eq!(consumed.intent.target, CpuSet::AllActive);
+    assert_eq!(consumed.intent.generation, CpuGeneration::new(1));
 }
 
 #[test]
@@ -622,6 +625,8 @@ fn flush_address_space_tlb_preserves_publication_order_after_slot_reuse() {
         panic!("expected TLB invalidation outcome");
     };
     assert_eq!(intent.range.base, 0);
+    assert_eq!(intent.target, CpuSet::AllActive);
+    assert_eq!(intent.generation, CpuGeneration::INITIAL);
 
     kernel
         .execute(
@@ -654,6 +659,8 @@ fn flush_address_space_tlb_preserves_publication_order_after_slot_reuse() {
         panic!("expected TLB invalidation outcome");
     };
     assert_eq!(intent.range.base, 0x1000);
+    assert_eq!(intent.target, CpuSet::AllActive);
+    assert_eq!(intent.generation, CpuGeneration::new(1));
 }
 
 #[test]

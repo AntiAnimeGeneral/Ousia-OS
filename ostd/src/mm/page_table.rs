@@ -1,4 +1,5 @@
 use super::frame::{FrameRange, PAGE_SIZE};
+use crate::cpu::{CpuGeneration, CpuSet};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PageTableIntentError {
@@ -95,14 +96,20 @@ impl PageTableUpdateIntent {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct TlbInvalidationIntent {
     // TODO(ostd-tlb): this is the architecture-neutral invalidation intent, not a
-    // completed shootdown. The final OSTD boundary needs CPU target/generation,
-    // ordering barriers and completion semantics owned outside kernel VM policy.
+    // completed shootdown. The final OSTD boundary needs per-CPU completion,
+    // ordering barriers and shootdown execution semantics owned outside kernel VM policy.
     pub range: VirtualRange,
+    pub target: CpuSet,
+    pub generation: CpuGeneration,
 }
 
 impl TlbInvalidationIntent {
-    pub const fn new(range: VirtualRange) -> Self {
-        Self { range }
+    pub const fn new(range: VirtualRange, target: CpuSet, generation: CpuGeneration) -> Self {
+        Self {
+            range,
+            target,
+            generation,
+        }
     }
 }
 

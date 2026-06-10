@@ -4,9 +4,12 @@ use crate::{
     memory::frame::FrameRange as MemoryFrameRange,
     object::ObjectRef,
 };
-use ostd::mm::{
-    frame::FrameRange as PageTableFrameRange,
-    page_table::{PageTableRights, PageTableUpdateIntent, TlbInvalidationIntent, VirtualRange},
+use ostd::{
+    cpu::{CpuGeneration, CpuSet},
+    mm::{
+        frame::FrameRange as PageTableFrameRange,
+        page_table::{PageTableRights, PageTableUpdateIntent, TlbInvalidationIntent, VirtualRange},
+    },
 };
 
 pub const MAX_ADDRESS_SPACE_MAPPINGS: usize = 8;
@@ -199,9 +202,7 @@ impl AddressSpaceObject {
         let memory = self.mappings[index]
             .expect("vm unmap reservation selected an occupied mapping")
             .memory;
-        let tlb_slot = self
-            .pending_tlb_invalidations
-            .reserve(TlbInvalidationIntent::new(range), memory)?;
+        let tlb_slot = self.pending_tlb_invalidations.reserve(range, memory)?;
 
         Ok(VmUnmapReservation {
             address_space: self,
@@ -334,10 +335,11 @@ impl VmUnmapReservation<'_> {
 pub struct PendingTlbInvalidations {
     // TODO(vm-tlb): count is diagnostic scaffolding for the missing invalidation
     // queue. Do not use it as correctness evidence for TLB completion. The current
-    // work is fixed pending-work storage, but still lacks target CPU/generation,
-    // completion, and reclaim semantics; MAX_PENDING_TLB_INVALIDATIONS is
-    // not a product limit. Replace with the final pending-work owner when map/unmap
-    // and flush-consumer tests prove publication, consumption, and completion.
+    // work is fixed pending-work storage with a target and generation, but still
+    // lacks per-CPU completion, shootdown execution, and final reclaim semantics;
+    // MAX_PENDING_TLB_INVALIDATIONS is not a product limit. Replace with the final
+    // pending-work owner when map/unmap and flush-consumer tests prove publication,
+    // consumption, and completion.
     count: usize,
     next_sequence: u64,
     work: [Option<PendingTlbInvalidation>; MAX_PENDING_TLB_INVALIDATIONS],
@@ -358,7 +360,7 @@ impl PendingTlbInvalidations {
 
     fn reserve(
         &self,
-        intent: TlbInvalidationIntent,
+        range: VirtualRange,
         deferred_reclaim: ObjectRef,
     ) -> KernelResult<PendingTlbInvalidationReservation> {
         let index = self
@@ -366,10 +368,11 @@ impl PendingTlbInvalidations {
             .iter()
             .position(Option::is_none)
             .ok_or(KernelError::NoCapacity)?;
+        let generation = CpuGeneration::new(self.next_sequence);
         Ok(PendingTlbInvalidationReservation {
             index,
             sequence: self.next_sequence,
-            intent,
+            intent: TlbInvalidationIntent::new(range, CpuSet::AllActive, generation),
             deferred_reclaim,
         })
     }
