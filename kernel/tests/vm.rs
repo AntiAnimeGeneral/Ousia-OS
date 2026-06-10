@@ -489,6 +489,162 @@ fn consuming_pending_tlb_work_releases_unmap_capacity() {
 }
 
 #[test]
+fn pending_tlb_consumption_preserves_publication_order_after_slot_reuse() {
+    // Goal: flush consumers observe invalidation work in publication order, not slot order.
+    // Scope: fill pending storage, consume one slot, publish one more unmap, then consume again.
+    // Semantics: the second consumed range is the oldest still-pending work, not the reused slot.
+    let mut address_space = AddressSpaceObject::new();
+    let memory = ObjectRef {
+        id: kernel::object::ObjectId::new(14),
+        generation: kernel::object::ObjectGeneration::INITIAL,
+    };
+    let memory_object = memory_object(0x9000, HandleRights::READ);
+
+    for index in 0..8 {
+        address_space
+            .prepare_map(
+                memory,
+                memory_object,
+                VmMapDescriptor {
+                    base: index * 0x1000,
+                    size_bytes: 0x1000,
+                    memory_offset: index * 0x1000,
+                    rights: HandleRights::READ,
+                },
+            )
+            .unwrap()
+            .commit();
+        address_space
+            .prepare_unmap(index * 0x1000, 0x1000)
+            .unwrap()
+            .commit();
+    }
+
+    assert_eq!(
+        address_space
+            .take_pending_tlb_invalidation()
+            .unwrap()
+            .range
+            .base,
+        0
+    );
+    address_space
+        .prepare_map(
+            memory,
+            memory_object,
+            VmMapDescriptor {
+                base: 0x8000,
+                size_bytes: 0x1000,
+                memory_offset: 0x8000,
+                rights: HandleRights::READ,
+            },
+        )
+        .unwrap()
+        .commit();
+    address_space
+        .prepare_unmap(0x8000, 0x1000)
+        .unwrap()
+        .commit();
+
+    assert_eq!(
+        address_space
+            .take_pending_tlb_invalidation()
+            .unwrap()
+            .range
+            .base,
+        0x1000
+    );
+}
+
+#[test]
+fn flush_address_space_tlb_preserves_publication_order_after_slot_reuse() {
+    // Goal: process-visible TLB flush observes AddressSpace pending work in publication order.
+    // Scope: publish nine unmap intents through syscalls with one flush between them.
+    // Semantics: reused storage does not let newer invalidation work overtake older work.
+    let mut kernel = kernel(12, 1);
+    let process = kernel.create_bootstrap_process(12, 8).unwrap();
+    let context = SyscallContext::new(process);
+    let address_space = create_address_space(&mut kernel, context, HandleRights::MANAGE);
+    let memory = handle(
+        kernel
+            .execute(
+                context,
+                Syscall::CreateMemoryObject {
+                    size_bytes: 0x9000,
+                    rights: HandleRights::READ,
+                },
+            )
+            .unwrap(),
+    );
+
+    for index in 0..8 {
+        kernel
+            .execute(
+                context,
+                Syscall::MapMemoryObject {
+                    address_space,
+                    memory,
+                    base: index * 0x1000,
+                    size_bytes: 0x1000,
+                    memory_offset: index * 0x1000,
+                    rights: HandleRights::READ,
+                },
+            )
+            .unwrap();
+        kernel
+            .execute(
+                context,
+                Syscall::UnmapAddressRange {
+                    address_space,
+                    base: index * 0x1000,
+                    size_bytes: 0x1000,
+                },
+            )
+            .unwrap();
+    }
+
+    let SyscallOutcome::TlbInvalidation { intent } = kernel
+        .execute(context, Syscall::FlushAddressSpaceTlb { address_space })
+        .unwrap()
+    else {
+        panic!("expected TLB invalidation outcome");
+    };
+    assert_eq!(intent.range.base, 0);
+
+    kernel
+        .execute(
+            context,
+            Syscall::MapMemoryObject {
+                address_space,
+                memory,
+                base: 0x8000,
+                size_bytes: 0x1000,
+                memory_offset: 0x8000,
+                rights: HandleRights::READ,
+            },
+        )
+        .unwrap();
+    kernel
+        .execute(
+            context,
+            Syscall::UnmapAddressRange {
+                address_space,
+                base: 0x8000,
+                size_bytes: 0x1000,
+            },
+        )
+        .unwrap();
+
+    let SyscallOutcome::TlbInvalidation { intent } = kernel
+        .execute(context, Syscall::FlushAddressSpaceTlb { address_space })
+        .unwrap()
+    else {
+        panic!("expected TLB invalidation outcome");
+    };
+    assert_eq!(intent.range.base, 0x1000);
+}
+
+#[test]
 fn vm_prepare_map_failure_leaves_address_space_unchanged() {
     // Goal: VM validation failures happen before AddressSpace owner mutation.
     // Scope: direct prepare_map with a MemoryObject range overflow.

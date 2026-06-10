@@ -335,13 +335,15 @@ pub struct PendingTlbInvalidations {
     // not a product limit. Replace with the final pending-work owner when map/unmap
     // and flush-consumer tests prove publication, consumption, and completion.
     count: usize,
-    work: [Option<TlbInvalidationIntent>; MAX_PENDING_TLB_INVALIDATIONS],
+    next_sequence: u64,
+    work: [Option<PendingTlbInvalidation>; MAX_PENDING_TLB_INVALIDATIONS],
 }
 
 impl PendingTlbInvalidations {
     pub const fn empty() -> Self {
         Self {
             count: 0,
+            next_sequence: 0,
             work: [None; MAX_PENDING_TLB_INVALIDATIONS],
         }
     }
@@ -359,7 +361,11 @@ impl PendingTlbInvalidations {
             .iter()
             .position(Option::is_none)
             .ok_or(KernelError::NoCapacity)?;
-        Ok(PendingTlbInvalidationReservation { index, intent })
+        Ok(PendingTlbInvalidationReservation {
+            index,
+            sequence: self.next_sequence,
+            intent,
+        })
     }
 
     fn commit(&mut self, reservation: PendingTlbInvalidationReservation) {
@@ -368,23 +374,44 @@ impl PendingTlbInvalidations {
                 && self.work[reservation.index].is_none(),
             "tlb invalidation reservation slot must remain free until commit"
         );
-        self.work[reservation.index] = Some(reservation.intent);
+        let next_sequence = self
+            .next_sequence
+            .checked_add(1)
+            .expect("pending TLB invalidation sequence exhausted");
+        self.work[reservation.index] = Some(PendingTlbInvalidation {
+            sequence: reservation.sequence,
+            intent: reservation.intent,
+        });
+        self.next_sequence = next_sequence;
         self.count += 1;
     }
 
     fn take_next(&mut self) -> Option<TlbInvalidationIntent> {
-        let index = self.work.iter().position(Option::is_some)?;
-        let intent = self.work[index]
+        let index = self
+            .work
+            .iter()
+            .enumerate()
+            .filter_map(|(index, pending)| pending.map(|pending| (index, pending.sequence)))
+            .min_by_key(|(_, sequence)| *sequence)?
+            .0;
+        let pending = self.work[index]
             .take()
             .expect("pending TLB invalidation slot was selected as occupied");
         self.count -= 1;
-        Some(intent)
+        Some(pending.intent)
     }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct PendingTlbInvalidation {
+    sequence: u64,
+    intent: TlbInvalidationIntent,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct PendingTlbInvalidationReservation {
     index: usize,
+    sequence: u64,
     intent: TlbInvalidationIntent,
 }
 
