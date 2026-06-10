@@ -1,3 +1,4 @@
+use ostd::cpu::{CpuGeneration, CpuId, CpuSet};
 use ostd::mm::frame::FrameRange;
 use ostd::mm::page_table::{
     PageTableIntentError, PageTableRights, PageTableUpdate, PageTableUpdateIntent,
@@ -30,11 +31,13 @@ fn page_table_map_intent_records_checked_mapping_facts() {
 fn page_table_unmap_and_tlb_intents_record_checked_virtual_range() {
     // Goal: OSTD separates page-table unmap intent from TLB invalidation intent.
     // Scope: host test for value types only, not hardware page-table or TLB mutation.
-    // Semantics: both intents carry a checked virtual range without claiming completion.
+    // Semantics: TLB intent carries checked range, target CPU set, and generation without claiming completion.
     let range = VirtualRange::new(0x4000, 0x2000).unwrap();
+    let target = CpuSet::One(CpuId::new(3));
+    let generation = CpuGeneration::new(8);
 
     let page_table = PageTableUpdateIntent::unmap(range);
-    let tlb = TlbInvalidationIntent::new(range);
+    let tlb = TlbInvalidationIntent::new(range, target, generation);
 
     assert_eq!(
         page_table.update,
@@ -43,6 +46,8 @@ fn page_table_unmap_and_tlb_intents_record_checked_virtual_range() {
         }
     );
     assert_eq!(tlb.range, range);
+    assert_eq!(tlb.target, target);
+    assert_eq!(tlb.generation, generation);
 }
 
 #[test]
