@@ -127,7 +127,7 @@ fn map_memory_object_records_address_space_mapping() {
         panic!("expected address space payload");
     };
     let mappings = address_space_payload.mappings().collect::<Vec<_>>();
-    assert_eq!(address_space_payload.mapping_count, 1);
+    assert_eq!(address_space_payload.mapping_count(), 1);
     assert_eq!(address_space_payload.pending_tlb_invalidations.count(), 0);
     assert_eq!(mappings.len(), 1);
     assert_eq!(mappings[0].base, 0x1000);
@@ -220,7 +220,7 @@ fn vm_prepare_map_does_not_publish_mapping_until_commit() {
     );
 
     reservation.commit();
-    assert_eq!(address_space.mapping_count, 1);
+    assert_eq!(address_space.mapping_count(), 1);
     assert_eq!(address_space.pending_tlb_invalidations.count(), 0);
     let mapping = address_space.mappings().next().unwrap();
     assert_eq!(mapping.base, 0x1000);
@@ -250,7 +250,7 @@ fn dropping_vm_map_reservation_leaves_address_space_unchanged() {
         .unwrap();
     drop(reservation);
 
-    assert_eq!(address_space.mapping_count, 0);
+    assert_eq!(address_space.mapping_count(), 0);
     assert_eq!(address_space.pending_tlb_invalidations.count(), 0);
     assert!(address_space.mappings().next().is_none());
 }
@@ -287,7 +287,7 @@ fn dropping_vm_unmap_reservation_leaves_address_space_unchanged() {
     );
     drop(reservation);
 
-    assert_eq!(address_space.mapping_count, 1);
+    assert_eq!(address_space.mapping_count(), 1);
     assert_eq!(address_space.pending_tlb_invalidations.count(), 0);
     let mapping = address_space.mappings().next().unwrap();
     assert_eq!(mapping.base, 0x2000);
@@ -687,7 +687,7 @@ fn vm_prepare_map_failure_leaves_address_space_unchanged() {
     );
     assert!(matches!(result, Err(KernelError::InvalidArgument)));
 
-    assert_eq!(address_space.mapping_count, 0);
+    assert_eq!(address_space.mapping_count(), 0);
     assert_eq!(address_space.pending_tlb_invalidations.count(), 0);
     assert!(address_space.mappings().next().is_none());
 }
@@ -937,7 +937,7 @@ fn unmap_removes_exact_mapping_only() {
     else {
         panic!("expected address space payload");
     };
-    assert_eq!(address_space_payload.mapping_count, 0);
+    assert_eq!(address_space_payload.mapping_count(), 0);
     assert_eq!(address_space_payload.pending_tlb_invalidations.count(), 1);
 }
 
@@ -1414,13 +1414,13 @@ fn pending_tlb_capacity_failure_leaves_address_space_unchanged() {
         )
         .unwrap()
         .commit();
-    assert_eq!(address_space.mapping_count, 1);
+    assert_eq!(address_space.mapping_count(), 1);
     assert_eq!(address_space.pending_tlb_invalidations.count(), 8);
     assert_mapping_bases(&address_space, &[0]);
 
     let unmap_result = address_space.prepare_unmap(0, 0x1000);
     assert!(matches!(unmap_result, Err(KernelError::NoCapacity)));
-    assert_eq!(address_space.mapping_count, 1);
+    assert_eq!(address_space.mapping_count(), 1);
     assert_eq!(address_space.pending_tlb_invalidations.count(), 8);
     assert_mapping_bases(&address_space, &[0]);
 }
@@ -1449,5 +1449,5 @@ fn mapping_count(
     let ObjectPayload::AddressSpace(address_space_payload) = view.object.payload else {
         panic!("expected address space payload");
     };
-    address_space_payload.mapping_count
+    address_space_payload.mapping_count()
 }

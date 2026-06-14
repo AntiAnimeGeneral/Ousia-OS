@@ -12,8 +12,11 @@ use ostd::{
     },
 };
 
-pub const MAX_ADDRESS_SPACE_MAPPINGS: usize = 8;
 pub const MAX_PENDING_TLB_INVALIDATIONS: usize = 8;
+
+// Capacity bound for the first fixed-capacity VmRangeSet. Not a product limit;
+// the final VMAR/VMA range owner will replace this with a dynamic data structure.
+const DEFAULT_VM_RANGE_CAPACITY: usize = 8;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct MappingPolicy {
@@ -111,29 +114,112 @@ impl MemoryObject {
     }
 }
 
+/// Owns virtual-address range metadata for one address space.
+///
+/// The first version uses a fixed-capacity slot set; the final VMAR/VMA range
+/// owner will replace this with a dynamic data structure that can grow beyond
+/// the initial capacity and support tree-shaped allocation.
+///
+/// Callers must go through `reserve_map` / `reserve_unmap` and commit through
+/// the returned reservation; the mapping iteration order is unspecified and
+/// must not be relied on.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct VmRangeSet {
+    mappings: [Option<VmMapping>; DEFAULT_VM_RANGE_CAPACITY],
+    count: usize,
+}
+
+impl VmRangeSet {
+    const fn new() -> Self {
+        Self {
+            mappings: [None; DEFAULT_VM_RANGE_CAPACITY],
+            count: 0,
+        }
+    }
+
+    fn mappings(&self) -> impl Iterator<Item = VmMapping> + '_ {
+        self.mappings.iter().filter_map(|mapping| *mapping)
+    }
+
+    const fn count(self) -> usize {
+        self.count
+    }
+
+    /// Reserves a mapping slot after checking capacity and range overlap.
+    ///
+    /// Returns the slot index. The index is valid only while the returned
+    /// reservation (which borrows the parent `AddressSpaceObject` exclusively)
+    /// is live.
+    fn reserve_map(&self, mapping: VmMapping) -> KernelResult<usize> {
+        if self.count == DEFAULT_VM_RANGE_CAPACITY {
+            return Err(KernelError::NoCapacity);
+        }
+        if self
+            .mappings()
+            .any(|existing| ranges_overlap(mapping.base, mapping.end(), existing))
+        {
+            return Err(KernelError::InvalidArgument);
+        }
+        self.mappings
+            .iter()
+            .position(Option::is_none)
+            .ok_or(KernelError::NoCapacity)
+    }
+
+    fn commit_map(&mut self, index: usize, mapping: VmMapping) {
+        assert!(
+            index < DEFAULT_VM_RANGE_CAPACITY && self.mappings[index].is_none(),
+            "vm map reservation slot must remain free until commit"
+        );
+        self.mappings[index] = Some(mapping);
+        self.count += 1;
+    }
+
+    /// Reserves an unmap slot for an exact base+size match.
+    ///
+    /// Returns the index of the matching mapping.
+    fn reserve_unmap(&self, base: u64, size_bytes: u64) -> KernelResult<usize> {
+        let end = base
+            .checked_add(size_bytes)
+            .ok_or(KernelError::InvalidArgument)?;
+        self.mappings
+            .iter()
+            .position(|mapping| mapping.is_some_and(|m| m.base == base && m.end() == end))
+            .ok_or(KernelError::InvalidArgument)
+    }
+
+    fn reserved_mapping(&self, index: usize) -> VmMapping {
+        self.mappings[index].expect("vm mapping reservation selected an occupied slot")
+    }
+
+    fn commit_unmap(&mut self, index: usize) {
+        self.mappings[index]
+            .take()
+            .expect("vm unmap slot was selected as occupied");
+        self.count -= 1;
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct AddressSpaceObject {
-    pub mapping_count: usize,
     pub pending_tlb_invalidations: PendingTlbInvalidations,
-    // TODO(vm-range-owner): replace this fixed metadata slot set with the final
-    // AddressSpace range owner. The final shape must reserve mapping metadata and
-    // page-table resources before publication; callers must not rely on slot order
-    // or on MAX_ADDRESS_SPACE_MAPPINGS as a product limit. Exit when VMAR/VMA owner
-    // tests cover overlap, dropped reservation, unmap, and capacity failure.
-    mappings: [Option<VmMapping>; MAX_ADDRESS_SPACE_MAPPINGS],
+    range_set: VmRangeSet,
 }
 
 impl AddressSpaceObject {
     pub const fn new() -> Self {
         Self {
-            mapping_count: 0,
             pending_tlb_invalidations: PendingTlbInvalidations::empty(),
-            mappings: [None; MAX_ADDRESS_SPACE_MAPPINGS],
+            range_set: VmRangeSet::new(),
         }
     }
 
+    pub const fn mapping_count(self) -> usize {
+        self.range_set.count()
+    }
+
     pub fn mappings(&self) -> impl Iterator<Item = VmMapping> + '_ {
-        self.mappings.iter().filter_map(|mapping| *mapping)
+        self.range_set.mappings()
     }
 
     pub fn prepare_map(
@@ -145,37 +231,25 @@ impl AddressSpaceObject {
         descriptor.validate()?;
         memory_object.validate_mapping(descriptor)?;
         let range = descriptor.virtual_range()?;
-        if self.mapping_count == MAX_ADDRESS_SPACE_MAPPINGS {
-            return Err(KernelError::NoCapacity);
-        }
-        if self
-            .mappings()
-            .any(|mapping| ranges_overlap(range.base, range.end(), mapping))
-        {
-            return Err(KernelError::InvalidArgument);
-        }
+        let mapping = VmMapping {
+            base: descriptor.base,
+            size_bytes: descriptor.size_bytes,
+            memory,
+            memory_offset: descriptor.memory_offset,
+            rights: descriptor.rights,
+        };
+        let index = self.range_set.reserve_map(mapping)?;
         let page_table = PageTableUpdateIntent::map(
             range,
             memory_object.page_table_frame_range(descriptor)?,
             page_table_rights(descriptor.rights),
         )
         .map_err(|_| KernelError::InvalidArgument)?;
-        let index = self
-            .mappings
-            .iter()
-            .position(Option::is_none)
-            .ok_or(KernelError::NoCapacity)?;
 
         Ok(VmMapReservation {
             address_space: self,
             mapping_slot: MappingSlotReservation { index },
-            mapping: VmMapping {
-                base: descriptor.base,
-                size_bytes: descriptor.size_bytes,
-                memory,
-                memory_offset: descriptor.memory_offset,
-                rights: descriptor.rights,
-            },
+            mapping,
             page_table,
         })
     }
@@ -188,20 +262,11 @@ impl AddressSpaceObject {
         if size_bytes == 0 {
             return Err(KernelError::InvalidArgument);
         }
-        let end = base
-            .checked_add(size_bytes)
-            .ok_or(KernelError::InvalidArgument)?;
-        let Some(index) = self.mappings.iter().position(|mapping| {
-            mapping.is_some_and(|mapping| mapping.base == base && mapping.end() == end)
-        }) else {
-            return Err(KernelError::InvalidArgument);
-        };
+        let index = self.range_set.reserve_unmap(base, size_bytes)?;
         let range =
             VirtualRange::new(base, size_bytes).map_err(|_| KernelError::InvalidArgument)?;
         let page_table = PageTableUpdateIntent::unmap(range);
-        let memory = self.mappings[index]
-            .expect("vm unmap reservation selected an occupied mapping")
-            .memory;
+        let memory = self.range_set.reserved_mapping(index).memory;
         let tlb_slot = self.pending_tlb_invalidations.reserve(range, memory)?;
 
         Ok(VmUnmapReservation {
@@ -218,7 +283,7 @@ impl AddressSpaceObject {
     }
 
     pub const fn can_destroy(self) -> bool {
-        self.mapping_count == 0 && self.pending_tlb_invalidations.count() == 0
+        self.mapping_count() == 0 && self.pending_tlb_invalidations.count() == 0
     }
 }
 
@@ -285,13 +350,9 @@ impl VmMapReservation<'_> {
     }
 
     pub fn commit(self) {
-        let index = self.mapping_slot.index;
-        assert!(
-            index < MAX_ADDRESS_SPACE_MAPPINGS && self.address_space.mappings[index].is_none(),
-            "vm map reservation slot must remain free until commit"
-        );
-        self.address_space.mappings[index] = Some(self.mapping);
-        self.address_space.mapping_count += 1;
+        self.address_space
+            .range_set
+            .commit_map(self.mapping_slot.index, self.mapping);
     }
 }
 
@@ -318,13 +379,9 @@ impl VmUnmapReservation<'_> {
     }
 
     pub fn commit(self) {
-        let index = self.mapping_slot.index;
-        assert!(
-            index < MAX_ADDRESS_SPACE_MAPPINGS && self.address_space.mappings[index].is_some(),
-            "vm unmap reservation slot must remain mapped until commit"
-        );
-        self.address_space.mappings[index] = None;
-        self.address_space.mapping_count -= 1;
+        self.address_space
+            .range_set
+            .commit_unmap(self.mapping_slot.index);
         self.address_space
             .pending_tlb_invalidations
             .commit(self.tlb_slot);
