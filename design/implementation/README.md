@@ -10,3 +10,5 @@
    说明近期内核实现以 Ousia 原生高级 capability kernel 为主线，参考 Zircon/Fuchsia 的 handle/object/VM/channel/driver framework，并保留 seL4 的能力纪律作为安全约束。
 2. [01-test-architecture.md](./01-test-architecture.md)
    定义 host、model/property、QEMU smoke、QEMU serial scenario、bare-metal integration、fuzzing 和 benchmark 的测试层级、工具栈与 crate 边界。
+3. [02-agent-harness-architecture.md](./02-agent-harness-architecture.md)
+   定义 agent harness 通用化第一切片的 core primitives、Ousia adapter mapping、EvidenceCorpus 与 ProjectDocs 边界，以及后续实现入口。
