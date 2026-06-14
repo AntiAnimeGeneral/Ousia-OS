@@ -8,7 +8,7 @@ argument-hint: "mode, target, scope, user goal, inputs, validation expectations,
 
 这个 skill 是统一 architecture planning 入口。调用方提供 mode、target、scope、user goal、inputs 和可选 focus；本 skill 按 `_shared/index.md` 选择少量 planning 组件。
 
-它生成可 review 的 architecture plan / proposal packet，不直接实施改动，不自证正确，也不审查已经实施的 diff。非平凡方案必须经过 `black-team-review` 的 `设计提案 + diff` review；实施完成后再由 `black-team-review` 的 `代码实现 + diff` review 审查真实 diff。
+它生成可 review 的 architecture plan / proposal packet，不直接实施改动，不自证正确，也不审查已经实施的 diff。非平凡方案必须经过 `black-team-review` 的 proposal review；实施完成后再由 `black-team-review` 审查真实 implementation diff。
 
 ## 外部接口
 
@@ -70,7 +70,7 @@ argument-hint: "mode, target, scope, user goal, inputs, validation expectations,
 6. 至少比较两个方案：保守局部演进、边界修正、抽象提取、成熟库/现有模块复用、文档归属调整，或暂不改动。
 7. 输出符合本 skill 输出要求的 architecture plan / proposal packet。
 8. 明确第一个可实施的纵向切片；边界整理、模块拆分或命名修正必须说明如何服务该切片。
-9. 给出 `设计提案 + diff` review focus；如需进入实施，按 workflow handoff packet 说明 implementation handoff 条件，不在本 skill 中另定义交接协议。
+9. 给出 proposal review focus；如需进入实施，输出本 skill 声明的 implementation handoff packet。
 
 ## Target 特化
 
@@ -129,4 +129,16 @@ argument-hint: "mode, target, scope, user goal, inputs, validation expectations,
 
 如果计划只能说明边界会更清楚，却不能说明首个可验证纵向切片，必须先收窄 scope 或返回 architecture handoff；不要输出只会导致连续边界整理的实施计划。
 
-如果调用者提供的是已经实施的 diff，本 skill 不应继续审查；应使用 `black-team-review` 并声明 subject：`代码实现`，mode：`diff`。
+如果调用者提供的是已经实施的 diff，本 skill 不应继续审查；应交给 `black-team-review` 按其 mode 规则处理。
+
+## Implementation Handoff
+
+Proposal review 通过或修正后，进入 implementation 的 handoff packet 包含：
+
+- 已通过或已修正的 architecture plan 摘要。
+- 第一个可实施纵向切片：目标语义、跨越 owner、边界 API、实现文件、owning docs、测试层级、完成条件和排除范围。
+- 允许修改范围。
+- 必须保持的不变量和边界。
+- 实施步骤。
+- 验证命令。
+- Implementation review focus。

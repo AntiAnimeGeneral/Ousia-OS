@@ -39,7 +39,7 @@ Ousia-specific 经验、reference 读取入口和 checklist 放在 `.github/skil
 - Mode：读取 `.github/skills/_shared/modes/review/diff.md` 或 `.github/skills/_shared/modes/review/heuristic-scan.md`。
 - Subject：由入口 skill 根据 `subject` 和相关 instructions 投影；不单独拆组件。
 - 输出协议由 `black-team-review` skill 自己声明。
-- Subagent prompt 和 handoff 由 `.github/instructions/ousia-workflow.instructions.md` 约束。
+- Subagent 只是可选执行载体，轻量启动边界由 `.github/instructions/ousia-workflow.instructions.md` 约束；review prompt、输出协议和 handoff 由 `black-team-review` skill 自己声明。
 
 说明：
 

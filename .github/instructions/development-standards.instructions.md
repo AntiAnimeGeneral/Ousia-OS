@@ -27,7 +27,7 @@ description: "开发规范索引：按任务读取入口、架构抽象、实现
 - 如果任务涉及 kernel、OSTD、tooling、Cargo target 或 implementation design，还必须读取 `.github/instructions/ousia-kernel-boundaries.instructions.md`。
 - 如果任务涉及 Markdown、design docs、README、skills 或 instructions，还必须读取 `.github/instructions/documentation-standards.instructions.md`。
 - 如果任务涉及架构边界、模块组合、抽象取舍、instructions、skills、shared assets、reference corpus、workflow 或 prompt 体系演进，还必须读取 `.github/instructions/prompt-architecture.instructions.md`。
-- 如果任务涉及验证、subagent review、handoff 或最终报告，还必须读取 `.github/instructions/ousia-workflow.instructions.md`。
+- 如果任务涉及验证、review 闭环、subagent 使用边界、handoff 或最终报告，还必须读取 `.github/instructions/ousia-workflow.instructions.md`。
 
 ## 组合式工作流
 

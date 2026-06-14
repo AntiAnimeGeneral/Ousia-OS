@@ -41,7 +41,7 @@ description: "项目元架构规范：边界性、正交可组合性、简约优
 - `.github/skills/_shared/modes/**` 承载任务形状、输入/输出重点和 stop conditions。
 - `.github/skills/_shared/reference/**` 承载快速变动的项目经验、reference 读取入口、planning prompts 和 review attacks。
 - Reference corpus 必须从 `index.md` 进入；正文不写主动触发、外部调用协议、subagent prompt contract、完整输出协议或硬规范。
-- Workflow instruction 承载 subagent 启动协议、handoff packet、验证选择和闭环编排；不要把领域 checklist 塞进 workflow。
+- Workflow instruction 承载 subagent 使用边界、验证选择和闭环编排；review/planning 的 prompt 内容、输出协议和 handoff packet 归对应入口 skill。不要把领域 checklist 塞进 workflow。
 
 ## 设计检查
 

@@ -1,6 +1,6 @@
 ---
 name: black-team-review
-description: "Use when: running a unified black-team review subagent for implementation diffs, global scans, architecture proposals, test strategies, semantic drift, boundary violations, missing tests, workflow risks, or proposal assumptions."
+description: "Use when: running a unified black-team review for implementation diffs, global scans, architecture proposals, test strategies, semantic drift, boundary violations, missing tests, workflow risks, or proposal assumptions."
 argument-hint: "subject, mode, scope, user goal, inputs, validation results, and optional review focus"
 ---
 
@@ -9,6 +9,8 @@ argument-hint: "subject, mode, scope, user goal, inputs, validation results, and
 这个 skill 是统一 black-team reviewer 外部入口。调用方只需要说明 subject、mode、scope、user goal、inputs 和可选 focus；本 skill 负责按 `_shared/index.md` 选择少量 review 组件。
 
 它只读审查，不修改文件，不生成完整替代方案。结构性问题通过 handoff packet 交给对应 architect；proposal 通过审查后才进入 implementation。
+
+Review 可以由主 agent 直接执行，也可以交给只读 subagent 执行。Subagent 只是执行载体；本 skill 拥有 review 的 subject/mode、证据要求、prompt 内容、输出要求和 handoff 语义。
 
 ## 外部接口
 
@@ -38,6 +40,14 @@ argument-hint: "subject, mode, scope, user goal, inputs, validation results, and
 
 具体 mode component 和 stop conditions 由 `_shared/index.md` 决定。如果 subject、mode 和 scope 不匹配，先把输入不匹配作为 finding 或要求切换 mode；不要替调用方隐式改写任务。
 
+默认选择：
+
+- 已经落地的代码、测试、文档或 workflow 改动，使用 `mode: diff`。
+- 没有真实 diff、只有区域扫描或长期风险调查时，使用 `mode: 全局启发扫描`。
+- 非平凡实现、重构、架构边界调整或 prompt/workflow 改动的 implementation review，使用 `subject: 代码实现`。
+- 架构提案、owning doc 落地前审查或 proposal packet 审查，使用 `subject: 设计提案`。
+- 没有真实 diff 时，不把 review 伪装成 diff review；只有用户明确要求扫描时才切换到 `全局启发扫描`。
+
 ## 证据要求
 
 Review 前尽量收集：
@@ -49,6 +59,23 @@ Review 前尽量收集：
 - 项目专用语义或外部 baseline 的 reference 证据；Ousia OS 场景按 `.github/skills/_shared/reference/index.md` 索引选择正文后收集。
 
 证据不足时，把无法证明的部分列为 residual risk 或输入不匹配 finding；不要补假设后放行。
+
+## Review Prompt 要求
+
+无论由主 agent 直接执行还是交给 subagent，review 输入都必须包含：
+
+- Review subject：`设计提案` 或 `代码实现`。
+- Review mode：`diff` 或 `全局启发扫描`。
+- 用户原始目标：保留用户的关键原话和不希望偏移的语义。
+- Review scope：真实 diff、文件列表、子系统、proposal packet、测试树或文档区域。
+- Vertical slice：本次改动推进的用户语义、跨越的 owner/边界/API/测试/owning docs、完成条件和明确排除范围。
+- Inputs：实现摘要、proposal packet、验证结果、测试结果、已知 assumptions、open questions、residual risks。
+- Invariants：必须保持的边界、状态所有权、错误模型、测试语义、文档归属或 workflow 约束。
+- Evidence to read：本 skill、`_shared/index.md`、index 路由到的 mode、相关 instructions、目标文件、相邻模块、owning docs 或 reference。
+- Checks：已运行或计划运行的验证命令，以及它们覆盖或未覆盖的风险。
+- Review focus：调用者希望重点攻击的问题。
+
+如果使用 subagent，prompt 还必须声明只读、不修改文件、不得生成完整替代方案；结构性问题通过本 skill 的 handoff packet 交给 architecture planner；无法证明的部分标为 residual risk，不要补假设后放行。
 
 ## Subject 攻击焦点
 
@@ -106,4 +133,16 @@ Review 输出必须以 `findings` 开头。按严重程度排序，每条 findin
 - 涉及 Ousia OS reference corpus 时，必须列出已读取的 reference 正文；未读取相关正文的部分标为 residual risk。
 - `全局启发扫描` 必须明确哪些 finding 只是启发式风险，哪些需要 handoff 给 architecture planner。
 
-需要后续架构处理时，按 workflow instruction 输出 handoff packet。保持高信号；不要为了显得严格而制造低价值噪音。
+需要后续架构处理时，按本 skill 的 handoff packet 输出。保持高信号；不要为了显得严格而制造低价值噪音。
+
+## Handoff Packet
+
+Review 发现结构性问题时，输出给 architecture planner 的 handoff packet 包含：
+
+- 目标产品区域、代码模块或文档区域。
+- 需要重新定义或补齐的纵向切片目标，以及当前边界整理为何无法证明完成语义。
+- 触发 handoff 的 findings。
+- 疑似边界、状态所有权、错误模型、测试质量或文档归属问题。
+- 必须保留的外部语义。
+- 建议 planner 比较的候选方向。
+- 需要 proposal review 重点攻击的问题。

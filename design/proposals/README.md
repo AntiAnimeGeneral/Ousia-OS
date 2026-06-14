@@ -12,3 +12,5 @@
    当前推倒重来提案。它面向 `kernel/src/**` 和 `kernel/tests/**` 的 Ousia-native kernel skeleton greenfield replacement，不保留旧 seL4 prototype API、测试或文件布局兼容。
 3. [02-kernel-memory-and-vm-foundation.md](./02-kernel-memory-and-vm-foundation.md)
    当前内存专项提案。它要求先建立 runtime frame metadata、kernel allocator/reservation 和 minimal VM/MemoryObject/AddressSpace foundation，再继续扩大 object/handle/channel/VFS 主线。
+4. [03-agent-harness-library.md](./03-agent-harness-library.md)
+   当前 agent harness 通用化提案。它建议把 prompt workflow 提炼为项目无关的 harness core，并把 Ousia-specific instructions、skills、evidence corpus、project docs 和 validation policy 建模为 project adapter。
